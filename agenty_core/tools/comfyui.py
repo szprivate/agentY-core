@@ -1087,7 +1087,21 @@ def _convert_graph_to_api(workflow: dict) -> dict:
                 # Wired-up widgets may or may not still hold a value, so try both
                 # readings and keep the one whose assignments actually fit their
                 # slots. Ties go to the excluding reading — fewer assumptions.
-                incl_slots = _schema_widget_slots(schema, set())
+                # Only wired *widgets* keep a slot: a wired socket (MESH, MODEL, a
+                # custom type) never had one. Counting the socket too gave
+                # UnwrapMesh's "mesh" the segmenter's value and shifted the rest, so
+                # this reading lost to the excluding one and shipped padding=2048
+                # (clamped to 16) and weld_distance=1 - every vertex welded into
+                # one, and ApplyTextureToMesh died on an empty mesh.
+                # A wired widget says so on its connector ("widget": {...}), which
+                # also covers multi-typed widgets such as Preview3D's model_file.
+                all_specs = {**(schema.get("required") or {}), **(schema.get("optional") or {})}
+                wired_widgets = {c.get("name") for c in node.get("inputs", [])
+                                 if isinstance(c, dict) and isinstance(c.get("widget"), dict)}
+                linked_sockets = {n for n in linked_names
+                                  if n not in wired_widgets
+                                  and not _is_widget_spec(all_specs.get(n))}
+                incl_slots = _schema_widget_slots(schema, linked_sockets)
                 without_linked = _map_widget_values(schema_slots, widgets_values, linked_names)
                 with_linked = _map_widget_values(incl_slots, widgets_values, linked_names)
                 incl_score = _mapping_score(with_linked[0], incl_slots)

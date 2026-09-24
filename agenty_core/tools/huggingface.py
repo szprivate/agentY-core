@@ -27,6 +27,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -115,7 +116,7 @@ def _folder_paths() -> dict:
 
 
 def _resolve_download_dir(
-    node_class_type: str, destination_folder: str, filename: str = ""
+    node_class_type: str, destination_folder: str, filename: str = "", hf_subfolder: str = ""
 ) -> tuple[Path, str]:
     """Resolve where to download a model, preferring the *additional* ComfyUI model
     path (given at server startup) for the model's category so the file lands where
@@ -123,16 +124,36 @@ def _resolve_download_dir(
     a different drive. Returns (dir, source).
 
     Category resolution, most authoritative first:
+      0. the templates' own word for this filename (properties.models /
+         the "Model Storage Location" note — see utils.template_models),
       1. the loader node class (NODE_TO_FOLDER),
-      2. an explicit destination_folder (e.g. the HF subfolder leaf),
+      2. an explicit destination_folder, else the HF repo subfolder when its
+         leaf is a folder ComfyUI knows (Comfy-Org repos mirror the layout),
       3. the filename itself (guess_folder_from_filename — VAE / LoRA / CLIP /
          ControlNet / upscaler / diffusion-model conventions),
       4. else 'checkpoints' (always scanned; correct for a bare checkpoint)."""
-    category = None
+    try:
+        from agenty_core.utils.template_models import template_model_dir  # noqa: PLC0415
+        declared = template_model_dir(filename) or ""
+    except Exception:  # noqa: BLE001
+        declared = ""
+    category = declared.split("/")[0].lower() or None
+    if category:
+        # The template's folder, and any subfolder it names inside it: the loader
+        # widget then holds "subfolder/file", so the file has to be there too.
+        dl_dir, source = _category_dir(category)
+        rest = declared.split("/")[1:]
+        return (dl_dir.joinpath(*rest) if rest else dl_dir), f"template:{source}"
     if node_class_type and node_class_type in NODE_TO_FOLDER:
         category = NODE_TO_FOLDER[node_class_type].split("models/", 1)[-1].split("/")[0].lower()
     elif destination_folder:
         category = destination_folder.replace("\\", "/").strip("/").split("/")[0].lower()
+    elif hf_subfolder:
+        # A sampler stage named as the "node" (Trellis2ShapeStage) is in no map,
+        # but the repo path said diffusion_models all along.
+        leaf = hf_subfolder.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+        if leaf in {k.lower() for k in _folder_paths()}:
+            category = leaf
 
     # No loader/destination hint → classify by filename convention. A bare model
     # dropped in the models root would never be scanned (so never loaded or
@@ -147,26 +168,27 @@ def _resolve_download_dir(
     # right home for the common case of an uncategorised checkpoint).
     if not category:
         category = "checkpoints"
+    return _category_dir(category)
 
-    if category:
-        # Every ComfyUI folder-path whose leaf dir matches the category.
-        cand = [p for paths in _folder_paths().values() for p in paths
-                if p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == category]
-        if cand:
-            extra_base = str(_models_base_dir()).replace("\\", "/").rstrip("/").lower()
-            # 1) a path under the configured extra base (e.g. L:/.../Models)
-            for p in cand:
-                if p.replace("\\", "/").lower().startswith(extra_base):
-                    return Path(p), "comfyui_extra_path"
-            # 2) else a path on a different drive than the (default) first candidate
-            d0 = cand[0].split(":", 1)[0].lower()
-            for p in cand[1:]:
-                if p.split(":", 1)[0].lower() != d0:
-                    return Path(p), "comfyui_extra_path"
-            return Path(cand[0]), "comfyui_folder_path"
 
-    base = _models_base_dir()
-    return (base / category, "models_base_dir") if category else (base, "models_base_dir")
+def _category_dir(category: str) -> tuple[Path, str]:
+    """The directory ComfyUI loads *category* (e.g. 'vae') from, and its source."""
+    # Every ComfyUI folder-path whose leaf dir matches the category.
+    cand = [p for paths in _folder_paths().values() for p in paths
+            if p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == category]
+    if cand:
+        extra_base = str(_models_base_dir()).replace("\\", "/").rstrip("/").lower()
+        # 1) a path under the configured extra base (e.g. L:/.../Models)
+        for p in cand:
+            if p.replace("\\", "/").lower().startswith(extra_base):
+                return Path(p), "comfyui_extra_path"
+        # 2) else a path on a different drive than the (default) first candidate
+        d0 = cand[0].split(":", 1)[0].lower()
+        for p in cand[1:]:
+            if p.split(":", 1)[0].lower() != d0:
+                return Path(p), "comfyui_extra_path"
+        return Path(cand[0]), "comfyui_folder_path"
+    return _models_base_dir() / category, "models_base_dir"
 
 
 # Never let a model download fill the C: system drive, and keep a safety margin
@@ -473,6 +495,22 @@ def find_hf_file(filename: str, hints: str = "") -> str:
     exact_matches: list[dict] = []
 
     # ------------------------------------------------------------------
+    # Pass -1: a template names this file — its link and folder are the
+    # author's, so no search can do better.
+    # ------------------------------------------------------------------
+    try:
+        from agenty_core.utils.template_models import template_model_index  # noqa: PLC0415
+        declared = template_model_index().get(filename.replace("\\", "/").rsplit("/", 1)[-1])
+    except Exception:  # noqa: BLE001
+        declared = None
+    hf = re.match(r"https://huggingface\.co/([^/]+/[^/]+)/resolve/[^/]+/(.+)$", (declared or {}).get("url", ""))
+    if hf:
+        match = _make_match(hf.group(1), hf.group(2), exact=True)
+        match["directory"] = declared["directory"]
+        match["source"] = f"template {declared['template']}"
+        return json.dumps({"ok": True, "count": 1, "matches": [match]})
+
+    # ------------------------------------------------------------------
     # Pass 0: Comfy-Org bulk scan (single request, all repos + siblings)
     # ------------------------------------------------------------------
     comfy_exact, comfy_close = _scan_org_repos("Comfy-Org", filename, ext, stem_prefix)
@@ -600,7 +638,11 @@ def download_hf_model(
 ) -> str:
     """Download a file from a HuggingFace repo. Check model availability with check_model first.
 
-    Prefer supplying *node_class_type* (the ComfyUI class name of the node that
+    A file an official template names goes where that template says (its
+    loader's model list / "Model Storage Location" note) — whatever else is
+    passed. find_hf_file returns that folder as ``directory``.
+
+    Otherwise prefer supplying *node_class_type* (the ComfyUI class name of the node that
     references the model, e.g. ``"UNETLoader"``).  The correct storage folder is
     then derived automatically via the NODE_TO_FOLDER mapping.  If
     *node_class_type* is unknown or omitted, fall back to *destination_folder*
@@ -633,7 +675,7 @@ def download_hf_model(
         # model path given at server startup — often a different, larger drive)
         # for the model's category, so the file lands where ComfyUI actually loads
         # from. Falls back to the models base dir.
-        dl_dir, dl_source = _resolve_download_dir(node_class_type, destination_folder, filename)
+        dl_dir, dl_source = _resolve_download_dir(node_class_type, destination_folder, filename, subfolder)
         dl_dir, dl_source = _ensure_not_c_drive(dl_dir, dl_source)  # never fill C:
         dest_path = dl_dir / filename
         logger.info("download target: %s (%s)", dest_path, dl_source)
