@@ -831,6 +831,29 @@ def dead_node_warnings(workflow: dict, object_info: dict) -> tuple[list, list]:
     return found, lines
 
 
+def dead_nodes_in_file(workflow_path: str) -> tuple[list, list]:
+    """:func:`dead_node_warnings` for a workflow ON DISK — ``(dead, lines)``.
+
+    The cheap way to ask the question: it needs the graph and ``/object_info``
+    (cached), not a server validation, so it can be asked on the way to every
+    submission — including each member of a 25-variant batch — without adding a
+    round trip per workflow.
+
+    Answers ``([], [])`` for a file that cannot be read or parsed. Something that
+    cannot load is not a graph with dead nodes, it is a different problem, and the
+    caller already has a report for that one.
+    """
+    try:
+        from agenty_core.tools.comfyui import (  # noqa: PLC0415 — avoids an import cycle
+            _get_object_info, _load_workflow,
+        )
+        workflow = _load_workflow(workflow_path)
+        object_info = _get_object_info()
+    except Exception:  # noqa: BLE001
+        return [], []
+    return dead_node_warnings(workflow, object_info)
+
+
 def ensure_output_node(workflow: dict, object_info: dict) -> str | None:
     """If the graph has no output node but a terminal VIDEO producer (e.g.
     CreateVideo without a SaveVideo), synthesize a SaveVideo wired to it so the
