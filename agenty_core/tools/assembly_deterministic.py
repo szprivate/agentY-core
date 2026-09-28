@@ -731,6 +731,106 @@ def autowire_dangling_inputs(workflow: dict, object_info: dict) -> list[str]:
     return wired
 
 
+# Names that mean "this is where a branch ends" for a class ComfyUI cannot be
+# asked about. Consulted only when the schema is missing, and only ever to make a
+# node count AS an output — i.e. to stay silent rather than accuse.
+_OUTPUT_NAME_HINTS = ("save", "preview", "viewer", "sendto", "output", "display", "show")
+
+
+def _is_output_node(class_type: str, object_info: dict) -> bool:
+    """Whether ComfyUI treats *class_type* as an output — the end of a branch.
+
+    Biased toward yes for anything it cannot look up, because this decides whether
+    a node gets REPORTED as dead: a custom saver mistaken for an ordinary node
+    would be named as a defect in a graph that is perfectly fine, and a check that
+    cries wolf is a check people learn to skip.
+    """
+    cls = str(class_type or "")
+    if not cls:
+        return True
+    info = (object_info or {}).get(cls)
+    if not isinstance(info, dict):
+        return True                       # unknown class / ComfyUI down
+    if info.get("output_node"):
+        return True
+    return any(hint in cls.lower() for hint in _OUTPUT_NAME_HINTS)
+
+
+def dead_nodes(workflow: dict, object_info: dict) -> list[dict]:
+    """The nodes in *workflow* that ComfyUI would never execute.
+
+    ComfyUI runs a graph BACKWARDS from its output nodes, so a node whose output
+    nothing reads is not slow or misconfigured — it simply never happens. Nothing
+    else in validation sees this: such a node can have every one of its own
+    required inputs satisfied, which is how a graph carrying three of them
+    validates clean, locally AND server-side, and then quietly does less than it
+    says.
+
+    Observed, all from real builds: a `VAEDecodeAudio` whose consumer's optional
+    `audio` input was left unwired (a silent video out of an audio model), a
+    `GetImageSize` added to derive the resolution while the latent kept hardcoded
+    dimensions (the input's aspect ratio quietly ignored), and a second
+    `VAEDecodeTiled` decoding the same latent as the decoder that *is* wired.
+
+    Iterated to a fixed point, so a chain of dead nodes is reported whole; an entry
+    names the dead consumer it fed, because fixing the root fixes the rest.
+
+    Returns ``[]`` — not a guess — when *object_info* is empty: without schemas
+    there is no reliable way to tell an output node from an ordinary one.
+    """
+    if not isinstance(workflow, dict) or not workflow or not object_info:
+        return []
+    live = {str(nid): node for nid, node in workflow.items() if isinstance(node, dict)}
+    found: list[dict] = []
+    while True:
+        consumers: dict = {}
+        for nid, node in live.items():
+            for value in (node.get("inputs") or {}).values():
+                if _is_wire(value):
+                    consumers.setdefault(str(value[0]), set()).add(nid)
+        dead = [nid for nid, node in live.items()
+                if not consumers.get(nid)
+                and not _is_output_node(node.get("class_type"), object_info)]
+        if not dead:
+            return found
+        already = {d["node_id"] for d in found}
+        for nid in sorted(dead, key=lambda n: (len(n), n)):
+            node = live.pop(nid)
+            cls = str(node.get("class_type") or "")
+            # The already-dead nodes this one was feeding: those are the ones to
+            # fix, since wiring this output into a dead branch changes nothing.
+            fed = sorted(other for other in already
+                         if any(_is_wire(v) and str(v[0]) == nid for v in
+                                ((workflow.get(other) or {}).get("inputs") or {}).values()))
+            because = (f" The node(s) it feeds ({', '.join(fed)}) are dead too — "
+                       f"fix those first." if fed else "")
+            found.append({
+                "node_id": nid,
+                "class_type": cls,
+                "title": str((node.get("_meta") or {}).get("title") or ""),
+                "problem": ("nothing reads this node's output, so ComfyUI will never "
+                            "execute it (a graph runs backwards from its output "
+                            f"nodes).{because} Wire its output into the branch that "
+                            "reaches an output node, or remove the node."),
+            })
+
+
+def dead_node_warnings(workflow: dict, object_info: dict) -> tuple[list, list]:
+    """``(dead_nodes, one_line_warnings)`` for a validation payload.
+
+    The list is for a caller that will act on it; the lines are for a reader that
+    only ever sees text, which includes every model this gets reported to.
+    """
+    found = dead_nodes(workflow, object_info)
+    lines = [
+        f"Node {d['node_id']} ({d['class_type']}"
+        + (f" - {d['title']}" if d["title"] and d["title"] != d["class_type"] else "")
+        + f"): {d['problem']}"
+        for d in found
+    ]
+    return found, lines
+
+
 def ensure_output_node(workflow: dict, object_info: dict) -> str | None:
     """If the graph has no output node but a terminal VIDEO producer (e.g.
     CreateVideo without a SaveVideo), synthesize a SaveVideo wired to it so the

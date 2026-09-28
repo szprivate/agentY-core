@@ -27,6 +27,7 @@ from agenty_core.tools.assembly_deterministic import (
     _MODEL_EXTS as _MODEL_EXTS_SHARED,
     autowire_dangling_inputs as _autowire_dangling_inputs,
     coerce_dim as _coerce_dim,
+    dead_node_warnings as _dead_node_warnings,
     ensure_output_node as _ensure_output_node,
     harden_node_inputs as _harden_node_inputs,
     link_only_scalars as _link_only_scalars,
@@ -3988,6 +3989,12 @@ def update_workflow(
     is_valid = len(local_errors) == 0 and len(server_errors) == 0
     all_errors = node_errors + local_errors
 
+    # Reported on every edit, because this is the moment the wiring was in the
+    # caller's hands: a node added in one call and meant to be wired in the next
+    # shows up here until it is, which is exactly the reminder that was missing.
+    # Never an error — see the note in validate_workflow.
+    _dead, _dead_lines = _dead_node_warnings(workflow, all_nodes)
+
     _note = _moved_note(workflow_path, path)
     return json.dumps({
         "status": "ok" if (is_valid and not node_errors) else "error",
@@ -4002,6 +4009,7 @@ def update_workflow(
         "local_errors": local_errors,
         "reshaped_inputs": reshaped_inputs,
         "server_errors": server_errors,
+        **({"dead_nodes": _dead, "warnings": _dead_lines} if _dead else {}),
         **({"note": _note} if _note else {}),
     })
 
@@ -5170,9 +5178,16 @@ def validate_workflow(workflow_path: str) -> str:
         "local_errors": local_errors,
         "server_errors": server_errors,
     }
-    # Everything needed to fix it, in the same response that reported it — so the
-    # repair is one update_workflow call, not a schema round trip per node
-    # followed by a guess.
+    # Nodes ComfyUI would never execute. A WARNING, never an error: this same
+    # function validates graphs people have open on the canvas, where a parked
+    # node is a normal way to work, and refusing to run one of those would be
+    # worse than the defect. In a workflow being BUILT it is a defect, and the
+    # builder is told so where it can act (see the build gate in agentY's
+    # Pipeline._run_generate_new_workflow).
+    _dead, _dead_lines = _dead_node_warnings(workflow, all_nodes)
+    if _dead:
+        result["dead_nodes"] = _dead
+        result["warnings"] = _dead_lines
     if missing_inputs:
         result["missing_inputs"] = missing_inputs
     if invalid_inputs:
