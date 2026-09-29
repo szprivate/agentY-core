@@ -93,12 +93,20 @@ class TheEdgeList(unittest.TestCase):
         edges, _ = _reference_wiring(wf, INFO)
         self.assertEqual(edges, ("VAEDecode#0:0 -> SaveVideo#0.video",))
 
-    def test_a_long_graph_is_capped(self):
+    def test_a_long_graph_is_capped_and_says_so(self):
+        # A truncated list that looks complete is worse than a short one: the build
+        # stops looking for the rest.
         wf = {str(i): {"class_type": "VAEDecode", "inputs": {"samples": [str(i - 1), 0]}}
               for i in range(1, 40)}
         wf["0"] = {"class_type": "KSampler", "inputs": {}}
         edges, _ = _reference_wiring(wf, INFO, cap=5)
-        self.assertEqual(len(edges), 5)
+        self.assertEqual(len(edges), 6)
+        self.assertIn("34 more edge(s)", edges[-1])
+        self.assertIn("reference_member", edges[-1])
+
+    def test_a_graph_inside_the_cap_gets_no_marker(self):
+        edges, _ = _reference_wiring(GRAPH, INFO)
+        self.assertFalse([e for e in edges if e.startswith("...")])
 
     def test_nothing_to_say_about_a_non_graph(self):
         self.assertEqual(_reference_wiring(None, INFO), ((), ()))

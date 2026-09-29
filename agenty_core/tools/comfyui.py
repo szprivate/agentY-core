@@ -3272,7 +3272,14 @@ def _reference_wiring(workflow: dict, object_info: dict, cap: int = 160) -> tupl
             # naming are on nodes that do the work.
             if name in optional and not _is_utility_class(cls):
                 optional_wired.append(f"{label[nid]}.{name}")
-    return tuple(edges[:cap]), tuple(dict.fromkeys(optional_wired))
+    if len(edges) > cap:
+        # Never let a truncated list look complete: a build that thinks it has the
+        # whole shape stops looking for the rest.
+        left = len(edges) - cap
+        edges = edges[:cap] + [
+            f"... {left} more edge(s) not listed - load 'reference_member' with "
+            f"get_workflow_template and read them off it"]
+    return tuple(edges), tuple(dict.fromkeys(optional_wired))
 
 
 def _recipe_build_spec(member_files: list, model: str = "",
