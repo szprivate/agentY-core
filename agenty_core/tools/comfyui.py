@@ -2977,7 +2977,11 @@ def _get_workflow_template_one(template_name: str) -> str:
                     "that recipe: create EVERY node in build_nodes (class + count - "
                     "it includes model-specific nodes like WanImageToVideo that "
                     "required_nodes omits; do NOT substitute a generic node such as "
-                    "VAEEncode for it), wire them per connection_patterns, expose "
+                    "VAEEncode for it), WIRE THEM PER reference_wiring (the real "
+                    "edges of the recipe's reference_member, as "
+                    "'<class>#<instance>:<slot> -> <class>#<instance>.<input>'; "
+                    "connection_patterns are role-level orientation and are often "
+                    "empty), wire every load_bearing_inputs entry, expose "
                     "boundary_ports, and set each node's widget params from "
                     "node_defaults (do NOT guess weight_dtype/model variants). Create "
                     "nodes with add_workflow_node, wire/set inputs with "
@@ -3191,18 +3195,101 @@ def _keep_node_default(class_type: str, key: str, value, object_info: dict) -> b
     return False
 
 
+def _is_utility_class(class_type: str) -> bool:
+    """Plumbing (primitive / math / switch / reroute), per the recipe vocabulary."""
+    try:
+        from agenty_core.workflow_recipes.roles import is_utility  # noqa: PLC0415
+        return bool(is_utility(class_type))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _reference_wiring(workflow: dict, object_info: dict, cap: int = 160) -> tuple:
+    """The member graph's own edges, addressed by class and instance.
+
+    ``("CheckpointLoaderSimple#0:2 -> VAEDecode#0.vae", …)`` — source class,
+    instance, output SLOT on the left; destination class, instance, input NAME on
+    the right. Node ids are deliberately not used: the build is creating its own
+    nodes, and what it needs is the shape, not someone else's numbering.
+
+    This exists because the recipe's ``connection_patterns`` cannot address a wire.
+    They are ``(from_role, to_role, data_type)`` triples agreed across every member,
+    which loses three things a build needs: which instance (two samplers in a
+    two-stage graph share one triple), which input (``CFGGuider`` takes `positive`
+    and `negative`, both CONDITIONING) and which output slot (a checkpoint loader's
+    VAE is slot 2; ``LTXVConditioning`` emits two CONDITIONING outputs where the
+    index is the whole meaning). Measured on this corpus, a recipe with four or more
+    members shows a median of ZERO invariant patterns — the intersection of a rich
+    group is empty — so the agent was being handed a 35-node build with no wiring at
+    all and inventing the graph.
+
+    Second return value: the optional inputs this member wires. An input the schema
+    marks optional is one nothing will complain about, and some of them carry the
+    whole point of the workflow — a ``CreateVideo.audio`` left unwired gives a silent
+    video out of an audio model, valid and green the whole way. They are listed apart
+    from the edges because a flat list of forty wires does not say which ones are
+    silently droppable.
+
+    Both come from the ONE member the rest of the build spec comes from, not from a
+    vote across members: a vote over a heterogeneous group is what leaves
+    ``connection_patterns`` empty in the first place.
+    """
+    if not isinstance(workflow, dict):
+        return (), ()
+    nodes = {str(nid): n for nid, n in workflow.items()
+             if isinstance(n, dict) and n.get("class_type")
+             and n.get("class_type") not in ("Note", "MarkdownNote", "Reroute",
+                                             "PrimitiveNode")}
+
+    def _key(nid: str):
+        return (0, int(nid)) if str(nid).isdigit() else (1, str(nid))
+
+    # Instance index per class, in the member's own node order — stable, and the
+    # same order build_nodes' counts are read in.
+    label: dict = {}
+    seen: dict = {}
+    for nid in sorted(nodes, key=_key):
+        cls = nodes[nid]["class_type"]
+        label[nid] = f"{cls}#{seen.get(cls, 0)}"
+        seen[cls] = seen.get(cls, 0) + 1
+
+    edges: list = []
+    optional_wired: list = []
+    for nid in sorted(nodes, key=_key):
+        cls = nodes[nid]["class_type"]
+        optional = set(((object_info.get(cls) or {}).get("input") or {})
+                       .get("optional") or {})
+        for name, value in (nodes[nid].get("inputs") or {}).items():
+            if not (isinstance(value, list) and len(value) == 2
+                    and isinstance(value[1], (int, float))):
+                continue
+            src = str(value[0])
+            if src not in label:
+                continue
+            edges.append(f"{label[src]}:{int(value[1])} -> {label[nid]}.{name}")
+            # A switch's `on_true` or a math node's operand is optional and wired in
+            # every graph that uses one; saying so teaches nothing. The ones worth
+            # naming are on nodes that do the work.
+            if name in optional and not _is_utility_class(cls):
+                optional_wired.append(f"{label[nid]}.{name}")
+    return tuple(edges[:cap]), tuple(dict.fromkeys(optional_wired))
+
+
 def _recipe_build_spec(member_files: list, model: str = "",
                        required_classes: set | None = None) -> dict:
     """Build spec from the recipe's BEST-matching member template.
 
     Returns ``{"node_defaults": {class: {input: value}}, "build_nodes":
-    [{"node_class": cls, "count": n}]}``. ``node_defaults`` gives correct node
-    configs (weight_dtype, model-file variant, ...) so a from-scratch build does
-    not guess. ``build_nodes`` is the COMPLETE node list of the member - unlike
-    the recipe's invariant ``required_nodes`` (an intersection across members),
-    it keeps model-specific nodes such as ``WanImageToVideo`` that the build
-    otherwise omits. The member is chosen to match the recipe's model
-    (name-token overlap) then required-class coverage.
+    [{"node_class": cls, "count": n}], "reference_member": name,
+    "reference_wiring": [...], "load_bearing_inputs": [...]}``.
+    ``node_defaults`` gives correct node configs (weight_dtype, model-file variant,
+    ...) so a from-scratch build does not guess. ``build_nodes`` is the COMPLETE
+    node list of the member - unlike the recipe's invariant ``required_nodes`` (an
+    intersection across members), it keeps model-specific nodes such as
+    ``WanImageToVideo`` that the build otherwise omits. ``reference_wiring`` is that
+    same member's edge list, which is the only wiring in the recipe precise enough
+    to build from (see :func:`_reference_wiring`). The member is chosen to match the
+    recipe's model (name-token overlap) then required-class coverage.
     """
     from collections import Counter
     required_classes = required_classes or set()
@@ -3220,7 +3307,8 @@ def _recipe_build_spec(member_files: list, model: str = "",
         return [{"node_class": c, "count": n} for c, n in sorted(counter.items())]
 
     ordered = sorted(member_files or [], key=_name_score, reverse=True)
-    best = {"node_defaults": {}, "build_nodes": []}
+    best = {"node_defaults": {}, "build_nodes": [], "reference_member": "",
+            "reference_wiring": [], "load_bearing_inputs": []}
     best_score = (-1, -1)
     for name in ordered:
         try:
@@ -3255,7 +3343,11 @@ def _recipe_build_spec(member_files: list, model: str = "",
                 defaults[cls] = lit
         if not counts:
             continue
-        spec = {"node_defaults": defaults, "build_nodes": _as_nodes(counts)}
+        wiring, load_bearing = _reference_wiring(wf, object_info)
+        spec = {"node_defaults": defaults, "build_nodes": _as_nodes(counts),
+                "reference_member": str(name).removesuffix(".json"),
+                "reference_wiring": list(wiring),
+                "load_bearing_inputs": list(load_bearing)}
         score = (_name_score(name), len(set(counts) & required_classes))
         if score > best_score:
             best_score, best = score, spec
@@ -3304,8 +3396,21 @@ def _recipe_leaf_view(task: dict, model: dict) -> dict:
             "includes model-specific nodes like WanImageToVideo that "
             "'required_nodes' omits); do not drop any and do not substitute a "
             "generic node (e.g. do NOT use VAEEncode where 'build_nodes' lists "
-            "WanImageToVideo). Wire them per 'connection_patterns', expose "
-            "'boundary_ports', and set each node's widget params from "
+            "WanImageToVideo). "
+            "WIRE THEM PER 'reference_wiring', which is the working graph of "
+            "'reference_member' written as "
+            "'<class>#<instance>:<output slot> -> <class>#<instance>.<input name>': "
+            "map each '<class>#<n>' to the node you created for that class and "
+            "instance, and reproduce every line. It is the only wiring here precise "
+            "enough to build from - 'connection_patterns' are role-level triples "
+            "that cannot say which instance, which input or which output slot, and "
+            "are often empty. Deviate from it only where the request needs "
+            "something the reference does not do, and then wire what you add. "
+            "Every input named in 'load_bearing_inputs' MUST end up wired: the "
+            "schema calls them optional, so nothing will complain, and the run will "
+            "quietly be wrong (an unwired CreateVideo.audio is a silent video from "
+            "an audio model). "
+            "Expose 'boundary_ports', and set each node's widget params from "
             "'node_defaults' (weight_dtype, model-file variant, ...) - these are "
             "template-verified, so do NOT guess or 'match the filename' for "
             "weight_dtype. Confirm each node's input names/slots with "
