@@ -628,6 +628,43 @@ def get_model_info(model_id: str) -> str:
         return json.dumps({"ok": False, "error": str(exc)})
 
 
+import threading as _threading
+
+# Stop for downloads. A download runs in a worker thread, which cancelling the
+# turn cannot reach, so pressing Stop left a multi-GB fetch running and the turn
+# waiting on it. The flag is checked between chunks, and the open responses are
+# closed so a read that is waiting on the network ends at once. The partial
+# (.downloading) file stays, and the next attempt resumes it.
+_download_cancel = _threading.Event()
+_active_downloads: set = set()
+_active_lock = _threading.Lock()
+
+_CANCELLED_MSG = ("Download stopped by the user. The partial file is kept; downloading the same "
+                  "file again resumes where it stopped.")
+
+
+class DownloadCancelled(Exception):
+    """The user stopped the download."""
+
+
+def cancel_downloads() -> int:
+    """Stop every model download in progress. Returns how many were running."""
+    _download_cancel.set()
+    with _active_lock:
+        resps = list(_active_downloads)
+    for r in resps:
+        try:
+            r.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return len(resps)
+
+
+def clear_download_cancel() -> None:
+    """Allow downloads again — at the start of the next turn."""
+    _download_cancel.clear()
+
+
 @tool
 def download_hf_model(
     model_id: str,
@@ -714,6 +751,8 @@ def download_hf_model(
         if resume_from:
             headers["Range"] = f"bytes={resume_from}-"
 
+        if _download_cancel.is_set():
+            return json.dumps({"ok": False, "cancelled": True, "error": _CANCELLED_MSG})
         resp = requests.get(url, headers=headers, stream=True, timeout=60)
         resp.raise_for_status()
 
@@ -801,6 +840,8 @@ def download_hf_model(
         # Write into the .downloading temp (append when resuming), rename on
         # completion. The partial is deliberately kept on error so the next
         # attempt resumes from where it stopped rather than restarting.
+        with _active_lock:
+            _active_downloads.add(resp)
         try:
             with open(tmp_path, "ab" if resume_from else "wb") as f, tqdm(
                 total=total_size if total_size > 0 else None,
@@ -815,14 +856,17 @@ def download_hf_model(
                 leave=True,
             ) as pbar:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if _download_cancel.is_set():
+                        raise DownloadCancelled(filename)
                     if chunk:
                         f.write(chunk)
                         pbar.update(len(chunk))
 
             # Rename temp → final
             tmp_path.rename(dest_path)
-        except Exception:
-            raise
+        finally:
+            with _active_lock:
+                _active_downloads.discard(resp)
 
         size_mb = round(dest_path.stat().st_size / (1024 * 1024), 2)
 
@@ -850,5 +894,10 @@ def download_hf_model(
             hint = ""
         return json.dumps({"ok": False, "error": f"HTTP {status}{hint}: {body}"})
     except Exception as exc:
+        # A closed response mid-read raises whatever urllib3 raises; the flag
+        # says what actually happened.
+        if _download_cancel.is_set():
+            logger.info("download_hf_model: %s stopped by the user", filename)
+            return json.dumps({"ok": False, "cancelled": True, "error": _CANCELLED_MSG})
         logger.error("Error in download_hf_model: %s", exc, exc_info=True)
         return json.dumps({"ok": False, "error": str(exc)})

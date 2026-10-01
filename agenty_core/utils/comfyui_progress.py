@@ -166,6 +166,57 @@ async def _check_terminal(client, prompt_id: str):
     }
 
 
+# A long job is legitimate — a video render can take an hour — so the wait has
+# no cap by default. What it must not do is go quiet or miss its own ending:
+# the terminal state is re-checked on a wall clock whatever else ComfyUI is
+# saying, and a heartbeat says where the job stands when nothing else has.
+_CHECK_EVERY = 30.0
+_HEARTBEAT = 60.0
+_POLL_EVERY = 5.0         # without a socket
+
+
+def _queue_status(client, prompt_id: str, started: float) -> str:
+    """One line on where *prompt_id* stands, for the heartbeat."""
+    import time
+    mins = int((time.monotonic() - started) // 60)
+    try:
+        q = client.get("/queue")
+    except Exception:  # noqa: BLE001
+        q = None
+    if isinstance(q, dict):
+        if any(isinstance(e, (list, tuple)) and len(e) > 1 and str(e[1]) == str(prompt_id)
+               for e in q.get("queue_running") or []):
+            return f"⏳ Still running in ComfyUI — {mins} min so far"
+        pending = [str(e[1]) for e in q.get("queue_pending") or []
+                   if isinstance(e, (list, tuple)) and len(e) > 1]
+        if str(prompt_id) in pending:
+            ahead = pending.index(str(prompt_id)) + len(q.get("queue_running") or [])
+            return f"⏳ Queued in ComfyUI — {ahead} job(s) ahead, waiting {mins} min"
+    return f"⏳ Waiting for ComfyUI — {mins} min so far"
+
+
+async def _poll_until_done(client, prompt_id: str, started: float, *, timeout: float | None = None):
+    """Follow a job by polling when the WebSocket is not there to follow it.
+
+    A dropped socket (ComfyUI restarted, the network blinked) used to end the
+    wait with "WebSocket connection failed" while the job itself kept running,
+    so its result was never collected. Polling the terminal state is slower to
+    notice the end, and enough.
+    """
+    import time
+    last_line = time.monotonic()
+    while timeout is None or time.monotonic() - started < timeout:
+        await asyncio.sleep(_POLL_EVERY)
+        fallback = await _check_terminal(client, prompt_id)
+        if fallback is not None:
+            yield fallback
+            return
+        if time.monotonic() - last_line >= _HEARTBEAT:
+            last_line = time.monotonic()
+            yield _queue_status(client, prompt_id, started)
+    yield {"error": f"ComfyUI job did not finish within {timeout:.0f}s"}
+
+
 async def _fetch_history_with_outputs(client, prompt_id: str, *, attempts: int = 10, delay: float = 0.4):
     """Fetch /history for a finished prompt, retrying until its outputs appear.
 
@@ -204,7 +255,7 @@ async def stream_comfyui_job(
     prompt_id: str,
     client_id: str,
     *,
-    timeout: float = 30 * 60,
+    timeout: float | None = None,
     node_titles: dict[str, str] | None = None,
     console: bool | None = None,
 ) -> AsyncGenerator:
@@ -213,7 +264,11 @@ async def stream_comfyui_job(
     Args:
         prompt_id:   Returned by POST /prompt.
         client_id:   The same client_id passed to /prompt; used to subscribe.
-        timeout:     Hard cap on total wait time (seconds).
+        timeout:     Optional cap on total wait time (seconds). None (default):
+                     wait as long as the job is queued or running — renders can
+                     legitimately take an hour. The job's state is re-checked
+                     every 30 s regardless, so an end that the socket never
+                     reported is still noticed.
         node_titles: Optional mapping of node_id -> display name, used to
                      annotate progress messages with human-readable names.
         console:     Relay ComfyUI's own terminal output alongside the progress
@@ -244,9 +299,14 @@ async def stream_comfyui_job(
         yield pre
         return
 
+    import time as _time
+
     last_progress_pct: int = -1
     last_emit_loop_t: float = 0.0
-    elapsed: float = 0.0
+    started = _time.monotonic()
+    last_check = started      # wall clock of the last terminal-state check
+    last_line = started       # wall clock of the last line about THIS job
+    ws_lost = False
     RECV_TIMEOUT = 5.0  # seconds — also drives periodic history fallback check
 
     # ComfyUI's own terminal, relayed for the life of this job. Best-effort and
@@ -269,7 +329,7 @@ async def stream_comfyui_job(
             loop = asyncio.get_running_loop()
             last_heard = loop.time()
             try:
-                while elapsed < timeout:
+                while timeout is None or _time.monotonic() - started < timeout:
                     if recv_fut is None:
                         recv_fut = asyncio.ensure_future(ws.recv())
                     if tap is not None and console_fut is None:
@@ -303,17 +363,40 @@ async def stream_comfyui_job(
                     # so a chatty console — which wakes the wait early, over and
                     # over — can never starve the check.
                     if loop.time() - last_heard >= RECV_TIMEOUT:
-                        elapsed += RECV_TIMEOUT
                         last_heard = loop.time()
+                        last_check = _time.monotonic()
                         fallback = await _check_terminal(client, prompt_id)
                         if fallback is not None:
                             yield fallback
                             return
 
+                    # ...and on a wall clock, whatever the socket is saying.
+                    # Other jobs' traffic resets `last_heard` above, so while
+                    # ComfyUI was busy with anything else the check never ran
+                    # and a missed ending meant waiting for as long as that
+                    # lasted, with nothing on screen.
+                    _now = _time.monotonic()
+                    if _now - last_check >= _CHECK_EVERY:
+                        last_check = _now
+                        fallback = await _check_terminal(client, prompt_id)
+                        if fallback is not None:
+                            yield fallback
+                            return
+                    if _now - last_line >= _HEARTBEAT:
+                        last_line = _now
+                        yield _queue_status(client, prompt_id, started)
+
                     if recv_fut is None or not recv_fut.done():
                         continue
                     last_heard = loop.time()
-                    raw = recv_fut.result()
+                    try:
+                        raw = recv_fut.result()
+                    except Exception as _exc:  # noqa: BLE001 — socket closed / dropped
+                        logger.warning("comfyui_progress: WebSocket lost for prompt_id=%s (%s) "
+                                       "— following the job by polling", prompt_id, _exc)
+                        recv_fut = None
+                        ws_lost = True
+                        break
                     recv_fut = None
 
                     if isinstance(raw, (bytes, bytearray)):
@@ -332,6 +415,8 @@ async def stream_comfyui_job(
                     # Filter to our prompt where the message carries one.
                     if msg_prompt_id and msg_prompt_id != prompt_id:
                         continue
+                    if msg_prompt_id == prompt_id:
+                        last_line = _time.monotonic()   # news of this job: no heartbeat due
 
                     if msg_type == "status":
                         qrem = (
@@ -425,17 +510,25 @@ async def stream_comfyui_job(
                         yield {"interrupted": True, "error": "Execution interrupted"}
                         return
 
-                # Hard timeout
-                yield {"error": f"WebSocket timeout after {timeout:.0f}s"}
-                return
+                if not ws_lost:
+                    # Only reached with a cap the caller asked for.
+                    yield {"error": f"ComfyUI job did not finish within {timeout:.0f}s"}
+                    return
             finally:
                 for _fut in (recv_fut, console_fut):
                     if _fut is not None:
                         _fut.cancel()
 
-    except Exception as exc:
-        logger.error("comfyui_progress: WebSocket failed for prompt_id=%s: %s", prompt_id, exc)
-        yield {"error": f"WebSocket connection failed: {exc}"}
+    except Exception as exc:  # noqa: BLE001 — could not connect, or the socket broke
+        logger.warning("comfyui_progress: WebSocket failed for prompt_id=%s (%s) "
+                       "— following the job by polling", prompt_id, exc)
+        ws_lost = True
     finally:
         if tap is not None:
             tap.close()
+
+    # The job outlives a socket that could not be opened or was dropped: keep
+    # following it, by polling, until it really ends.
+    if ws_lost:
+        async for ev in _poll_until_done(client, prompt_id, started, timeout=timeout):
+            yield ev
