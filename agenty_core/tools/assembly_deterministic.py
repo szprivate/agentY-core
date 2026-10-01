@@ -171,6 +171,25 @@ def combo_options(spec):
     return None
 
 
+_GENERIC_MODEL_TOKENS = frozenset({
+    "model", "models", "diffusion", "pytorch", "vae", "clip", "text", "encoder", "encoders",
+    "unet", "lora", "checkpoint", "comfy", "comfyui", "image", "video", "audio", "latent",
+    "upscale", "upscaler", "spatial", "temporal", "the",
+})
+
+
+def _model_brand(stem: str) -> str | None:
+    """The first distinctive token of a model file's name (``ltx``, ``flux1``),
+    or None when it starts with a generic word or a token too short to trust."""
+    for tok in re.findall(r"[a-z0-9]+", stem.lower()):
+        if tok.isdigit():
+            continue
+        if tok in _GENERIC_MODEL_TOKENS or len(tok) < 3:
+            return None
+        return tok
+    return None
+
+
 def snap_combo(val: str, opts: list, fallback_first: bool = True):
     """Snap an invalid combo value (e.g. a model file the template references but
     that isn't installed) to the best same-family option. With ``fallback_first``
@@ -184,6 +203,17 @@ def snap_combo(val: str, opts: list, fallback_first: bool = True):
         if ob == base or ob.rsplit(".", 1)[0] == stem:
             return o
     vt = set(re.findall(r"[a-z0-9]+", stem))
+    if not fallback_first:
+        # A model file stays in its family. Word overlap alone tied an LTX-2.5
+        # video VAE between "LTX2/ltx-2-3-22b-VAE" and "hunyuan_video_vae_bf16"
+        # (video, vae, bf16) and took the Hunyuan one, which loads and then
+        # breaks the graph. When any option carries the file's brand (its first
+        # distinctive token: ltx, flux1, wan2, qwen, hunyuan), choose among those.
+        brand = _model_brand(stem)
+        if brand:
+            same = [o for o in opts if brand in str(o).replace("\\", "/").rsplit("/", 1)[-1].lower()]
+            if same:
+                opts = same
     best, best_n = None, 0
     for o in opts:
         ot = set(re.findall(r"[a-z0-9]+",
