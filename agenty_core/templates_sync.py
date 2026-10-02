@@ -309,10 +309,21 @@ def _is_workflow(data) -> bool:
 
 
 def _index_entry(name: str, pack: str, workflow: str, data: dict) -> dict:
-    """The catalog entry of one example: what it loads and saves, and whose it is."""
-    entry = {"name": name, "title": workflow,
-             "description": f"Example workflow \"{workflow}\" shipped with the {pack} "
-                            f"custom node pack — how its nodes are meant to be wired.",
+    """The catalog entry of one example: what it does, loads and saves, and whose it is.
+
+    The description leads with the operation and the pack's own nodes, read off
+    the graph — its first sentence is all the researcher sees beside the name, and
+    "Example workflow X shipped with pack Y" told it nothing the name had not.
+    """
+    description = (f"Example workflow \"{workflow}\" shipped with the {pack} "
+                   f"custom node pack.")
+    try:
+        from agenty_core.utils.workflow_facts import describe_from_facts, workflow_facts  # noqa: PLC0415
+        description = describe_from_facts(workflow_facts(data, name), pack=pack, workflow=workflow)
+    except Exception:  # noqa: BLE001
+        pass
+    entry = {"name": name, "title": workflow, "description": description,
+             "description_source": "graph",
              "models": [], "io": {"inputs": [], "outputs": []}}
     try:
         from agenty_core.utils.workflow_parser import parse_workflow  # noqa: PLC0415
@@ -325,6 +336,18 @@ def _index_entry(name: str, pack: str, workflow: str, data: dict) -> dict:
     except Exception:  # noqa: BLE001 — a graph the parser cannot read is still a usable template
         pass
     return entry
+
+
+def _written_descriptions(index_path: Path) -> dict:
+    """{name: entry} of the entries in *index_path* whose description a model wrote."""
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {t["name"]: t for g in data if isinstance(g, dict)
+            for t in (g.get("templates") or [])
+            if isinstance(t, dict) and t.get("name") and t.get("description_source") == "llm"
+            and t.get("description") and t.get("description_sha")}
 
 
 def sync_node_pack_examples(base_url: str, *, root: Path | None = None, get=None,
@@ -390,6 +413,17 @@ def sync_node_pack_examples(base_url: str, *, root: Path | None = None, get=None
         index = [{"moduleName": pack, "title": f"{pack} (node pack examples)",
                   "templates": [describe(name, pack, wf, data) for name, wf, data in items]}
                  for pack, items in sorted(entries.items())]
+        # A description written for this exact file (agentY's model pass records
+        # the file's sha beside it) outlives the rewrite; one for a file that has
+        # since changed does not.
+        written = _written_descriptions(mirror / "index.json")
+        for group in index:
+            for tpl in group["templates"]:
+                old = written.get(tpl.get("name"))
+                sha = blob_sha(fetched.get(f"{tpl.get('name')}.json", b""))
+                if old and old.get("description_sha") == sha:
+                    tpl.update({k: old[k] for k in ("description", "description_source",
+                                                    "description_sha")})
         tmp = mirror / "index.json.tmp"
         tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, mirror / "index.json")
