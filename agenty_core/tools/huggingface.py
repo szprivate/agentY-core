@@ -707,6 +707,32 @@ def download_hf_model(
             "hint": "Treat this model as unavailable: report it as a missing "
                     "model and do not retry the download.",
         })
+    # Nothing to fetch when ComfyUI already has it. Two ways the agent got here
+    # anyway: a file a node offers as its own option (a preprocessor's weights,
+    # kept in that pack's folder and in no model list), and an installed file a
+    # loader failed to READ once (a storage hiccup) — where a second copy from
+    # some repository would not have been the same file, nor a fix.
+    try:
+        from agenty_core.tools.comfyui import installed_model, node_managed_option
+        _have = installed_model(filename)
+        if _have:
+            return json.dumps({
+                "ok": True, "skipped": True, "path": _have,
+                "message": f"'{filename}' is already installed ({_have}). Nothing was downloaded. "
+                           "If a node failed to load it, that was a read error, not a missing "
+                           "file: run the workflow again.",
+            })
+        _managed = node_managed_option(filename)
+        if _managed:
+            return json.dumps({
+                "ok": True, "skipped": True,
+                "message": f"'{filename}' is an option the node offers itself "
+                           f"({', '.join(_managed['offered_by'][:6])}); such a node keeps and fetches its "
+                           f"weights itself. Nothing was downloaded: set the input to "
+                           f"'{_managed['value']}' and run.",
+            })
+    except Exception:  # noqa: BLE001 — a failed lookup must not block a real download
+        pass
     try:
         # Resolve destination: prefer the ComfyUI extra model path (the additional
         # model path given at server startup — often a different, larger drive)

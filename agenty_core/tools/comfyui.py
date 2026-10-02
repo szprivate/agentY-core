@@ -1662,6 +1662,76 @@ def _fuzzy_model_match(query_key: str, basename_index: dict[str, str]) -> str | 
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+def _model_inventory_index() -> dict[str, str]:
+    """lowercase file name -> the path ComfyUI lists it under, for every model
+    in the cached inventory (config/models.json)."""
+    models_path = _project_root() / "config" / "models.json"
+    available: dict = {}
+    if models_path.exists():
+        raw = "".join(
+            ln for ln in models_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not ln.lstrip().startswith("//")
+        )
+        data = json.loads(raw) if raw.strip() else {}
+        available = data.get("available", {})
+    index: dict[str, str] = {}
+    for folder_entries in available.values():
+        if not isinstance(folder_entries, list):
+            continue
+        for entry in folder_entries:
+            index[Path(entry).name.lower()] = entry
+    return index
+
+
+def installed_model(name: str) -> str | None:
+    """The inventory path of a model file with exactly this file name, or None."""
+    try:
+        return _model_inventory_index().get(Path(str(name)).name.lower())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def node_managed_option(name: str) -> dict | None:
+    """A node that offers this file name as one of its own menu options.
+
+    Preprocessor and detector packs keep their weights in their own folders and
+    fetch them on first use: ``DepthAnythingV2Preprocessor.ckpt_name`` lists
+    ``depth_anything_v2_vitl.pth``, which is in no ComfyUI model folder and so
+    not in the inventory. Asked about it, check_model said "False"; the agent
+    took that for a missing model and went to download a copy from an unrelated
+    repository. A name a node offers is a value that node accepts — nothing to
+    install. Returns ``{"node_class", "input", "value", "offered_by"}``: the first
+    node found, and every ``Class.input`` that offers the name.
+    """
+    want = Path(str(name)).name.lower()
+    if not want:
+        return None
+    try:
+        object_info = _get_object_info()
+    except Exception:  # noqa: BLE001
+        return None
+    found: list[tuple] = []
+    for cls, info in (object_info or {}).items():
+        spec_groups = (info or {}).get("input") or {}
+        for group in ("required", "optional"):
+            for inp, spec in (spec_groups.get(group) or {}).items():
+                options = None
+                if isinstance(spec, list) and spec:
+                    if isinstance(spec[0], list):
+                        options = spec[0]
+                    elif spec[0] == "COMBO" and len(spec) > 1 and isinstance(spec[1], dict):
+                        options = spec[1].get("options")
+                for opt in options or ():
+                    if isinstance(opt, str) and Path(opt).name.lower() == want:
+                        found.append((cls, inp, opt))
+                        break
+    if not found:
+        return None
+    cls, inp, opt = found[0]
+    return {"node_class": cls, "input": inp, "value": opt,
+            "offered_by": [f"{c}.{i}" for c, i, _ in found]}
+
+
 @tool
 def check_model(model_names: list | str) -> str:
     """Check whether model files exist in the current ComfyUI installation.
@@ -1686,6 +1756,11 @@ def check_model(model_names: list | str) -> str:
       ``Load Checkpoint`` or ``Load LoRA`` node.
     - The string ``"False"`` when the model is not found in the inventory.
 
+    A name that is in no model folder but IS one of a node's own menu options
+    (a preprocessor's or detector's weights, which that node keeps and fetches
+    itself) comes back as that option value, with a line under ``"_notes"``
+    saying which node offers it. It needs no download.
+
     Example output::
 
         {
@@ -1697,31 +1772,27 @@ def check_model(model_names: list | str) -> str:
     return ``"False"``.
     """
     try:
-        models_path = _project_root() / "config" / "models.json"
-        available: dict = {}
-        if models_path.exists():
-            raw = "".join(
-                ln for ln in models_path.read_text(encoding="utf-8").splitlines(keepends=True)
-                if not ln.lstrip().startswith("//")
-            )
-            data = json.loads(raw) if raw.strip() else {}
-            available = data.get("available", {})
+        # Flat lookup: lowercase_basename -> full_relative_path
+        basename_index = _model_inventory_index()
 
-        # Build a flat lookup: lowercase_basename -> full_relative_path
-        basename_index: dict[str, str] = {}
-        for folder_entries in available.values():
-            if not isinstance(folder_entries, list):
-                continue
-            for entry in folder_entries:
-                basename_index[Path(entry).name.lower()] = entry
-
-        result: dict[str, str] = {}
-        for name in model_names:
+        result: dict = {}
+        notes: dict[str, str] = {}
+        for name in _as_list(model_names):
+            name = str(name)
             key = Path(name).name.lower()
             hit = basename_index.get(key)
             if hit is None:
                 hit = _fuzzy_model_match(key, basename_index)
+            if not hit:
+                managed = node_managed_option(name)
+                if managed:
+                    hit = managed["value"]
+                    notes[name] = (f"not in a ComfyUI model folder: it is an option the node offers itself "
+                                   f"({', '.join(managed['offered_by'][:6])}). Such a node keeps and "
+                                   f"fetches its weights itself — use the value as is, do not download it.")
             result[name] = hit if hit else "False"
+        if notes:
+            result["_notes"] = notes
 
         return json.dumps(result, indent=2)
     except Exception as e:
