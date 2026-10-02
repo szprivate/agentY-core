@@ -252,5 +252,48 @@ class AMissingDynamicComboIsDefaulted(unittest.TestCase):
         self.assertEqual(wf[new]["inputs"]["format.codec"], "auto")
 
 
+
+class AnInputOneLetterOff(unittest.TestCase):
+    """`SaveImage.image` beside `images` passed validation and crashed the node:
+    "save_images() got an unexpected keyword argument 'image'"."""
+
+    REQUIRED = {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {"default": "ComfyUI"}]}
+
+    def test_the_stray_one_is_dropped_when_the_real_one_is_set(self):
+        n = node({"images": ["8", 0], "image": ["8", 0], "filename_prefix": "x"})
+        notes = []
+        self.assertEqual(harden_node_inputs(n, self.REQUIRED, None, {}, None, notes), [])
+        self.assertEqual(n["inputs"], {"images": ["8", 0], "filename_prefix": "x"})
+        self.assertTrue(any("'image'" in x for x in notes))
+
+    def test_it_takes_the_real_name_when_that_is_missing(self):
+        n = node({"image": ["8", 0], "filename_prefix": "x"})
+        self.assertEqual(harden_node_inputs(n, self.REQUIRED, None, {}), [])
+        self.assertEqual(n["inputs"]["images"], ["8", 0])
+        self.assertNotIn("image", n["inputs"])
+
+    def test_other_undeclared_inputs_are_left_alone(self):
+        n = node({"images": ["8", 0], "filename_prefix": "x", "lora_3": "a.safetensors", "format.codec": "auto"})
+        harden_node_inputs(n, self.REQUIRED, None, {})
+        self.assertIn("lora_3", n["inputs"])
+        self.assertIn("format.codec", n["inputs"])
+
+
+class ALegacyPrimitiveNodeIsInlined(unittest.TestCase):
+    """A template's frontend-only "Song Duration = 120" PrimitiveNode stayed in
+    the API graph: invalid, replaced by a repair agent on every build, and the
+    length the user asked for was never applied to the inputs it fed."""
+
+    def test_its_value_lands_on_every_input_it_fed(self):
+        from agenty_core.tools.comfyui import _inline_primitive_nodes
+        wf = {"99": {"class_type": "PrimitiveNode", "inputs": {"__widgets_values": [120, "fixed"]}},
+              "98": {"class_type": "EmptyAceStep1.5LatentAudio", "inputs": {"seconds": ["99", 0], "batch_size": 1}},
+              "94": {"class_type": "TextEncodeAceStepAudio1.5", "inputs": {"duration": ["99", 0], "seed": ["109", 0]}}}
+        self.assertEqual(_inline_primitive_nodes(wf), ["99"])
+        self.assertNotIn("99", wf)
+        self.assertEqual(wf["98"]["inputs"]["seconds"], 120)
+        self.assertEqual(wf["94"]["inputs"], {"duration": 120, "seed": ["109", 0]})
+
+
 if __name__ == "__main__":
     unittest.main()

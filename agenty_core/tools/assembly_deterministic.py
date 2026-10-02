@@ -313,6 +313,39 @@ def default_dynamic_combos(node: dict, required: dict, reshaped: list | None = N
             return
 
 
+def fix_plural_slips(node: dict, required: dict, optional: dict | None = None,
+                     reshaped: list | None = None) -> None:
+    """An input the node does not declare, one trailing "s" away from one it
+    does: ``SaveImage.image`` for ``images``.
+
+    ComfyUI validates the declared inputs and hands the node everything in the
+    prompt, so the stray one passes validation and crashes the node when it runs
+    ("save_images() got an unexpected keyword argument 'image'"). When the
+    declared input is already there the stray one is dropped; when it is not,
+    the stray one was the attempt at it and takes its name.
+
+    Only this one slip. An undeclared input is not in general a mistake: some
+    custom nodes take inputs they never declare, and removing those would break
+    them.
+    """
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        return
+    declared = set(required or {}) | set(optional or {})
+    for name in [k for k in inputs if k not in declared and "." not in str(k) and not str(k).startswith("__")]:
+        twin = name + "s" if name + "s" in declared else (name[:-1] if name.endswith("s") and name[:-1] in declared else None)
+        if twin is None:
+            continue
+        value = inputs.pop(name)
+        if twin in inputs:
+            note = f"input '{name}': not an input of this node ('{twin}' is, and is set) — removed"
+        else:
+            inputs[twin] = value
+            note = f"input '{name}': not an input of this node — renamed to '{twin}'"
+        if reshaped is not None:
+            reshaped.append(note)
+
+
 def is_autogrow_spec(spec) -> bool:
     """True for a V3 autogrow group (``COMFY_AUTOGROW_V3``)."""
     return (isinstance(spec, (list, tuple)) and bool(spec) and isinstance(spec[0], str)
@@ -599,6 +632,8 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
     # A required dynamic combo left out entirely gets its default option: ComfyUI
     # accepts the graph without it and fails only when the node runs.
     default_dynamic_combos(node, required, reshaped)
+    # `image` on a node whose input is `images`: accepted, then fatal at run time.
+    fix_plural_slips(node, required, optional, reshaped)
     # The widgets an option contributes have specs too — hoist them so the
     # repairs below default, clamp and snap them like anything else.
     _sub_req, _sub_opt = dynamic_sub_specs(node, required, optional)

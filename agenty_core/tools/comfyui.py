@@ -1148,7 +1148,40 @@ def _convert_graph_to_api(workflow: dict) -> dict:
                 api_node["_meta"]["unmapped_widgets"] = unmapped_widgets
         api_workflow[nid] = api_node
 
+    _inline_primitive_nodes(api_workflow)
     return api_workflow
+
+
+def _inline_primitive_nodes(api_workflow: dict) -> list[str]:
+    """Write each legacy ``PrimitiveNode``'s value into the inputs it feeds, and
+    drop the node. Returns the ids removed.
+
+    ``PrimitiveNode`` exists only in the frontend: it holds one widget value and
+    the frontend copies that value into every input wired to it when it builds
+    the API prompt. The server has no such class. Left in, a template's "Song
+    Duration = 120" node made the graph invalid, a repair agent replaced it with
+    a PrimitiveFloat on every build, and the length the user asked for was never
+    applied — the inputs that carry it (``seconds``, ``duration``) held a link,
+    not a value, so nothing knew to set them. Inlined, they are ordinary inputs.
+    """
+    removed: list[str] = []
+    for nid, node in list(api_workflow.items()):
+        if not isinstance(node, dict) or node.get("class_type") != "PrimitiveNode":
+            continue
+        values = (node.get("inputs") or {}).get("__widgets_values")
+        if not isinstance(values, list) or not values:
+            continue                # nothing to inline: leave it for the repair pass to report
+        value = values[0]           # [value, control_after_generate]
+        for other in api_workflow.values():
+            inputs = other.get("inputs") if isinstance(other, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            for name, link in list(inputs.items()):
+                if isinstance(link, list) and len(link) == 2 and str(link[0]) == str(nid):
+                    inputs[name] = value
+        del api_workflow[nid]
+        removed.append(str(nid))
+    return removed
 
 
 def _canvas_node_size(title: str, spec: dict, conns: list, inputs: dict,
