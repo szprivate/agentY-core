@@ -15,7 +15,7 @@ from agenty_core.tools._batch import as_list as _as_list, one_or_many as _one_or
 
 
 @tool
-def read_text_file(path: list) -> str:
+def read_text_file(path: list | str) -> str:
     """Read one or more text files from disk and return their contents as plain strings.
 
     Use this tool to inspect configuration files, JSON templates, markdown

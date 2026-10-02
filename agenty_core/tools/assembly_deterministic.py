@@ -286,6 +286,33 @@ def dynamic_sub_specs(node: dict, required: dict, optional: dict | None = None) 
     return req_out, opt_out
 
 
+def default_dynamic_combos(node: dict, required: dict, reshaped: list | None = None) -> None:
+    """Give a required dynamic combo that is absent its default option, and the
+    same for the dynamic combos that option requires in turn.
+
+    ComfyUI's own validation does not ask for these: a ``SaveVideo`` with no
+    ``format`` is accepted, queued, renders the whole video and only then fails
+    with ``execute() missing 1 required positional argument: 'format'``. They are
+    not connections either, so reporting them as "missing" left nothing to wire.
+    The first option is what the frontend's widget starts on.
+    """
+    inputs = node.setdefault("inputs", {})
+    for _ in range(4):                      # an option's own dynamic combos, a few levels deep
+        sub_req, _sub_opt = dynamic_sub_specs(node, required, None)
+        changed = False
+        for name, spec in {**(required or {}), **sub_req}.items():
+            keys = _dynamic_combo_option_keys(spec)
+            if not keys or name in inputs:
+                continue
+            default = spec[1].get("default") if len(spec) > 1 and isinstance(spec[1], dict) else None
+            inputs[name] = default if default in keys else keys[0]
+            changed = True
+            if reshaped is not None:
+                reshaped.append(f"input '{name}': was missing, set to {inputs[name]!r} (its default option)")
+        if not changed:
+            return
+
+
 def is_autogrow_spec(spec) -> bool:
     """True for a V3 autogrow group (``COMFY_AUTOGROW_V3``)."""
     return (isinstance(spec, (list, tuple)) and bool(spec) and isinstance(spec[0], str)
@@ -569,6 +596,9 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
     # A preset that decides the size makes a stray width/height both redundant
     # and, when it falls outside the input's own range, fatal.
     drop_overridden_dimensions(node, required, optional, reshaped)
+    # A required dynamic combo left out entirely gets its default option: ComfyUI
+    # accepts the graph without it and fails only when the node runs.
+    default_dynamic_combos(node, required, reshaped)
     # The widgets an option contributes have specs too — hoist them so the
     # repairs below default, clamp and snap them like anything else.
     _sub_req, _sub_opt = dynamic_sub_specs(node, required, optional)
@@ -910,6 +940,10 @@ def ensure_output_node(workflow: dict, object_info: dict) -> str | None:
         "inputs": {"video": [video_src, 0], "filename_prefix": "agent/video"},
         "_meta": {"title": "Save Video (auto)"},
     }
+    # Its `format` (and the codec that format requires): without them the node
+    # validates and then fails after the whole video has rendered.
+    default_dynamic_combos(workflow[new_id], ((object_info.get("SaveVideo") or {}).get("input") or {})
+                           .get("required") or {})
     return new_id
 
 

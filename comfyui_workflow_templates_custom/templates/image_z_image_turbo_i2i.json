@@ -6,13 +6,6 @@
     },
     "_meta": { "title": "Load Input Image" }
   },
-  "2": {
-    "class_type": "GetImageSize",
-    "inputs": {
-      "image": ["1", 0]
-    },
-    "_meta": { "title": "Get Image Size" }
-  },
   "3": {
     "class_type": "UNETLoader",
     "inputs": {
@@ -38,15 +31,12 @@
     "_meta": { "title": "Load VAE" }
   },
   "6": {
-    "class_type": "TextEncodeZImageOmni",
+    "class_type": "CLIPTextEncode",
     "inputs": {
       "clip": ["4", 0],
-      "prompt": "A photorealistic image.",
-      "auto_resize_images": true,
-      "vae": ["5", 0],
-      "image1": ["1", 0]
+      "text": "A photorealistic image."
     },
-    "_meta": { "title": "Positive Conditioning (Z-Image Omni)" }
+    "_meta": { "title": "Positive Prompt" }
   },
   "7": {
     "class_type": "CLIPTextEncode",
@@ -70,15 +60,6 @@
       "vae": ["5", 0]
     },
     "_meta": { "title": "VAE Encode Input Image" }
-  },
-  "10": {
-    "class_type": "EmptySD3LatentImage",
-    "inputs": {
-      "width": ["2", 0],
-      "height": ["2", 1],
-      "batch_size": 1
-    },
-    "_meta": { "title": "Empty Latent (size from input)" }
   },
   "11": {
     "class_type": "ModelSamplingAuraFlow",

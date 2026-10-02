@@ -1630,7 +1630,7 @@ def _fuzzy_model_match(query_key: str, basename_index: dict[str, str]) -> str | 
 
 
 @tool
-def check_model(model_names: list) -> str:
+def check_model(model_names: list | str) -> str:
     """Check whether model files exist in the current ComfyUI installation.
 
     Searches the cached model inventory in config/models.json (refreshed at
@@ -2336,7 +2336,7 @@ def duplicate_workflow(source_path: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @tool
-def get_node_schema(node_class: list) -> str:
+def get_node_schema(node_class: list | str) -> str:
     """Get the schema for one or more ComfyUI nodes: required/optional inputs with types and defaults, output types, and description.
 
     Ask for EVERY node you need in ONE call — the graph you are about to build or
@@ -2380,7 +2380,7 @@ def _get_node_schema_one(node_class: str) -> str:
 
 
 @tool
-def get_workflow_node_info(node_id: list, workflow_path: str) -> str:
+def get_workflow_node_info(node_id: list | str, workflow_path: str) -> str:
     """Return full metadata for one or more nodes inside a saved workflow.
 
     Combines each node's current state (class_type, title, literal inputs,
@@ -2461,7 +2461,7 @@ def _get_workflow_node_info_one(node_id: str, workflow_path: str) -> str:
 
 
 @tool
-def search_nodes(query: list, limit: int = 10) -> str:
+def search_nodes(query: list | str, limit: int = 10) -> str:
     """Search ComfyUI nodes by keyword across names, descriptions, and categories.
 
     Args:
@@ -2933,7 +2933,7 @@ def get_workflow_catalog() -> str:
 
 
 @tool
-def get_workflow_template(template_name: list) -> str:
+def get_workflow_template(template_name: list | str) -> str:
     """Load one or more workflow templates by name. Saves each full workflow to its own file and returns a compact summary with the file path.
 
     Each summary includes: node list (id, class, title, key literal inputs),

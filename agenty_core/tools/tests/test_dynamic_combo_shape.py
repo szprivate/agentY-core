@@ -213,5 +213,44 @@ class TheOptionsOwnInputWins(unittest.TestCase):
         self.assertEqual(harden_node_inputs(n, self.SAVE_REQUIRED, None, self.SAVE_OPTIONAL), [])
 
 
+
+class AMissingDynamicComboIsDefaulted(unittest.TestCase):
+    """A SaveVideo with no `format` passed ComfyUI's validation, rendered the
+    whole video and failed at the save: "execute() missing ... 'format'". Three
+    benchmark cases lost a first attempt (and a full render) to it."""
+
+    CODEC = ["COMFY_DYNAMICCOMBO_V3", {"options": [{"key": "auto", "inputs": {"required": {}}},
+                                                   {"key": "h264", "inputs": {"required": {}}}]}]
+    REQUIRED = {
+        "video": ["VIDEO", {}],
+        "filename_prefix": ["STRING", {"default": "video/ComfyUI"}],
+        "format": ["COMFY_DYNAMICCOMBO_V3", {"options": [
+            {"key": "auto", "inputs": {"required": {"codec": CODEC}}},
+            {"key": "mp4", "inputs": {"required": {"codec": CODEC}}}]}],
+    }
+
+    def test_format_and_the_codec_it_requires_are_filled_in(self):
+        n = node({"video": ["2", 0], "filename_prefix": "v"})
+        notes = []
+        self.assertEqual(harden_node_inputs(n, self.REQUIRED, None, {}, None, notes), [])
+        self.assertEqual(n["inputs"]["format"], "auto")
+        self.assertEqual(n["inputs"]["format.codec"], "auto")
+        self.assertTrue(any("format" in x for x in notes))
+
+    def test_a_chosen_format_is_kept_and_only_its_codec_added(self):
+        n = node({"video": ["2", 0], "filename_prefix": "v", "format": "mp4"})
+        self.assertEqual(harden_node_inputs(n, self.REQUIRED, None, {}), [])
+        self.assertEqual((n["inputs"]["format"], n["inputs"]["format.codec"]), ("mp4", "auto"))
+
+    def test_the_synthesized_save_node_has_them_too(self):
+        from agenty_core.tools.assembly_deterministic import ensure_output_node
+        oi = {"CreateVideo": {"output": ["VIDEO"], "output_node": False},
+              "SaveVideo": {"output": [], "output_node": True, "input": {"required": self.REQUIRED}}}
+        wf = {"1": {"class_type": "CreateVideo", "inputs": {}}}
+        new = ensure_output_node(wf, oi)
+        self.assertEqual(wf[new]["inputs"]["format"], "auto")
+        self.assertEqual(wf[new]["inputs"]["format.codec"], "auto")
+
+
 if __name__ == "__main__":
     unittest.main()
