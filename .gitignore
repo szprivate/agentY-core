@@ -10,3 +10,8 @@ dist/
 # (node signatures from a running ComfyUI). The distilled outputs
 # (workflow_recipes*.json) are committed; this large cache is not.
 config/workflow_recipes_object_info_cache.json
+
+# Example workflows of the node packs installed in the local ComfyUI, mirrored
+# at agent startup (templates_sync.sync_node_pack_examples). A fact about one
+# machine, and other people's files: never committed.
+comfyui_workflow_templates_custom/templates/node_packs/

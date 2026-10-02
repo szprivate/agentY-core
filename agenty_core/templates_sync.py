@@ -267,15 +267,180 @@ def sync_from_comfyui(base_url: str, *, root: Path | None = None, get=None, log=
                 "changed": changed, "removed": removed, "skipped_custom": skipped}
 
 
+# ── Example workflows shipped with custom node packs ───────────────────────────
+#
+# A node pack documents itself with example workflows: a folder in the pack named
+# ``example_workflows`` (ComfyUI's convention; ``workflow``, ``workflows``,
+# ``example`` and ``examples`` are accepted too). ComfyUI scans its custom_nodes
+# folders for exactly these, lists them at ``/api/workflow_templates`` and serves
+# the files beside it — that is what its own template browser shows per pack.
+#
+# For a pack's nodes these are the only templates there are: the official corpus
+# covers core and partner nodes, so a request needing WanVideoWrapper or SAM3 had
+# nothing to start from and was built from node schemas alone.
+#
+# They are mirrored into ``templates/node_packs/`` inside the custom corpus, so
+# everything that reads custom templates finds them, and that folder is
+# git-ignored: what is installed is a fact about this machine, and the files are
+# other people's work. Named ``<pack>__<workflow>``, because packs reuse names
+# ("basic", "example") and a template is looked up by file name alone.
+
+NODE_PACK_DIR = Path("comfyui_workflow_templates_custom") / "templates" / "node_packs"
+EXAMPLE_FOLDERS = ("example_workflows", "example", "examples", "workflow", "workflows")
+
+
+def _safe(text: str) -> str:
+    import re  # noqa: PLC0415
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text)).strip("._-")
+
+
+def node_pack_template_name(pack: str, workflow: str) -> str:
+    """The template name of *workflow* from node pack *pack*."""
+    return f"{_safe(pack)}__{_safe(workflow)}"
+
+
+def _is_workflow(data) -> bool:
+    """A ComfyUI graph or API prompt — packs also keep settings JSON in these folders."""
+    if not isinstance(data, dict) or not data:
+        return False
+    if isinstance(data.get("nodes"), list):
+        return True
+    return all(isinstance(v, dict) and "class_type" in v for v in data.values())
+
+
+def _index_entry(name: str, pack: str, workflow: str, data: dict) -> dict:
+    """The catalog entry of one example: what it loads and saves, and whose it is."""
+    entry = {"name": name, "title": workflow,
+             "description": f"Example workflow \"{workflow}\" shipped with the {pack} "
+                            f"custom node pack — how its nodes are meant to be wired.",
+             "models": [], "io": {"inputs": [], "outputs": []}}
+    try:
+        from agenty_core.utils.workflow_parser import parse_workflow  # noqa: PLC0415
+        api = data
+        if isinstance(data.get("nodes"), list):
+            from agenty_core.tools.comfyui import _convert_graph_to_api  # noqa: PLC0415
+            api = _convert_graph_to_api(data)
+        parsed = parse_workflow(api, name=name, update_index=False)["templates"][0]
+        entry["models"], entry["io"] = parsed.get("models", []), parsed.get("io", entry["io"])
+    except Exception:  # noqa: BLE001 — a graph the parser cannot read is still a usable template
+        pass
+    return entry
+
+
+def sync_node_pack_examples(base_url: str, *, root: Path | None = None, get=None,
+                            log=print, workers: int = 8, describe=_index_entry) -> dict:
+    """Mirror the example workflows of the node packs installed in the ComfyUI at
+    *base_url* into ``templates/node_packs/`` and write that folder's index.json.
+
+    A pure mirror: an example a pack no longer ships (or a pack that was removed)
+    goes, a changed one is replaced. Files that are not workflows, and files the
+    ComfyUI does not serve (a pack that failed to load), are skipped.
+
+    Returns ``{status, packs, added, changed, removed, skipped}``; raises
+    :class:`ComfyUIUnreachable` when ComfyUI does not answer.
+    """
+    get = get or _http_get
+    base_url = base_url.rstrip("/")
+    root = Path(root) if root else corpus_root()
+    mirror = root / NODE_PACK_DIR
+    with _sync_lock:
+        try:
+            listing = json.loads(get(f"{base_url}/api/workflow_templates"))
+        except (OSError, ValueError) as exc:
+            raise ComfyUIUnreachable(f"{base_url}: {exc}") from exc
+        if not isinstance(listing, dict):
+            raise RuntimeError(f"{base_url}/api/workflow_templates did not return a map")
+        wanted = [(str(pack), str(wf)) for pack, names in sorted(listing.items())
+                  if isinstance(names, list) for wf in sorted(set(names))]
+
+        def _fetch(item):
+            pack, wf = item
+            try:
+                raw = get(f"{base_url}/api/workflow_templates/"
+                          f"{urllib.parse.quote(pack)}/{urllib.parse.quote(wf)}.json")
+                data = json.loads(raw.decode("utf-8-sig"))
+            except (OSError, ValueError):
+                return None
+            return (raw, data) if _is_workflow(data) else None
+
+        fetched: Dict[str, bytes] = {}
+        entries: Dict[str, List[dict]] = {}
+        skipped: List[str] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for (pack, wf), got in zip(wanted, pool.map(_fetch, wanted)):
+                name = node_pack_template_name(pack, wf)
+                if got is None or not name or f"{name}.json" in fetched:
+                    skipped.append(f"{pack}/{wf}")
+                    continue
+                fetched[f"{name}.json"] = got[0].replace(b"\r\n", b"\n")
+                entries.setdefault(pack, []).append((name, wf, got[1]))
+
+        local = {f: s for f, s in local_index(mirror).items() if f != "index.json"}
+        added = sorted(f for f in fetched if f not in local)
+        changed = sorted(f for f in fetched if f in local and local[f] != blob_sha(fetched[f]))
+        removed = sorted(f for f in local if f not in fetched)
+        if not (added or changed or removed) and (mirror / "index.json").is_file():
+            return {"status": "current", "packs": len(entries), "added": [], "changed": [],
+                    "removed": [], "skipped": skipped}
+        mirror.mkdir(parents=True, exist_ok=True)
+        for f in added + changed:
+            (mirror / f).write_bytes(fetched[f])
+        for f in removed:
+            (mirror / f).unlink()
+        index = [{"moduleName": pack, "title": f"{pack} (node pack examples)",
+                  "templates": [describe(name, pack, wf, data) for name, wf, data in items]}
+                 for pack, items in sorted(entries.items())]
+        tmp = mirror / "index.json.tmp"
+        tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, mirror / "index.json")
+        log(f"[comfyui] node pack examples from {len(entries)} pack(s): "
+            f"+{len(added)} ~{len(changed)} -{len(removed)}")
+        return {"status": "synced", "packs": len(entries), "added": added, "changed": changed,
+                "removed": removed, "skipped": skipped}
+
+
 def _drop_template_caches() -> None:
     """Forget what this process read from the old mirror."""
     try:
         from agenty_core.tools import comfyui as C  # noqa: PLC0415
     except Exception:  # noqa: BLE001 — nothing loaded, nothing to forget
         return
+    C._index_cache = None
     C._official_index_cache = None
     C._template_cache.clear()
     C.clear_tool_caches()
+
+
+def _regenerate_recipes(root: Path) -> dict:
+    from agenty_core.workflow_recipes.cli import build_arg_parser, run  # noqa: PLC0415
+    args = build_arg_parser().parse_args([
+        "--no-fetch",
+        "--custom-folder", str(root / "comfyui_workflow_templates_custom"),
+        "--official-folder", str(root / "comfyui_workflow_templates_official"),
+        "--out", str(root / "config" / "workflow_recipes.json"),
+        "--object-info-cache", str(root / "config" / "workflow_recipes_object_info_cache.json"),
+    ])
+    db = (run(args) or {}).get("database")
+    if db is None:
+        return {}
+    return {"workflow_count": db.workflow_count, "task_count": len(db.tasks),
+            "recipe_count": db.recipe_count}
+
+
+def refresh_node_pack_examples(base_url: str, *, root: Path | None = None, get=None,
+                               log=print, regenerate=None) -> dict:
+    """:func:`sync_node_pack_examples`, then — only when an example changed — the
+    recipe database is rebuilt and this process's template caches are dropped."""
+    result = sync_node_pack_examples(base_url, root=root, get=get, log=log)
+    if result.get("status") != "synced":
+        return result
+    root = Path(root) if root else corpus_root()
+    try:
+        result["recipes"] = (regenerate or (lambda: _regenerate_recipes(root)))()
+    except Exception as exc:  # noqa: BLE001 — the mirror is right even if the DB is not
+        result["recipes"] = {"error": str(exc)}
+    _drop_template_caches()
+    return result
 
 
 def refresh_from_comfyui(base_url: str, *, root: Path | None = None, get=None,

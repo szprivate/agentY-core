@@ -352,8 +352,13 @@ def _load_index() -> list:
         return _index_cache
 
     flat: list[dict] = []
-    index_path = _custom_templates_dir() / "index.json"
-    if index_path.exists():
+    # The user's own templates, then the example workflows of installed node
+    # packs (templates/node_packs/, mirrored from ComfyUI at startup and not in
+    # git — see templates_sync.sync_node_pack_examples).
+    for index_path in (_custom_templates_dir() / "index.json",
+                       _custom_templates_dir() / "node_packs" / "index.json"):
+        if not index_path.exists():
+            continue
         try:
             with open(index_path, encoding="utf-8") as f:
                 raw = json.load(f)
