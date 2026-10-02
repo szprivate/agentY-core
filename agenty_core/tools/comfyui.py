@@ -1683,6 +1683,18 @@ def _model_inventory_index() -> dict[str, str]:
     return index
 
 
+def _unreadable_encoder_errors(workflow: dict) -> list[str]:
+    """Native text-encoder loaders pointed at a file they cannot read (a shard, a
+    wrapper-layout T5). ComfyUI validates such a graph and fails at the first
+    encode with "Cannot copy out of meta tensor" — see utils.model_file_check."""
+    try:
+        from agenty_core.utils.model_file_check import unloadable_encoder_errors  # noqa: PLC0415
+        inventory = sorted(set(_model_inventory_index().values()))
+        return unloadable_encoder_errors(workflow, inventory)
+    except Exception:  # noqa: BLE001 — a failed inspection must not fail validation
+        return []
+
+
 def installed_model(name: str) -> str | None:
     """The inventory path of a model file with exactly this file name, or None."""
     try:
@@ -1756,6 +1768,10 @@ def check_model(model_names: list | str) -> str:
       ``Load Checkpoint`` or ``Load LoRA`` node.
     - The string ``"False"`` when the model is not found in the inventory.
 
+    A text encoder that is installed but unreadable by ComfyUI's own loaders (one
+    shard of a split checkpoint, a T5 in the WanVideoWrapper layout) gets a line
+    under ``"_notes"`` saying so: do not put it in a CLIPLoader.
+
     A name that is in no model folder but IS one of a node's own menu options
     (a preprocessor's or detector's weights, which that node keeps and fetches
     itself) comes back as that option value, with a line under ``"_notes"``
@@ -1791,6 +1807,15 @@ def check_model(model_names: list | str) -> str:
                                    f"({', '.join(managed['offered_by'][:6])}). Such a node keeps and "
                                    f"fetches its weights itself — use the value as is, do not download it.")
             result[name] = hit if hit else "False"
+            if hit and name not in notes:
+                try:
+                    from agenty_core.utils.model_file_check import text_encoder_problem  # noqa: PLC0415
+                    why = text_encoder_problem(hit)
+                except Exception:  # noqa: BLE001
+                    why = None
+                if why:
+                    notes[name] = (f"installed, but ComfyUI's own text-encoder loaders (CLIPLoader, "
+                                   f"DualCLIPLoader, ...) cannot read it: {why}. Pick another file.")
         if notes:
             result["_notes"] = notes
 
@@ -4200,6 +4225,7 @@ def update_workflow(
     # Side-effect-free server validation (skips while ComfyUI is busy; never a
     # blanket interrupt / queue clear that would kill a real render). See
     # _server_validate.
+    local_errors.extend(_unreadable_encoder_errors(workflow))
     server_errors = _server_validate(workflow)
 
     is_valid = len(local_errors) == 0 and len(server_errors) == 0
@@ -4718,6 +4744,7 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
     # Side-effect-free server validation (skips while ComfyUI is busy; never a
     # blanket interrupt / queue clear that would kill a real render). See
     # _server_validate.
+    local_errors.extend(_unreadable_encoder_errors(workflow))
     server_errors = _server_validate(workflow)
 
     # Save AFTER hardening so the file the executor submits reflects every
@@ -5385,6 +5412,7 @@ def validate_workflow(workflow_path: str) -> str:
 
     # Server-side validation (side-effect-free — never interrupts/clears other
     # jobs; skips entirely while ComfyUI is busy). See _server_validate.
+    local_errors.extend(_unreadable_encoder_errors(workflow))
     server_errors: dict = _server_validate(workflow)
 
     is_valid = len(local_errors) == 0 and len(server_errors) == 0
