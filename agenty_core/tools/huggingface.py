@@ -629,6 +629,7 @@ def get_model_info(model_id: str) -> str:
 
 
 import threading as _threading
+import time as _time
 
 # Stop for downloads. A download runs in a worker thread, which cancelling the
 # turn cannot reach, so pressing Stop left a multi-GB fetch running and the turn
@@ -645,6 +646,90 @@ _CANCELLED_MSG = ("Download stopped by the user. The partial file is kept; downl
 
 class DownloadCancelled(Exception):
     """The user stopped the download."""
+
+
+# Downloads run as jobs, waited on in slices (download_hf_model, then
+# wait_for_download). A 26 GB file used to be one tool call of half an hour, and a
+# message the user sent meanwhile reached the agent only when it ended — the agent
+# looked deaf. Every slice ends at a step, where such a message is delivered.
+DOWNLOAD_WAIT_S = 45.0
+_jobs: dict[str, dict] = {}
+_jobs_lock = _threading.Lock()
+_listeners: list = []
+
+
+def add_download_listener(fn) -> None:
+    """``fn(job: dict)`` when a download job ends (the host tells the user, even if
+    the turn that started it is over)."""
+    if fn not in _listeners:
+        _listeners.append(fn)
+
+
+def _wait_default() -> float:
+    try:
+        return float(os.environ.get("AGENTY_DOWNLOAD_WAIT_S", DOWNLOAD_WAIT_S))
+    except ValueError:
+        return DOWNLOAD_WAIT_S
+
+
+def _job_key(model_id: str, subfolder: str, filename: str) -> str:
+    return "/".join(x.strip("/") for x in (model_id, subfolder, filename) if x)
+
+
+def _job_view(job: dict) -> dict:
+    """What the agent (and the panel) is told about a job still running."""
+    done, total = int(job.get("done") or 0), int(job.get("total") or 0)
+    elapsed = max(0.001, _time.monotonic() - job["started"])
+    rate = max(0.0, (done - int(job.get("resumed_from") or 0)) / elapsed)
+    view = {"job_id": job["id"], "file": job["filename"], "from": job["model_id"],
+            "to": job.get("to", ""), "done_gb": round(done / 1e9, 2)}
+    if total:
+        view.update(total_gb=round(total / 1e9, 2), percent=round(100 * done / total, 1))
+        if rate > 0:
+            view["eta_min"] = round((total - done) / rate / 60, 1)
+    if rate:
+        view["mb_per_s"] = round(rate / 1e6, 1)
+    return view
+
+
+def download_progress() -> list[dict]:
+    """Every download running now — for whoever wants to say how long it will take."""
+    with _jobs_lock:
+        return [_job_view(j) for j in _jobs.values() if not j["finished"].is_set()]
+
+
+def _run_job(job: dict, args: tuple) -> None:
+    try:
+        job["result"] = _download_blocking(*args, job=job)
+    except Exception as exc:  # noqa: BLE001
+        job["result"] = json.dumps({"ok": False, "error": str(exc)})
+    finally:
+        job["finished"].set()
+        for fn in list(_listeners):
+            try:
+                fn(job)
+            except Exception:  # noqa: BLE001
+                logger.debug("download listener failed", exc_info=True)
+        with _jobs_lock:
+            # Kept a little while for a wait that arrives after the end.
+            for k, j in list(_jobs.items()):
+                if j["finished"].is_set() and _time.monotonic() - j["started"] > 6 * 3600:
+                    _jobs.pop(k, None)
+
+
+def _await(job: dict, wait_s: float) -> str:
+    if wait_s <= 0 or job["finished"].wait(timeout=wait_s):
+        if job["finished"].is_set():
+            with _jobs_lock:
+                _jobs.pop(job["key"], None)
+            return job["result"]
+    return json.dumps({
+        "ok": True, "status": "downloading", **_job_view(job),
+        "what_to_do": ("Still downloading. If the user has written to you meanwhile, answer "
+                       "them now — briefly — then call wait_for_download(job_id) to keep "
+                       "waiting. Do not call download_hf_model for this file again; do other "
+                       "work that does not need this file meanwhile if there is any."),
+    })
 
 
 def cancel_downloads() -> int:
@@ -674,6 +759,92 @@ def download_hf_model(
     subfolder: str = "",
 ) -> str:
     """Download a file from a HuggingFace repo. Check model availability with check_model first.
+
+    Small files come back done. A large one keeps downloading in the background
+    and this returns its progress (status "downloading", a job_id) after under a
+    minute: answer the user if they wrote meanwhile, then call wait_for_download.
+
+    A file an official template names goes where that template says (its
+    loader's model list / "Model Storage Location" note) — whatever else is
+    passed. find_hf_file returns that folder as ``directory``.
+
+    Otherwise prefer supplying *node_class_type* (the ComfyUI class name of the node that
+    references the model, e.g. ``"UNETLoader"``).  The correct storage folder is
+    then derived automatically via the NODE_TO_FOLDER mapping.  If
+    *node_class_type* is unknown or omitted, fall back to *destination_folder*
+    (relative path under the models base dir, e.g. ``"FLUX1"``).
+
+    Args:
+        model_id: HF model ID e.g. 'black-forest-labs/FLUX.1-dev'.
+        filename: File to download e.g. 'flux1-dev.safetensors'.
+        node_class_type: ComfyUI node class that loads this model
+            e.g. 'UNETLoader', 'CheckpointLoaderSimple', 'LoraLoader'.
+            Used to resolve the correct model sub-folder automatically.
+        destination_folder: Fallback – target subfolder under models dir
+            e.g. 'FLUX1'.  Ignored when *node_class_type* is provided.
+        subfolder: Subfolder within the HF repo e.g. 'transformer'.
+    """
+    key = _job_key(model_id, subfolder, filename)
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if job is None or job["finished"].is_set():
+            import uuid as _uuid
+            job = {"id": _uuid.uuid4().hex[:10], "key": key, "model_id": model_id,
+                   "filename": filename, "started": _time.monotonic(),
+                   "finished": _threading.Event(), "result": None}
+            _jobs[key] = job
+            import contextvars as _cv
+            ctx = _cv.copy_context()     # progress lines go to the turn that asked
+            _threading.Thread(target=ctx.run, name=f"hf-download-{filename[:40]}", daemon=True,
+                              args=(_run_job, job, (model_id, filename, node_class_type,
+                                                    destination_folder, subfolder))).start()
+    return _await(job, _wait_default())
+
+
+def download_to_completion(model_id: str, filename: str, node_class_type: str = "",
+                           destination_folder: str = "", subfolder: str = "") -> str:
+    """download_hf_model for code with nobody to answer meanwhile: returns when the
+    download has ended (done, failed or stopped)."""
+    out = download_hf_model(model_id, filename, node_class_type, destination_folder, subfolder)
+    while True:
+        res = json.loads(out)
+        if res.get("status") != "downloading":
+            return out
+        out = wait_for_download(res["job_id"], 120)
+
+
+@tool
+def wait_for_download(job_id: str = "", wait_seconds: int = 45) -> str:
+    """Keep waiting for a download download_hf_model started. Returns when it is
+    done, or with its progress after `wait_seconds` (max 120) — call it again
+    then, after answering anything the user wrote meanwhile.
+
+    Args:
+        job_id: The job_id download_hf_model returned. Empty: the oldest running one.
+        wait_seconds: How long to wait at most this call (default 45).
+    """
+    with _jobs_lock:
+        jobs = list(_jobs.values())
+    job = next((j for j in jobs if j["id"] == job_id), None) if job_id else \
+        next((j for j in sorted(jobs, key=lambda j: j["started"]) if not j["finished"].is_set()), None)
+    if job is None:
+        return json.dumps({"ok": False, "error": "No such download running"
+                           + (f" ({job_id})" if job_id else "") + ".",
+                           "hint": "It may have finished already: check_model says whether "
+                                   "the file is installed."})
+    return _await(job, max(1.0, min(float(wait_seconds or 45), 120.0)))
+
+
+def _download_blocking(
+    model_id: str,
+    filename: str,
+    node_class_type: str = "",
+    destination_folder: str = "",
+    subfolder: str = "",
+    job: dict | None = None,
+) -> str:
+    """The download itself, start to finish (see download_hf_model). *job*, when
+    given, is told where the file goes and how far it has got.
 
     A file an official template names goes where that template says (its
     loader's model list / "Model Storage Location" note) — whatever else is
@@ -742,6 +913,8 @@ def download_hf_model(
         dl_dir, dl_source = _ensure_not_c_drive(dl_dir, dl_source)  # never fill C:
         dest_path = dl_dir / filename
         logger.info("download target: %s (%s)", dest_path, dl_source)
+        if job is not None:
+            job["to"] = str(dest_path)
 
         dest_dir = dest_path.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -789,6 +962,8 @@ def download_hf_model(
             logger.info("resuming %s from %.1f GB", filename, resume_from / (1024 ** 3))
         remaining = int(resp.headers.get("content-length", 0))
         total_size = remaining + resume_from
+        if job is not None:
+            job.update(total=total_size, done=resume_from, resumed_from=resume_from)
         chunk_size = 8 * 1024 * 1024  # 8 MB chunks
 
         need_gb = total_size / (1024 ** 3)
@@ -887,6 +1062,8 @@ def download_hf_model(
                     if chunk:
                         f.write(chunk)
                         pbar.update(len(chunk))
+                        if job is not None:
+                            job["done"] = job.get("done", 0) + len(chunk)
 
             # Rename temp → final
             tmp_path.rename(dest_path)
