@@ -17,6 +17,18 @@ from agenty_core.utils.project_memory import (KNOWN_TYPES, delete_entry,
                                               list_entries, read_entry,
                                               store_dir, write_entry)
 
+# A host can hold writes off for a while (agentY does, while a benchmark or a
+# test is running): a callable returning the seconds the pause has left, 0 when
+# writes are on. Project memory is injected into every later turn, so a note a
+# test run writes — wrong or not — steers the user's real work afterwards.
+_write_pause = lambda: 0.0  # noqa: E731
+
+
+def set_write_pause(fn) -> None:
+    """Have *fn* (seconds of pause left, 0 = writing) decide whether writes land."""
+    global _write_pause
+    _write_pause = fn or (lambda: 0.0)
+
 
 @tool
 def project_memory_read(name: str = "") -> str:
@@ -87,6 +99,13 @@ def project_memory_write(name: str, content: str, type: str = "note") -> str:
     body = str(content or "").strip()
     if not key or not body:
         return "Nothing stored — both a name and content are required."
+    try:
+        paused = float(_write_pause() or 0)
+    except Exception:  # noqa: BLE001 — a broken guard must not lose the user's write
+        paused = 0.0
+    if paused > 0:
+        return ("Project memory writes are paused for this session (a benchmark or test run "
+                f"is in progress). NOT saved: {key}")
     kind = str(type or "note").strip().lower()
     if kind not in KNOWN_TYPES:
         kind = "note"
@@ -116,5 +135,10 @@ def project_memory_forget(name: str) -> str:
     key = str(name or "").strip()
     if not key:
         return "Nothing removed — no name given."
+    try:
+        if float(_write_pause() or 0) > 0:
+            return f"Project memory writes are paused for this session. NOT removed: {key}"
+    except Exception:  # noqa: BLE001
+        pass
     return (f"Removed '{key}' from project memory."
             if delete_entry(key) else f"No project entry named '{key}'.")
