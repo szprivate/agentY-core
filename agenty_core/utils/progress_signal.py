@@ -13,33 +13,42 @@ Usage from the pipeline:
     from agenty_core.utils.progress_signal import drain as drain_progress
     for line in drain_progress():
         yield {"data": line}
+
+One buffer per turn (:mod:`agenty_core.utils.turn_scope`): with several
+conversations running at once, a download's progress belongs in the chat that
+started it.
 """
 
 from __future__ import annotations
 
-import threading
 from collections import deque
+
+from agenty_core.utils import turn_scope
 
 # Bounded so a long-running MCP server (whose consumer no longer drains this
 # buffer) cannot accumulate progress lines without limit.
-_lock: threading.Lock = threading.Lock()
-_lines: deque[str] = deque(maxlen=200)
+_MAX = 200
+
+
+def _buffer(scope) -> deque:
+    return scope.slot("progress_signal", lambda: deque(maxlen=_MAX))
 
 
 def push(line: str) -> None:
-    """Append a progress line to the buffer (thread-safe)."""
-    with _lock:
-        _lines.append(line)
+    """Append a progress line to the current turn's buffer (thread-safe)."""
+    scope = turn_scope.current()
+    with scope.lock:
+        _buffer(scope).append(line)
 
 
-def drain() -> list[str]:
-    """Atomically read and clear all buffered lines.
-
-    Returns an empty list when no progress has been pushed since the last drain.
-    """
-    with _lock:
-        if not _lines:
+def drain(scope=None) -> list[str]:
+    """Atomically read and clear the buffered lines of *scope* (default: the
+    current turn's). Empty when nothing was pushed since the last drain."""
+    scope = scope or turn_scope.current()
+    with scope.lock:
+        buf = _buffer(scope)
+        if not buf:
             return []
-        out = list(_lines)
-        _lines.clear()
+        out = list(buf)
+        buf.clear()
         return out

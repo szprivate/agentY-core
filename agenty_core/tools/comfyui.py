@@ -50,10 +50,22 @@ from agenty_core.tools.assembly_deterministic import (
 
 # Workflow files are saved to disk and referenced by path to avoid bloating
 # the LLM's sliding-window context with full JSON.
-# patch_workflow failure guard
+# patch_workflow failure guard — per turn: one conversation's failed edits must
+# not use up another's allowance.
 _PATCH_FAIL_LIMIT: int = 3
-_patch_fail_count: int = 0
-_patch_last_workflow_path: str | None = None
+
+
+class _PatchGuard:
+    __slots__ = ("count", "last_path")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.last_path: str | None = None
+
+
+def _patch_guard() -> _PatchGuard:
+    from agenty_core.utils import turn_scope
+    return turn_scope.current().slot("comfyui.patch_guard", _PatchGuard)
 
 # /object_info cache – the full node database doesn't change during a session.
 _object_info_cache: dict | None = None
@@ -81,9 +93,9 @@ _tool_template_results: dict[str, str] = {}     # cached get_workflow_template()
 
 def reset_patch_workflow_guard() -> None:
     """Reset the patch_workflow failure counter.  Call once per orchestration session."""
-    global _patch_fail_count, _patch_last_workflow_path
-    _patch_fail_count = 0
-    _patch_last_workflow_path = None
+    g = _patch_guard()
+    g.count = 0
+    g.last_path = None
 
 
 def _server_validate(workflow: dict) -> dict:
@@ -3941,17 +3953,17 @@ def patch_workflow(workflow_path: str, patches: str) -> str:
     path = _save_edit(workflow, workflow_path)
 
     # Failure guard
-    global _patch_fail_count, _patch_last_workflow_path
-    _patch_last_workflow_path = path
+    guard = _patch_guard()
+    guard.last_path = path
 
     if errors:
-        _patch_fail_count += 1
+        guard.count += 1
         print(
-            f"[patch_workflow] Failure {_patch_fail_count}/{_PATCH_FAIL_LIMIT}: "
+            f"[patch_workflow] Failure {guard.count}/{_PATCH_FAIL_LIMIT}: "
             f"{len(errors)} patch error(s)."
         )
 
-        if _patch_fail_count >= _PATCH_FAIL_LIMIT:
+        if guard.count >= _PATCH_FAIL_LIMIT:
             debug_name = f"{Path(workflow_path).stem}_patch_debug"
             debug_path = _save_workflow(workflow, name=debug_name)
             print(
@@ -3972,7 +3984,7 @@ def patch_workflow(workflow_path: str, patches: str) -> str:
                 ),
             })
     else:
-        _patch_fail_count = 0
+        guard.count = 0
 
     return json.dumps({
         "workflow_path": path,
@@ -4116,16 +4128,16 @@ def update_workflow(
     path = _save_edit(workflow, workflow_path)
 
     # Update patch failure guard
-    global _patch_fail_count, _patch_last_workflow_path
-    _patch_last_workflow_path = path
+    guard = _patch_guard()
+    guard.last_path = path
 
     if node_errors:
-        _patch_fail_count += 1
+        guard.count += 1
         print(
-            f"[update_workflow] Failure {_patch_fail_count}/{_PATCH_FAIL_LIMIT}: "
+            f"[update_workflow] Failure {guard.count}/{_PATCH_FAIL_LIMIT}: "
             f"{len(node_errors)} error(s)."
         )
-        if _patch_fail_count >= _PATCH_FAIL_LIMIT:
+        if guard.count >= _PATCH_FAIL_LIMIT:
             debug_name = f"{Path(workflow_path).stem}_update_debug"
             debug_path = _save_workflow(workflow, name=debug_name)
             print(f"[update_workflow] LIMIT REACHED — debug snapshot: {debug_path}")
@@ -4149,7 +4161,7 @@ def update_workflow(
                 ),
             })
     else:
-        _patch_fail_count = 0
+        guard.count = 0
 
     # ── Validate ──────────────────────────────────────────────────────────────
     local_errors: list[str] = []
@@ -4225,7 +4237,7 @@ def update_workflow(
     # changed anything, so `valid: true` is a statement about the file.
     if _snapshot_before != json.dumps(workflow, sort_keys=True, default=str):
         path = _save_edit(workflow, workflow_path)
-        _patch_last_workflow_path = path
+        guard.last_path = path
 
     # Side-effect-free server validation (skips while ComfyUI is busy; never a
     # blanket interrupt / queue clear that would kill a real render). See

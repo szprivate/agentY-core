@@ -49,12 +49,22 @@ def set_output_sink(fn: Optional[Callable[[str], None]]) -> None:
     _output_sink = fn
 
 
+def set_turn_output_sink(fn: Optional[Callable[[str], None]]) -> None:
+    """Publish this turn's downloads through *fn*. A host running several
+    conversations has one sink per conversation, and the module-wide one would
+    hand every download to whichever was registered last."""
+    from agenty_core.utils import turn_scope
+    turn_scope.current().set("image_io.output_sink", fn)
+
+
 def _publish(path: str) -> None:
     """Hand *path* to the host, if one is listening. Never raises."""
-    if not path or _output_sink is None:
+    from agenty_core.utils import turn_scope
+    sink = turn_scope.current().get("image_io.output_sink") or _output_sink
+    if not path or sink is None:
         return
     try:
-        _output_sink(path)
+        sink(path)
     except Exception as exc:  # noqa: BLE001 — delivery must never fail a download
         print(f"[download_image] could not publish {path}: {exc}")
 

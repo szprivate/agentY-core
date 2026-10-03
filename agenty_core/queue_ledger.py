@@ -19,6 +19,11 @@ makes "ours" a fact rather than a guess.
 
 The ledger is per process and deliberately not persisted. A prompt id from a host
 that has since exited is not something this host should be deleting.
+
+Each id is kept with its owner: the conversation (turn scope's ``thread_id``) whose
+turn submitted it. A host running several conversations at once stops one of them
+by owner, so a Stop in one chat does not delete or interrupt another chat's
+renders. Ids recorded outside any conversation have the owner "".
 """
 
 from __future__ import annotations
@@ -31,18 +36,28 @@ from collections import OrderedDict
 _MAX = 512
 
 _LOCK = threading.Lock()
-# prompt_id -> None, in submission order. An OrderedDict is the cheap way to have
+# prompt_id -> owner, in submission order. An OrderedDict is the cheap way to have
 # both "is this ours" in O(1) and "drop the oldest" when the cap is reached.
-_OURS: "OrderedDict[str, None]" = OrderedDict()
+_OURS: "OrderedDict[str, str]" = OrderedDict()
 
 
-def remember(prompt_id: str) -> str:
-    """Record a prompt id as ours. Returns it, so this can wrap a submit call."""
+def _current_owner() -> str:
+    try:
+        from agenty_core.utils import turn_scope
+        return turn_scope.current().thread_id
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def remember(prompt_id: str, owner: str | None = None) -> str:
+    """Record a prompt id as ours — owned by *owner*, by default the conversation
+    whose turn is running. Returns it, so this can wrap a submit call."""
     pid = str(prompt_id or "").strip()
     if not pid:
         return pid
+    who = _current_owner() if owner is None else str(owner)
     with _LOCK:
-        _OURS[pid] = None
+        _OURS[pid] = who
         _OURS.move_to_end(pid)
         while len(_OURS) > _MAX:
             _OURS.popitem(last=False)
@@ -54,14 +69,25 @@ def forget(prompt_id: str) -> None:
         _OURS.pop(str(prompt_id or "").strip(), None)
 
 
-def is_ours(prompt_id: str) -> bool:
+def is_ours(prompt_id: str, owner: str | None = None) -> bool:
+    """Whether we submitted *prompt_id* — and, given *owner*, whether that
+    conversation did."""
     with _LOCK:
-        return str(prompt_id or "").strip() in _OURS
+        pid = str(prompt_id or "").strip()
+        if pid not in _OURS:
+            return False
+        return owner is None or _OURS[pid] == owner
 
 
-def ours() -> list[str]:
+def owner_of(prompt_id: str) -> str | None:
+    """The conversation that submitted *prompt_id*, or None if it is not ours."""
     with _LOCK:
-        return list(_OURS)
+        return _OURS.get(str(prompt_id or "").strip())
+
+
+def ours(owner: str | None = None) -> list[str]:
+    with _LOCK:
+        return [pid for pid, who in _OURS.items() if owner is None or who == owner]
 
 
 def clear() -> None:
@@ -84,8 +110,11 @@ def prompt_id_of(entry) -> str:
     return ""
 
 
-def cancel_ours(client=None) -> dict:
+def cancel_ours(client=None, owner: str | None = None) -> dict:
     """Delete our PENDING prompts from ComfyUI's queue. Never touches the user's.
+
+    With *owner*, only that conversation's: the others' prompts count as kept, and
+    ``running_is_ours`` says whether the running job is that conversation's.
 
     Returns ``{ok, deleted, kept, running, running_is_ours}``. ``ok`` is False when
     the queue could not be read at all — the caller then has no basis for deciding
@@ -104,12 +133,12 @@ def cancel_ours(client=None) -> dict:
 
     pending = [prompt_id_of(e) for e in (queue.get("queue_pending") or [])]
     running = [prompt_id_of(e) for e in (queue.get("queue_running") or [])]
-    mine = [pid for pid in pending if pid and is_ours(pid)]
+    mine = [pid for pid in pending if pid and is_ours(pid, owner)]
     out.update({
         "ok": True,
-        "kept": len([pid for pid in pending if pid and not is_ours(pid)]),
+        "kept": len([pid for pid in pending if pid and not is_ours(pid, owner)]),
         "running": [pid for pid in running if pid],
-        "running_is_ours": any(is_ours(pid) for pid in running if pid),
+        "running_is_ours": any(is_ours(pid, owner) for pid in running if pid),
     })
     if not mine:
         return out
