@@ -1846,12 +1846,62 @@ def check_model(model_names: list | str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @tool
-def interrupt_execution() -> str:
-    """Immediately stop the currently running ComfyUI workflow execution."""
+def interrupt_execution(include_other_conversations: bool = False) -> str:
+    """Immediately stop the currently running ComfyUI workflow execution.
+
+    Only your own conversation's job, or one the user queued by hand: a job
+    another agentY conversation queued is left running unless the user
+    explicitly asked to stop THAT one (then pass include_other_conversations=True).
+
+    Args:
+        include_other_conversations: Also stop a job another conversation queued.
+    """
     try:
-        return json.dumps(get_client().post("/interrupt", json_data={}))
+        client = get_client()
+        others = [] if include_other_conversations else _running_for_others(client)
+        if others:
+            return _not_yours(others)
+        return json.dumps(client.post("/interrupt", json_data={}))
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+def _running_for_others(client) -> list:
+    """Prompt ids running in ComfyUI right now that ANOTHER conversation queued.
+
+    Several conversations share one ComfyUI. "Stop" asked for in one of them
+    used to stop whatever was rendering — another conversation's job included.
+    The ledger knows who queued what (agenty_core.queue_ledger); a job it does
+    not know was queued by the user, and stopping that stays allowed.
+    """
+    from agenty_core import queue_ledger
+    me = queue_ledger._current_owner()
+    if not me:
+        return []
+    try:
+        running = (client.get("/queue") or {}).get("queue_running") or []
+    except Exception:  # noqa: BLE001 — cannot tell: behave as before
+        return []
+    out = []
+    for entry in running:
+        pid = queue_ledger.prompt_id_of(entry)
+        owner = queue_ledger.owner_of(pid) if pid else None
+        if owner and owner != me:
+            out.append(pid)
+    return out
+
+
+def _not_yours(prompt_ids: list) -> str:
+    return json.dumps({
+        "status": "not_interrupted",
+        "reason": ("The job running in ComfyUI was queued by another agentY conversation "
+                   "(another shot or chat), not by this one. Nothing of this conversation's "
+                   "is running."),
+        "running_prompt_ids": prompt_ids,
+        "what_to_do": ("Tell the user nothing of yours was running. Only if they explicitly "
+                       "want that other job stopped, call again with "
+                       "include_other_conversations=true."),
+    })
 
 
 @tool
@@ -1887,8 +1937,13 @@ def queue(action: str = "status") -> str:
         if action == "status":
             return json.dumps(get_client().get("/queue"))
         elif action in ("clear", "clear_running"):
+            client = get_client()
+            if action == "clear_running":
+                others = _running_for_others(client)      # see interrupt_execution
+                if others:
+                    return _not_yours(others)
             payload = {"clear": True} if action == "clear" else {"clear_running": True}
-            return json.dumps(get_client().post("/queue", json_data=payload))
+            return json.dumps(client.post("/queue", json_data=payload))
         else:
             return json.dumps({"error": f"Unknown action '{action}'. Use 'status', 'clear', or 'clear_running'"})
     except Exception as e:
