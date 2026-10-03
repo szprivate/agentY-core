@@ -223,7 +223,23 @@ def snap_combo(val: str, opts: list, fallback_first: bool = True):
             best, best_n = o, n
     if best_n >= 1:
         return best
-    return opts[0] if (fallback_first and opts) else None
+    if fallback_first and opts:
+        # A misspelt enum ("ltxav" for "ltxv") shares no whole word with the
+        # option it meant, and the first option ("stable_diffusion") is
+        # nothing like it.
+        import difflib
+        close = difflib.get_close_matches(str(val), [str(o) for o in opts], n=1, cutoff=0.75)
+        if close:
+            return next(o for o in opts if str(o) == close[0])
+        return opts[0]
+    return None
+
+
+def _same_file(a, b) -> bool:
+    """The same file name, whatever folder each path puts it in."""
+    def _base(x):
+        return str(x).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return _base(a) == _base(b)
 
 
 def _is_model_combo(cval, copts) -> bool:
@@ -681,9 +697,26 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
                 node.setdefault("inputs", {})[cinp] = sval
                 continue
             is_model = _is_model_combo(sval, copts)
-            snapped = snap_combo(sval, copts, fallback_first=not is_model)
+            # A LoRA is one trained effect: the nearest-named other LoRA
+            # ("…-sdr-to-hdr" for a gated "…-layout-to-render") is a different
+            # effect that renders without complaint. Only the same file, found
+            # under another folder, stands in for it; anything else is missing.
+            if is_model and "lora" in str(cinp).lower():
+                snapped = next((o for o in copts if _same_file(o, sval)), None)
+            else:
+                snapped = snap_combo(sval, copts, fallback_first=not is_model)
             if snapped is not None and snapped != cval:
                 node.setdefault("inputs", {})[cinp] = snapped
+                # Said out loud unless it is the same file in another folder: a
+                # silent swap is how a missing model turned into a different one
+                # nobody had asked for.
+                if reshaped is not None and not _same_file(snapped, sval):
+                    reshaped.append(
+                        f"input '{cinp}': {sval!r} is not an option here "
+                        f"({'not installed' if is_model else 'unknown value'}) — "
+                        f"replaced by {snapped!r}. If that is not what you meant, "
+                        "set it yourself"
+                        + (" or get the file first." if is_model else "."))
             elif snapped is None and is_model and missing_models is not None:
                 # Un-installed model with no same-family substitute — surface it
                 # for download rather than snapping to an unrelated file.

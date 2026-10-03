@@ -3848,11 +3848,11 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
     Args:
         workflow_path: Path to the workflow JSON (API or graph format).
         name: Optional file/display name (defaults to the workflow's file stem).
-        push_to_canvas: Also swap it onto the canvas the user is looking at
-            (default). Pass False to only file it under ``agent/`` in the
-            Workflows sidebar — which is what you want when the graph they
-            currently have open is the thing being worked on, and replacing it
-            would take away what they are watching.
+        push_to_canvas: Also open it on the canvas (default) — as a workflow tab
+            of its own; the workflow the user had open stays in its tab, so a
+            request to keep the new one separate is met either way. Pass False
+            only to file it under ``agent/`` in the Workflows sidebar without
+            showing it: when the user asked not to see it.
 
     Returns JSON: ``{status, saved_as, node_count, url, hint}``.
     """
@@ -3880,9 +3880,10 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
         return json.dumps({"status": "error", "error": f"Could not save to ComfyUI: {e}"})
 
     # Also push it straight onto the open canvas via the AgentCanvas extension
-    # (custom_nodes/comfyui-agent-canvas). This REPLACES the graph the user has
-    # open, so a caller with a reason to leave it alone can opt out and keep the
-    # sidebar copy above as the only delivery. Harmless 404 when the extension
+    # (custom_nodes/comfyui-agent-canvas). The frontend opens it as a tab of its
+    # own (loadGraphData with a workflow name); what the user had open stays in
+    # its tab. A caller can still opt out and keep the sidebar copy above as the
+    # only delivery. Harmless 404 when the extension
     # isn't installed/loaded — the sidebar copy is always available as fallback.
     opened = False
     if push_to_canvas:
@@ -4259,10 +4260,18 @@ def update_workflow(
         # link-only sockets (collecting them into stripped_inputs); what remains
         # is a genuinely-missing connection input (needs real wiring).
         _reshaped_here: list[str] = []
+        _models_before = len(missing_models)
         for _missing in _harden_node_inputs(node, required, missing_models, optional,
                                             stripped_inputs, _reshaped_here):
             local_errors.append(f"Node {nid} ({cls}): missing required input '{_missing}'.")
         reshaped_inputs.extend(f"Node {nid} ({cls}): {n}" for n in _reshaped_here)
+        # Collected and then dropped, this let a graph naming a file nobody has
+        # read `valid: true` whenever ComfyUI was too busy to check it itself.
+        for _model in missing_models[_models_before:]:
+            local_errors.append(
+                f"Node {nid} ({cls}): model '{_model}' is not installed. Get it first "
+                "(download_hf_model), or tell the user what is missing and ask — do not "
+                "put a different model in its place; the graph cannot run until it is.")
         # A shape that cannot be corrected mechanically is a real error. It would
         # otherwise fail at execution with a message naming neither the input nor
         # the shape it wanted, which is the one failure worth catching here.
@@ -4799,9 +4808,11 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         # un-installed model into missing_models), and strip scalars left in
         # link-only sockets (collecting them into stripped_inputs); what remains
         # is a genuinely-missing connection input (needs real wiring).
+        _swaps: list[str] = []
         for _missing in _harden_node_inputs(node, required, missing_models, optional,
-                                            stripped_inputs):
+                                            stripped_inputs, _swaps):
             local_errors.append(f"Node {nid} ({cls}): missing required input '{_missing}'.")
+        applied.extend(f"Node {nid} ({cls}): {w}" for w in _swaps)
         for _key in _undeclared_wires(node, required, optional, node_info):
             local_errors.append(_undeclared_wire_error(nid, cls, _key, node, required, optional))
         for inp_name, inp_val in node_inputs.items():
