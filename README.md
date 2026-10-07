@@ -1,4 +1,6 @@
-# agenty_core
+# agentY-core
+
+The repository is `agentY-core`; the Python package in it is `agenty_core`.
 
 Shared, framework-agnostic tool/util layer for the two agentY apps:
 
@@ -53,7 +55,7 @@ var; falls back to CWD). See `paths.py`.
 From either app's repo root:
 
 ```
-uv pip install -e ../agenty_core
+uv pip install -e ../agentY-core
 ```
 
-Both apps' `requirements.txt` already include `-e ../agenty_core`.
+Both apps' `requirements.txt` already include `-e ../agentY-core`.
