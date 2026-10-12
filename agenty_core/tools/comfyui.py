@@ -2575,6 +2575,13 @@ def _get_node_schema_one(node_class: str) -> str:
             "output_is_list": info.get("output_is_list", []),
             "is_output_node": info.get("output_node", False),
         }
+        # ComfyUI marks a node it has replaced; said outright, where it used to
+        # be legible only in the display name ("Apply ControlNet (DEPRECATED)").
+        if info.get("deprecated") or "DEPRECATED" in str(info.get("display_name") or "").upper():
+            schema["deprecated"] = True
+            schema["note"] = ("ComfyUI marks this node DEPRECATED: it still runs, but a current "
+                              "node replaces it. Use the replacement in anything you build or "
+                              "edit (search_nodes finds it) unless the graph already uses this one.")
         return json.dumps(schema)
     except Exception as e:
         return json.dumps({"error": str(e)})
