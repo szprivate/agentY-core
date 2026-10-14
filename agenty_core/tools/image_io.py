@@ -109,9 +109,11 @@ def resolve_local_image(file_path: str) -> Optional[str]:
         return str(cwd_p)
     in_dir = comfy_input_dir()
     if in_dir:
-        staged = Path(in_dir) / os.path.basename(file_path)
-        if staged.is_file():
-            return str(staged)
+        # As the widget names it ("agentY/<file>", "pasted/<file>"), then bare.
+        for rel in (file_path, os.path.basename(file_path)):
+            staged = Path(in_dir) / rel
+            if staged.is_file():
+                return str(staged)
     return None
 
 
