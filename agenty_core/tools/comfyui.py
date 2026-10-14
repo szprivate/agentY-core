@@ -98,6 +98,22 @@ def reset_patch_workflow_guard() -> None:
     g.last_path = None
 
 
+# Set (``local_only().set(True)``) where a caller wants validate_workflow's own
+# checks without ComfyUI's: a hand-off gate that runs on every signal. ComfyUI
+# validates only by queueing, and a queued graph that is not the sole running job
+# is not interrupted - measured: a Flux inpaint "validation" rendered for two and
+# a half minutes beside the benchmark's own check and timed the next call out.
+import contextvars as _contextvars
+
+_LOCAL_ONLY = _contextvars.ContextVar("agenty_validate_local_only", default=False)
+
+
+def local_only():
+    """The switch validate_workflow reads; a ContextVar, so it holds for this
+    call chain only."""
+    return _LOCAL_ONLY
+
+
 def _server_validate(workflow: dict) -> dict:
     """Server-side validate a workflow WITHOUT disturbing other ComfyUI jobs.
 
@@ -5503,7 +5519,7 @@ def validate_workflow(workflow_path: str) -> str:
     # Server-side validation (side-effect-free — never interrupts/clears other
     # jobs; skips entirely while ComfyUI is busy). See _server_validate.
     local_errors.extend(_unreadable_encoder_errors(workflow))
-    server_errors: dict = _server_validate(workflow)
+    server_errors: dict = {} if _LOCAL_ONLY.get() else _server_validate(workflow)
 
     is_valid = len(local_errors) == 0 and len(server_errors) == 0
 
