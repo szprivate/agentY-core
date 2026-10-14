@@ -1695,6 +1695,36 @@ def _fuzzy_model_match(query_key: str, basename_index: dict[str, str]) -> str | 
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+# Words in a model file name that say nothing about which model it is.
+_NAME_NOISE = frozenset({"control", "controlnet", "model", "models", "safetensors", "pth", "pt", "ckpt",
+                         "bin", "gguf", "fp16", "fp32", "bf16", "fp8", "pruned", "emaonly", "ema", "v1",
+                         "v11p", "v11f1p", "v11e", "v10", "e4m3fn", "scaled", "diffusers", "the", "and"})
+
+
+def _name_tokens(name: str) -> set:
+    stem = Path(str(name)).name.lower().rsplit(".", 1)[0]
+    words = "".join(c if c.isalnum() else " " for c in stem).split()
+    return {w for w in words if len(w) > 1 and w not in _NAME_NOISE}
+
+
+def _installed_alternatives(name: str, index: dict, limit: int = 3) -> list:
+    """Installed files whose names share what identifies *name* (all of its words,
+    or all but one when it has three or more) - same base model, same purpose."""
+    want = _name_tokens(name)
+    if not want:
+        return []
+    need = len(want) if len(want) < 3 else len(want) - 1
+    scored = []
+    for base, entry in index.items():
+        shared = len(want & _name_tokens(base))
+        if shared >= max(1, need) and shared:
+            scored.append((-shared, len(base), entry))
+    if not scored:
+        return []
+    best = min(s for s, _l, _e in scored)          # only the closest: kontext, not plain dev
+    return [e for s, _l, e in sorted(scored) if s == best][:limit]
+
+
 def _model_inventory_index() -> dict[str, str]:
     """lowercase file name -> the path ComfyUI lists it under, for every model
     in the cached inventory (config/models.json)."""
@@ -1840,6 +1870,16 @@ def check_model(model_names: list | str) -> str:
                                    f"({', '.join(managed['offered_by'][:6])}). Such a node keeps and "
                                    f"fetches its weights itself — use the value as is, do not download it.")
             result[name] = hit if hit else "False"
+            if not hit:
+                # An exact name missing is not a model missing: a template names
+                # control_v11p_sd15_canny while control_sd15_canny is installed, and
+                # the agent went to download the one it did not need.
+                alts = _installed_alternatives(key, basename_index)
+                if alts:
+                    result.setdefault("_installed_alternatives", {})[name] = alts
+                    notes[name] = ("not installed under this exact name, but a file of the same kind is "
+                                   "(_installed_alternatives) - use it instead of downloading, unless the "
+                                   "user asked for this exact file.")
             if hit and name not in notes:
                 try:
                     from agenty_core.utils.model_file_check import text_encoder_problem  # noqa: PLC0415

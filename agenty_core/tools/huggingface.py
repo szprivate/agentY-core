@@ -61,6 +61,30 @@ def _hf_headers() -> dict:
     return headers
 
 
+def _configured_models_dir() -> Path | None:
+    """The models dir someone SET (env or settings), or None. Not the default:
+    :func:`_category_dir` prefers a configured dir over ComfyUI's own, and the
+    default IS ComfyUI's own - taking it for a configured one sent every download
+    to D: while the library ComfyUI also reads lay on L: (2026-10-14)."""
+    env_dir = get_secret("COMFYUI_MODELS_DIR")
+    if env_dir:
+        return Path(env_dir)
+    # The app's machine settings (agentY: settings.local.json; settings.json is
+    # what older checkouts had).
+    for name in ("settings.local.json", "settings.json"):
+        config_path = _app_root() / "config" / name
+        if not config_path.exists():
+            continue
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                config = json.loads("".join(ln for ln in f if not ln.lstrip().startswith("//")))
+            if config.get("comfyui_models_dir"):
+                return Path(config["comfyui_models_dir"])
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def _models_base_dir() -> Path:
     """Resolve the ComfyUI models base directory.
 
@@ -177,12 +201,15 @@ def _category_dir(category: str) -> tuple[Path, str]:
     cand = [p for paths in _folder_paths().values() for p in paths
             if p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == category]
     if cand:
-        extra_base = str(_models_base_dir()).replace("\\", "/").rstrip("/").lower()
-        # 1) a path under the configured extra base (e.g. L:/.../Models)
-        for p in cand:
-            if p.replace("\\", "/").lower().startswith(extra_base):
-                return Path(p), "comfyui_extra_path"
-        # 2) else a path on a different drive than the (default) first candidate
+        # 1) a path under a models dir someone configured
+        configured = _configured_models_dir()
+        if configured is not None:
+            extra_base = str(configured).replace("\\", "/").rstrip("/").lower()
+            for p in cand:
+                if p.replace("\\", "/").lower().startswith(extra_base):
+                    return Path(p), "configured_models_dir"
+        # 2) else a path on a different drive than the (default) first candidate:
+        #    an extra model path (extra_model_paths.yaml), the shared library
         d0 = cand[0].split(":", 1)[0].lower()
         for p in cand[1:]:
             if p.split(":", 1)[0].lower() != d0:
