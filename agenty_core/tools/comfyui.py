@@ -244,11 +244,41 @@ def reset_object_info_cache() -> None:
 # Internal helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_object_info_stamp: tuple | None = None
+
+
+def _input_dir_stamp() -> tuple | None:
+    """When ComfyUI's input dir (and input/agentY, where canvas copies go) last
+    changed, or None when the dir is not on this machine.
+
+    LoadImage's file list in ``/object_info`` is that dir's listing at fetch time.
+    Resetting the cache at each place that stages a file was not enough: every
+    update_workflow after an upload_image "snapped" the new file back to an old
+    one (seen 2026-10-14, five times in one turn, each undone by a script).
+    """
+    try:
+        from agenty_core.tools.image_io import comfy_input_dir  # noqa: PLC0415 — import cycle
+        root = comfy_input_dir()
+        if not root:
+            return None
+        stamp = []
+        for d in (root, os.path.join(root, "agentY")):
+            try:
+                stamp.append(os.stat(d).st_mtime_ns)
+            except OSError:
+                stamp.append(None)
+        return tuple(stamp)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _get_object_info() -> dict:
-    """Return the full /object_info dict, cached after first fetch."""
-    global _object_info_cache
-    if _object_info_cache is None:
+    """Return the full /object_info dict, cached — until a file lands in the input dir."""
+    global _object_info_cache, _object_info_stamp
+    stamp = _input_dir_stamp()
+    if _object_info_cache is None or (stamp is not None and stamp != _object_info_stamp):
         _object_info_cache = get_client().get("/object_info")
+        _object_info_stamp = stamp
     return _object_info_cache
 
 

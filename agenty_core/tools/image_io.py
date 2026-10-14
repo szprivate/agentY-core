@@ -159,9 +159,17 @@ def stage_image(file_path: str, subfolder: str = "", image_type: str = "input",
             data = {"type": image_type, "overwrite": str(overwrite).lower()}
             if subfolder:
                 data["subfolder"] = subfolder
-            return get_client().post("/upload/image", data=data, files=files)
+            result = get_client().post("/upload/image", data=data, files=files)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+    # The cached /object_info lists the input dir as it was. A ComfyUI on another
+    # machine has no dir here to watch, so say it outright.
+    try:
+        from agenty_core.tools.comfyui import reset_object_info_cache  # noqa: PLC0415 — import cycle
+        reset_object_info_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    return result
 
 
 @tool
