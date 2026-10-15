@@ -23,7 +23,6 @@ Note on ``find_hf_file``:
     pick the nearest available file.
 """
 
-import io
 import json
 import logging
 import os
@@ -719,6 +718,32 @@ def _job_view(job: dict) -> dict:
     return view
 
 
+def _progress_line(filename: str, done: int, total: int, rate: Optional[float]) -> str:
+    """One chat line for a download: ``⬇️ <file> <bar> 9% · 1.0/11.5 GB · 12.8 MB/s · 13 min left``.
+
+    It starts with the file name and carries a █/░ bar: the panel keeps one row per
+    download and rewrites it in place, so two downloads at once are two rows
+    counting up rather than an interleaved stream.
+    """
+    gb = 1024 ** 3
+    parts = [f"⬇️ {filename}"]
+    if total > 0:
+        frac = max(0.0, min(1.0, done / total))
+        filled = round(frac * 20)
+        parts.append(f"{'█' * filled}{'░' * (20 - filled)} {frac * 100:.0f}%")
+        info = [f"{done / gb:.1f}/{total / gb:.1f} GB"]
+    else:
+        info = [f"{done / gb:.1f} GB"]
+    if rate:
+        info.append(f"{rate / (1024 ** 2):.1f} MB/s")
+        if total > done:
+            left = (total - done) / rate
+            info.append(f"{left / 60:.0f} min left" if left >= 90 else f"{left:.0f} s left")
+    elif total and done >= total:
+        info.append("done")
+    return " ".join(parts) + " · " + " · ".join(info)
+
+
 def download_progress() -> list[dict]:
     """Every download running now — for whoever wants to say how long it will take."""
     with _jobs_lock:
@@ -1036,34 +1061,12 @@ def _download_blocking(
                         "treat this model as unavailable for now.",
             })
 
-        # --- tqdm setup -------------------------------------------------
-        # _TqdmSignalWriter intercepts tqdm's output, strips ANSI / carriage
-        # returns, and pushes each refreshed bar line to the progress signal
-        # (visible in Chainlit) as well as writing to the real stderr
-        # (visible in the terminal).
-        class _TqdmSignalWriter(io.RawIOBase):
-            """File-like wrapper that tees tqdm output to progress_signal."""
-
-            def __init__(self, real_file):
-                self._real = real_file
-                self._last_pushed: str = ""
-
-            def write(self, s: str) -> int:  # tqdm always passes str
-                self._real.write(s)
-                # Strip carriage-returns / ANSI escapes to get a clean line.
-                clean = s.replace("\r", "").replace("\n", "").strip()
-                # Remove ANSI escape codes (colours)
-                import re as _re
-                clean = _re.sub(r"\x1b\[[0-9;]*m", "", clean)
-                if clean and clean != self._last_pushed:
-                    self._last_pushed = clean
-                    _push_progress(f"⬇️ [{clean}]")
-                return len(s)
-
-            def flush(self) -> None:
-                self._real.flush()
-
-        _tqdm_writer = _TqdmSignalWriter(sys.stderr)
+        # tqdm draws the bar in the terminal only. The chat gets a line of its own
+        # making (see _progress_line): tqdm's output is terminal output - with two
+        # downloads at once it moves the cursor between its bars with escape
+        # codes, and at a width that fits a chat line it has no room left for the
+        # bar itself, so it arrived as "[A" noise, one new row per refresh.
+        last_line_at = 0.0
 
         # Write into the .downloading temp (append when resuming), rename on
         # completion. The partial is deliberately kept on error so the next
@@ -1078,9 +1081,7 @@ def _download_blocking(
                 unit_scale=True,
                 unit_divisor=1024,
                 desc=filename,
-                file=_tqdm_writer,
-                dynamic_ncols=False,
-                ncols=60,
+                file=sys.stderr,
                 leave=True,
             ) as pbar:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -1091,6 +1092,12 @@ def _download_blocking(
                         pbar.update(len(chunk))
                         if job is not None:
                             job["done"] = job.get("done", 0) + len(chunk)
+                        now = _time.monotonic()
+                        if now - last_line_at >= 1.0:
+                            last_line_at = now
+                            _push_progress(_progress_line(
+                                filename, pbar.n, total_size, pbar.format_dict.get("rate")))
+            _push_progress(_progress_line(filename, total_size or pbar.n, total_size, None))
 
             # Rename temp → final
             tmp_path.rename(dest_path)
