@@ -947,11 +947,18 @@ def _download_blocking(
             })
         _managed = node_managed_option(filename)
         if _managed:
+            # A partner/API node's menu lists remote model NAMES, so there are no
+            # weights anywhere to fetch — telling the agent "it keeps and fetches
+            # its weights itself" would send it looking for a download that
+            # cannot exist.
+            _why = ("it runs on a partner's servers (an API node), so there are no "
+                    "weights to fetch anywhere" if _managed.get("remote") else
+                    "such a node keeps and fetches its weights itself")
             return json.dumps({
                 "ok": True, "skipped": True,
                 "message": f"'{filename}' is an option the node offers itself "
-                           f"({', '.join(_managed['offered_by'][:6])}); such a node keeps and fetches its "
-                           f"weights itself. Nothing was downloaded: set the input to "
+                           f"({', '.join(_managed['offered_by'][:6])}); {_why}. "
+                           f"Nothing was downloaded: set the input to "
                            f"'{_managed['value']}' and run.",
             })
     except Exception:  # noqa: BLE001 — a failed lookup must not block a real download

@@ -1796,6 +1796,42 @@ def installed_model(name: str) -> str | None:
         return None
 
 
+def _menu_option_labels(spec) -> list[str]:
+    """The values a node offers on one of its own menus, whatever shape they arrive in.
+
+    Three shapes reach us: a bare list of strings, ``COMBO`` whose ``options``
+    are strings, and ``COMFY_DYNAMICCOMBO_V3`` whose ``options`` are dicts keyed
+    ``"key"``. The partner/API nodes all use that third one, and reading only the
+    first two made every one of their menus invisible — 180 inputs on a live
+    server, all of them dict-keyed.
+    """
+    if not (isinstance(spec, list) and spec):
+        return []
+    options = None
+    if isinstance(spec[0], list):
+        options = spec[0]
+    elif (len(spec) > 1 and isinstance(spec[1], dict)
+          and spec[0] in ("COMBO", "COMFY_DYNAMICCOMBO_V3")):
+        options = spec[1].get("options")
+    labels = []
+    for opt in options or ():
+        if isinstance(opt, str):
+            labels.append(opt)
+        elif isinstance(opt, dict):
+            label = next((opt[k] for k in ("key", "label", "value", "text")
+                          if isinstance(opt.get(k), str)), None)
+            if label:
+                labels.append(label)
+    return labels
+
+
+def _is_api_node(info: dict | None) -> bool:
+    """A node that runs its model on a partner's servers and so needs no local file."""
+    info = info or {}
+    return bool(info.get("api_node")) or str(
+        info.get("python_module") or "").startswith("comfy_api_nodes")
+
+
 def node_managed_option(name: str) -> dict | None:
     """A node that offers this file name as one of its own menu options.
 
@@ -1805,8 +1841,9 @@ def node_managed_option(name: str) -> dict | None:
     not in the inventory. Asked about it, check_model said "False"; the agent
     took that for a missing model and went to download a copy from an unrelated
     repository. A name a node offers is a value that node accepts — nothing to
-    install. Returns ``{"node_class", "input", "value", "offered_by"}``: the first
-    node found, and every ``Class.input`` that offers the name.
+    install. Returns ``{"node_class", "input", "value", "remote", "offered_by"}``:
+    the first node found, whether it is an API node whose model is remote rather
+    than merely self-managed, and every ``Class.input`` that offers the name.
     """
     want = Path(str(name)).name.lower()
     if not want:
@@ -1816,24 +1853,21 @@ def node_managed_option(name: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     found: list[tuple] = []
+    remote = False
     for cls, info in (object_info or {}).items():
-        spec_groups = (info or {}).get("input") or {}
+        info = info or {}
+        spec_groups = info.get("input") or {}
         for group in ("required", "optional"):
             for inp, spec in (spec_groups.get(group) or {}).items():
-                options = None
-                if isinstance(spec, list) and spec:
-                    if isinstance(spec[0], list):
-                        options = spec[0]
-                    elif spec[0] == "COMBO" and len(spec) > 1 and isinstance(spec[1], dict):
-                        options = spec[1].get("options")
-                for opt in options or ():
-                    if isinstance(opt, str) and Path(opt).name.lower() == want:
+                for opt in _menu_option_labels(spec):
+                    if Path(opt).name.lower() == want:
                         found.append((cls, inp, opt))
+                        remote = remote or _is_api_node(info)
                         break
     if not found:
         return None
     cls, inp, opt = found[0]
-    return {"node_class": cls, "input": inp, "value": opt,
+    return {"node_class": cls, "input": inp, "value": opt, "remote": remote,
             "offered_by": [f"{c}.{i}" for c, i, _ in found]}
 
 
@@ -1896,9 +1930,21 @@ def check_model(model_names: list | str) -> str:
                 managed = node_managed_option(name)
                 if managed:
                     hit = managed["value"]
-                    notes[name] = (f"not in a ComfyUI model folder: it is an option the node offers itself "
-                                   f"({', '.join(managed['offered_by'][:6])}). Such a node keeps and "
-                                   f"fetches its weights itself — use the value as is, do not download it.")
+                    if managed.get("remote"):
+                        # An API/partner node's model menu lists remote model NAMES,
+                        # not files. "False" from the inventory is the right answer
+                        # about the wrong question, and read on its own it sent a
+                        # repair agent to download weights for a model that runs on
+                        # somebody else's servers.
+                        notes[name] = (f"not a local file at all: {managed['node_class']} runs it on a "
+                                       f"partner's servers (an API node), and this is one of the values its "
+                                       f"own menu offers ({', '.join(managed['offered_by'][:6])}). There is "
+                                       f"nothing to install and nothing to download — use the value as is. "
+                                       f"If it is the wrong model, pick another value from that node's menu.")
+                    else:
+                        notes[name] = (f"not in a ComfyUI model folder: it is an option the node offers itself "
+                                       f"({', '.join(managed['offered_by'][:6])}). Such a node keeps and "
+                                       f"fetches its weights itself — use the value as is, do not download it.")
             result[name] = hit if hit else "False"
             if not hit:
                 # An exact name missing is not a model missing: a template names
