@@ -57,6 +57,12 @@ def set_turn_output_sink(fn: Optional[Callable[[str], None]]) -> None:
     turn_scope.current().set("image_io.output_sink", fn)
 
 
+def publish_output(path: str) -> None:
+    """Hand a file a tool produced to the host's output sink (public name for
+    :func:`_publish`), so it reaches the panel, the canvas and the viewer."""
+    _publish(path)
+
+
 def _publish(path: str) -> None:
     """Hand *path* to the host, if one is listening. Never raises."""
     from agenty_core.utils import turn_scope
