@@ -187,9 +187,18 @@ def scene_from_world(world: dict, keep_all: bool = False) -> tuple[dict, dict]:
     return scene, ref
 
 
+def ground_item(y: float, color: str = "#4a5564", size: float = 4000.0) -> dict:
+    """A big flat plane at height `y`: the ground a single-picture model does not hold
+    (it only has what the picture shows, so a camera moving forward soon films nothing below)."""
+    return {"id": "ground", "kind": "primitive", "name": "Ground", "primitive": {"type": "plane"},
+            "color": color, "position": [0, round(float(y), 4), 0], "rotation": [0, 0, 0], "scale": [size, 1, size],
+            "pivot": [0, 0, 0], "visible": True, "tracks": {}, "parent": None}
+
+
 def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, seconds: float, fps: float,
                 fov: Optional[float], resolution, ease: str, keep_world: bool = False,
-                model_scale=1.0, model_position=None, model_rotation=None, render: Optional[dict] = None):
+                model_scale=1.0, model_position=None, model_rotation=None, render: Optional[dict] = None,
+                ground=True, ground_color: str = "#4a5564"):
     """The previz scene for a camera move. Returns (scene, summary)."""
     if world is not None:
         scene, ref = scene_from_world(world, keep_world)
@@ -209,6 +218,11 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
         raise ValueError("the camera needs at least two moves at different times")
     shift = keys[0][0]
     keys = [(f - shift, p, r, v) for f, p, r, v in keys]
+    if ground and not keep_world:
+        sm = next((i for i in scene["items"] if i.get("id") == "scene"), None)
+        gy = ((sm or {}).get("scene_model") or {}).get("ground_y")
+        if gy is not None and not any(i.get("id") == "ground" for i in scene["items"]):
+            scene["items"].append(ground_item(gy, ground_color))
     cam = camera_item(keys, base_fov, resolution, ease)
     scene["items"] = [i for i in scene["items"] if i.get("id") != CAMERA_ID] + [cam]
     length = keys[-1][0] + 1
@@ -262,6 +276,8 @@ def render_camera_move(
     background: str = "viewer",
     color: str = "#7d8794",
     keep_world: bool = False,
+    ground: bool = True,
+    ground_color: str = "#4a5564",
     model_scale: float = 1.0,
     render: bool = True,
     add_to_canvas: bool = True,
@@ -298,6 +314,9 @@ def render_camera_move(
         background: "viewer" | "color" (then `color`, e.g. the sky's colour).
         color: Background colour for background="color".
         keep_world: Keep a world's terrain / scatter / lamps in the render.
+        ground: With a world's scene model, stand a flat ground plane at the model's ground height
+            (a single picture holds no ground under or just ahead of the camera).
+        ground_color: Colour of that plane (match the picture's ground).
         model_scale: Scale of a bare mesh (metres per model unit).
         render: False opens the scene and the camera in the viewer without rendering.
         add_to_canvas: A finished render also lands on the ComfyUI canvas as a loader node.
@@ -318,7 +337,7 @@ def render_camera_move(
         scene, summary = build_scene(world=world_scene, model=_resolve_model(model), moves=moves or [],
                                      seconds=seconds, fps=fps, fov=fov or None, resolution=(width, height),
                                      ease=ease, keep_world=keep_world, model_scale=model_scale,
-                                     render=render_cfg)
+                                     render=render_cfg, ground=ground, ground_color=ground_color)
         body = {"scene": scene, "name": name, "focus": True, "add_node": bool(add_to_canvas)}
         if render:
             body["render"] = {**render_cfg, "camera": CAMERA_ID, "useCameraRes": True}

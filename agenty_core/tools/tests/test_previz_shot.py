@@ -61,6 +61,19 @@ class SceneTests(unittest.TestCase):
         self.assertNotIn("walk", scene)
         self.assertEqual(summary["frames"], 121)
 
+    def test_ground_plane_at_the_models_ground(self):
+        world = json.loads(json.dumps(self.WORLD))
+        for i in world["items"]:
+            if i["id"] == "scene":
+                i["scene_model"] = {"ground_y": 1.35}
+        scene, _ = p.build_scene(world=world, moves=[{"t": 0}, {"t": 1}], seconds=1, fps=24, fov=None,
+                                 resolution=(864, 480), ease="linear")
+        g = next(i for i in scene["items"] if i["id"] == "ground")
+        self.assertEqual(g["position"][1], 1.35)
+        scene, _ = p.build_scene(world=world, moves=[{"t": 0}, {"t": 1}], seconds=1, fps=24, fov=None,
+                                 resolution=(864, 480), ease="linear", ground=False)
+        self.assertNotIn("ground", [i["id"] for i in scene["items"]])
+
     def test_depth_view_stays_without_a_scene_model(self):
         world = json.loads(json.dumps(self.WORLD))
         world["items"] = [i for i in world["items"] if i["id"] != "scene"]
