@@ -675,6 +675,9 @@ def _find_pending(op_id: str, output_dir: str = "") -> tuple[Optional[Path], Opt
 
 def _finish(job: dict, op: dict, output_dir: str = "") -> str:
     kind, wd = job["kind"], Path(job["world_dir"])
+    if kind == "render":
+        from agenty_core.tools.atlas_render import finish_render
+        return finish_render(job, op)
     resp = op.get("response") or {}
     op_id = op.get("id", "")
     usage = _usage_of(op)
@@ -813,27 +816,59 @@ def _create(name, prompt, image_paths, aspect_ratio, mesh_detail, timeout_s, out
     return _run(job, op, timeout_s)
 
 
-def _target_cameras(world: dict, moves: list, fov: float):
-    """Atlas target cameras (world frame) for each move, relative to the first picture's camera."""
-    from agenty_core.tools.previz_shot import camera_pose_keys, euler_to_matrix
+def _first_posed(world: dict) -> dict:
     first = next((f for f in world["frames"] if f.get("camera")), None)
     if not first:
         raise AtlasError("the world has no posed frame to move from", "args")
-    base = normalize_camera(first["camera"])
+    return normalize_camera(first["camera"])
+
+
+def grid_intrinsics(base: dict, fov: float = 0.0) -> dict:
+    """Intrinsics on the model's 1280 x 720 grid (targets must sit on it: a 1024 x 578 text-to-image
+    picture is rescaled to it), from the first picture's lens, or ``fov`` (vertical degrees) if given."""
     k0 = base["K"]
-    gw, gh = _GRID                      # targets must sit on the model's 1280 x 720 grid (a 1024 x 578
-    sx, sy = gw / k0["width"], gh / k0["height"]   # text-to-image picture is rescaled to it)
+    gw, gh = _GRID
+    sx, sy = gw / k0["width"], gh / k0["height"]
     K = {"fx": k0["fx"] * sx, "fy": k0["fy"] * sy, "cx": gw / 2.0, "cy": gh / 2.0, "width": gw, "height": gh}
     if fov and fov > 0:
         fy = (gh / 2.0) / math.tan(math.radians(fov) / 2.0)
         K.update(fy=fy, fx=fy)
+    return K
+
+
+def mesh_pose_to_camera(base: dict, K: dict, R, t) -> dict:
+    """A camera pose in the MESH frame (world.glb: the first picture's camera is the origin, looking
+    down -Z) -> an Atlas API camera in the world's own frame."""
+    return camera_to_api(_mm(base["R"], R), [a + b for a, b in zip(_mv(base["R"], t), base["t"])], K)
+
+
+def camera_to_mesh_pose(base: dict, cam: dict):
+    """The inverse: an API camera of the world -> (R, t) in the mesh frame."""
+    n = normalize_camera(cam)
+    R0T = _tr(base["R"])
+    return _mm(R0T, n["R"]), _mv(R0T, [a - b for a, b in zip(n["t"], base["t"])])
+
+
+def _target_cameras(world: dict, moves: list, fov: float):
+    """Atlas target cameras (world frame) for each move, relative to the first picture's camera."""
+    from agenty_core.tools.previz_shot import camera_pose_keys, euler_to_matrix
+    base = _first_posed(world)
+    K = grid_intrinsics(base, fov)
     keys = camera_pose_keys([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], moves, 24.0, None)
-    cams = []
-    for _f, pos, rot, _fv in keys:
-        R = _mm(base["R"], euler_to_matrix(rot))
-        t = [a + b for a, b in zip(_mv(base["R"], pos), base["t"])]
-        cams.append(camera_to_api(R, t, K))
-    return cams
+    return [mesh_pose_to_camera(base, K, euler_to_matrix(rot), pos) for _f, pos, rot, _fv in keys]
+
+
+def context_frames(wd: Path, ctx: list) -> list:
+    """Atlas ``contextFrames`` for posed world frames (stored assets by id; a local file as a fallback)."""
+    out = []
+    for f in ctx:
+        d_asset = ({"assetId": f["depth_asset"]} if f.get("depth_asset") else None)
+        if not d_asset:
+            raise AtlasError(f"frame {f['id']} has no stored depth asset (made outside Atlas?)", "args")
+        depth = ({"logDepthAsset": d_asset, **f["depth_log"]} if f.get("depth_log") else {"depthAsset": d_asset})
+        out.append({"imageAsset": ({"assetId": f["image_asset"]} if f.get("image_asset") else _image_input(str(wd / f["image"]))),
+                    "depth": depth, "camera": f["camera"]})
+    return out
 
 
 @tool
@@ -879,14 +914,7 @@ def _expand(name, moves, prompt, fov, context, mesh_detail, timeout_s, output_di
     if not ctx:
         raise AtlasError("no context frames with depth to give Atlas", "args")
     cams = _target_cameras(world, [{**m, "t": 0.0} for m in moves], fov)
-    cframes = []
-    for f in ctx:
-        d_asset = ({"assetId": f["depth_asset"]} if f.get("depth_asset") else None)
-        if not d_asset:
-            raise AtlasError(f"frame {f['id']} has no stored depth asset (made outside Atlas?)", "args")
-        depth = ({"logDepthAsset": d_asset, **f["depth_log"]} if f.get("depth_log") else {"depthAsset": d_asset})
-        cframes.append({"imageAsset": ({"assetId": f["image_asset"]} if f.get("image_asset") else _image_input(str(wd / f["image"]))),
-                        "depth": depth, "camera": f["camera"]})
+    cframes = context_frames(wd, ctx)
     use_prompt = prompt or world.get("prompt_used") or world.get("prompt") or None
     body = {"contextFrames": cframes, "targetCameras": cams, "returnDepth": True,
             "enhancePrompt": not bool(use_prompt and not prompt)}
