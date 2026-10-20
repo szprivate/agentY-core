@@ -41,6 +41,31 @@ class MathTests(unittest.TestCase):
         self.assertEqual(keys[0][3], 65.0)
 
 
+class GroundFitTests(unittest.TestCase):
+    def test_fits_a_tilted_floor_and_levels_it(self):
+        import numpy as np
+        rng = np.random.default_rng(0)
+        x = rng.uniform(-20, 20, 4000)
+        z = rng.uniform(-40, -3, 4000)
+        tilt = np.radians(4.0)
+        y = -1.8 + np.tan(tilt) * (z + 20) * 0 + (-z - 20) * np.tan(tilt) * -1   # slopes with distance
+        floor = np.stack([x, y, z], 1)
+        wall = np.stack([rng.uniform(-5, 5, 500), rng.uniform(-1, 8, 500), np.full(500, -30.0)], 1)
+        fit = p.fit_ground_plane(np.concatenate([floor, wall]))
+        self.assertIsNotNone(fit)
+        n, c0, share = fit
+        self.assertAlmostEqual(float(np.degrees(np.arccos(n[1]))), 4.0, delta=0.6)
+        self.assertGreater(share, 0.6)
+        rot = p.level_rotation(n)
+        up = p.euler_to_matrix(rot)
+        level = [sum(up[i][k] * n[k] for k in range(3)) for i in range(3)]
+        self.assertTrue(close(level, [0, 1, 0], 1e-6))
+
+    def test_nothing_to_fit(self):
+        import numpy as np
+        self.assertIsNone(p.fit_ground_plane(np.zeros((10, 3))))
+
+
 class SceneTests(unittest.TestCase):
     WORLD = {"version": 1, "fps": 24, "length": 240, "walk": {}, "items": [
         {"id": "env", "kind": "environment"}, {"id": "terrain", "kind": "terrain"},
@@ -60,6 +85,19 @@ class SceneTests(unittest.TestCase):
         self.assertNotIn("fov", cam["tracks"])
         self.assertNotIn("walk", scene)
         self.assertEqual(summary["frames"], 121)
+
+    def test_ground_plane_at_the_models_ground(self):
+        world = json.loads(json.dumps(self.WORLD))
+        for i in world["items"]:
+            if i["id"] == "scene":
+                i["scene_model"] = {"ground_y": 1.35}
+        scene, _ = p.build_scene(world=world, moves=[{"t": 0}, {"t": 1}], seconds=1, fps=24, fov=None,
+                                 resolution=(864, 480), ease="linear")
+        g = next(i for i in scene["items"] if i["id"] == "ground")
+        self.assertEqual(g["position"][1], 1.35)
+        scene, _ = p.build_scene(world=world, moves=[{"t": 0}, {"t": 1}], seconds=1, fps=24, fov=None,
+                                 resolution=(864, 480), ease="linear", ground=False)
+        self.assertNotIn("ground", [i["id"] for i in scene["items"]])
 
     def test_depth_view_stays_without_a_scene_model(self):
         world = json.loads(json.dumps(self.WORLD))
