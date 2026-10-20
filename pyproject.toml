@@ -33,6 +33,8 @@ dependencies = [
     # Shot-boundary detection for tools/video.py. Verified against 0.7.1; the
     # detect()/ContentDetector/AdaptiveDetector API used there is 0.7's.
     "scenedetect>=0.7.0",
+    # tools/worldlabs_atlas.py reads the depth EXRs World Labs Atlas returns.
+    "OpenEXR>=3.2",
 ]
 
 [tool.setuptools.packages.find]
