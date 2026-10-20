@@ -361,6 +361,18 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
     elif model:
         scene = {"version": 1, "items": [model_item(model, "Scene model", model_position, model_rotation, model_scale)]}
         base_pos, base_rot, base_fov = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], float(fov or 50.0)
+        if ground:                                             # a camera-frame mesh (MoGe, SHARP, Atlas): level its ground
+            scene["items"][0]["scene_model"] = {"frame": "camera_gl"}
+            leveled = None
+            try:
+                leveled = level_world_ground(scene, {}, ground_color)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not fit the ground")
+            if leveled:
+                base_rot, plane, ground_info = leveled
+                scene["items"].append(plane)
+            else:
+                scene["items"][0].pop("scene_model", None)
     else:
         raise ValueError("give a world (name) or a model (path to a mesh)")
     if not moves:
