@@ -208,5 +208,17 @@ class OrbitRig(unittest.TestCase):
         self.assertEqual(summary["orbit"]["center"], [0.0, 1.7, -3.0])
 
 
+
+class OrbitReport(unittest.TestCase):
+    def test_world_path_goes_round_to_behind(self):
+        from agenty_core.tools import previz_shot as P
+        _p, _c, _l, summary = P.orbit_items({"center": [0, 1.7, -1], "degrees": 180, "distance": [0.5, 7],
+                                             "height": [0, 1.4]}, [0, 1.6, 0], [0, 0, 0], 24, 40, (1280, 720))
+        path = summary["orbit"]["camera_world_path"]
+        self.assertEqual(path["start"], [0.0, 1.7, -0.5])        # in front of him, towards the picture's camera
+        self.assertAlmostEqual(path["end"][2], -8.0, places=3)     # 7 m behind him
+        self.assertAlmostEqual(path["end"][1], 3.1, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
