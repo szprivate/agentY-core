@@ -19,6 +19,7 @@ byte-wrangling underneath them is shared, in
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -123,6 +124,19 @@ def resolve_local_image(file_path: str) -> Optional[str]:
     return None
 
 
+def _content_tag(path: str) -> str:
+    """Short hash of a file's bytes, for a collision-free staged name."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
+def _same_content(a: str, b: str) -> bool:
+    return os.path.getsize(a) == os.path.getsize(b) and _content_tag(a) == _content_tag(b)
+
+
 def stage_image(file_path: str, subfolder: str = "", image_type: str = "input",
                 overwrite: bool = False) -> dict:
     """Upload one local image into ComfyUI's input dir. Returns a plain dict.
@@ -138,24 +152,37 @@ def stage_image(file_path: str, subfolder: str = "", image_type: str = "input",
     filename = os.path.basename(resolved)
 
     # Idempotency: if this file is already staged in ComfyUI's input dir, don't
-    # re-upload it — return its bare filename instead. Covers (a) pointing at a
+    # re-upload it - return its bare filename instead. Covers (a) pointing at a
     # file that already lives in the input dir, (b) a canvas LoadImage widget that
     # references an input by bare name, and (c) re-staging a file that was already
-    # staged this turn. Only for flat input uploads and when not overwriting.
-    # Best-effort: any failure falls through to a normal upload.
-    if image_type == "input" and not subfolder and not overwrite:
+    # staged this turn. Only for flat input uploads. Best-effort: any failure falls
+    # through to a normal upload.
+    #
+    # Input uploads are flat, so two different files with one basename (parallel
+    # shots: shots/sh01/first.png and shots/sh02/first.png) would collide. The name
+    # alone never decides: a staged file of that name is reused only when its
+    # CONTENT is the same, otherwise the file goes up under a name carrying a short
+    # content hash, and the returned `name` is the one the loader must use.
+    if image_type == "input" and not subfolder:
         try:
             input_dir = comfy_input_dir()
             if input_dir:
                 staged = os.path.join(input_dir, filename)
-                same_path = os.path.abspath(resolved) == os.path.abspath(staged)
-                if os.path.isfile(staged) and (
-                    same_path or os.path.getsize(staged) == os.path.getsize(resolved)
-                ):
-                    return {
-                        "name": filename, "subfolder": "", "type": "input",
-                        "note": "already staged in ComfyUI input dir; upload skipped",
-                    }
+                if os.path.isfile(staged):
+                    if (os.path.abspath(resolved) == os.path.abspath(staged)
+                            or _same_content(staged, resolved)):
+                        return {
+                            "name": filename, "subfolder": "", "type": "input",
+                            "note": "already staged in ComfyUI input dir; upload skipped",
+                        }
+                    stem, ext = os.path.splitext(filename)
+                    filename = f"{stem}_{_content_tag(resolved)}{ext}"
+                    staged = os.path.join(input_dir, filename)
+                    if os.path.isfile(staged) and _same_content(staged, resolved):
+                        return {
+                            "name": filename, "subfolder": "", "type": "input",
+                            "note": "already staged in ComfyUI input dir; upload skipped",
+                        }
         except Exception:  # noqa: BLE001
             pass
 

@@ -508,6 +508,21 @@ def _fetch_template(name: str) -> dict | None:
     return data
 
 
+def _conversation_tag() -> str:
+    """A short filesystem-safe tag of the conversation this turn belongs to, or "".
+
+    Parallel shot conversations load the same template at the same time. Named only
+    after the template, they shared one graph file (and one cached result), so one
+    shot's edits - its loader's first frame - landed in the others' graphs.
+    """
+    try:
+        from agenty_core.utils import turn_scope  # noqa: PLC0415
+        tid = turn_scope.current().thread_id
+    except Exception:  # noqa: BLE001
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(tid or ""))[-8:]
+
+
 def _save_workflow(workflow: dict, name: str = "") -> str:
     """Save *workflow* dict to a JSON file and return the absolute path."""
     wd = _workflows_dir()
@@ -3303,7 +3318,9 @@ def _get_workflow_template_one(template_name: str) -> str:
         # Build mode: hand back an EMPTY canvas instead of a ready-made scaffold,
         # so the agent assembles every node itself (from the recipe standard) yet
         # still has a workflow file to add nodes to.
-        empty_path = _save_workflow({}, name=f"build_{Path(template_name).stem or 'new'}")
+        _tag = _conversation_tag()
+        empty_path = _save_workflow(
+            {}, name=f"build_{Path(template_name).stem or 'new'}" + (f"__{_tag}" if _tag else ""))
         return json.dumps({
             "name": template_name,
             "source": "build-mode",
@@ -3331,9 +3348,13 @@ def _get_workflow_template_one(template_name: str) -> str:
                     "never call the model unsupported, and never substitute a "
                     "different model. Build exactly the recipe.",
         })
+    # Cached per conversation: the result carries the path of the graph file this
+    # conversation edits, which a parallel shot must not be handed.
+    _tag = _conversation_tag()
+    _cache_key = f"{_tag}|{template_name}" if _tag else template_name
     with _tool_cache_lock:
-        if template_name in _tool_template_results:
-            return _tool_template_results[template_name]
+        if _cache_key in _tool_template_results:
+            return _tool_template_results[_cache_key]
     try:
         lookup = template_name.removesuffix(".json")
         workflow = None
@@ -3422,7 +3443,7 @@ def _get_workflow_template_one(template_name: str) -> str:
         if isinstance(workflow, dict):
             _resolve_model_names(workflow)
 
-        workflow_path = _save_workflow(workflow, name=lookup)
+        workflow_path = _save_workflow(workflow, name=f"{lookup}__{_tag}" if _tag else lookup)
 
         # Build compact node summary
         node_summary = []
@@ -3457,7 +3478,7 @@ def _get_workflow_template_one(template_name: str) -> str:
 
         result_json = json.dumps(result)
         with _tool_cache_lock:
-            _tool_template_results[template_name] = result_json
+            _tool_template_results[_cache_key] = result_json
         return result_json
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -4499,6 +4520,17 @@ def _agent_input_ref(filename: str) -> str:
         return filename
     if f.startswith("/") or (len(f) > 1 and f[1] == ":"):
         return filename  # absolute path — leave as-is
+    # A subfolder is dropped only when the file is not actually staged under it: a
+    # reference to a real input-subfolder file ("shots/sh01/first.png") must keep
+    # its path, or it flattens onto another file of the same name.
+    if "/" in f:
+        try:
+            from agenty_core.tools.image_io import comfy_input_dir  # noqa: PLC0415 - import cycle
+            in_dir = comfy_input_dir()
+            if in_dir and (Path(in_dir) / f).is_file():
+                return f
+        except Exception:  # noqa: BLE001
+            pass
     return f.rsplit("/", 1)[-1]  # bare filename; agent inputs live in the input root
 
 
