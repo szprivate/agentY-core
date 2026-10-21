@@ -215,6 +215,13 @@ def _category_dir(category: str) -> tuple[Path, str]:
             for p in cand:
                 if p.replace("\\", "/").lower().startswith(extra_base):
                     return Path(p), "configured_models_dir"
+        # on the first (default) drive, the folder named after the type beats an
+        # alias listed before it (diffusion_models -> unet)
+        drive = cand[0].replace("\\", "/").split("/", 1)[0].lower()
+        for p in cand:
+            q = p.replace("\\", "/").rstrip("/")
+            if q.split("/", 1)[0].lower() == drive and q.rsplit("/", 1)[-1].lower() == category:
+                return Path(p), "comfyui_folder_path"
         return Path(cand[0]), "comfyui_folder_path"
     return _models_base_dir() / category, "models_base_dir"
 

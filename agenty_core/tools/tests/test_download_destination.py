@@ -55,5 +55,12 @@ class Destination(unittest.TestCase):
         self.assertIsNone(h._FOLDER_PATHS_CACHE)
 
 
+
+class AliasFolder(unittest.TestCase):
+    def test_the_folder_named_after_the_type_wins_on_the_default_drive(self):
+        fp = {"diffusion_models": ["L:/m/unet", "L:/m/diffusion_models", "D:/c/models/unet"]}
+        with mock.patch.object(h, "_folder_paths", return_value=fp),                 mock.patch.object(h, "_configured_models_dir", return_value=None):
+            self.assertEqual(h._category_dir("diffusion_models")[0], Path("L:/m/diffusion_models"))
+
 if __name__ == "__main__":
     unittest.main()
