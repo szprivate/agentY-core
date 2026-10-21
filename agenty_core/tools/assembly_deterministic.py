@@ -386,6 +386,83 @@ def autogrow_slot_names(spec) -> list[str]:
     return [f"{tmpl.get('prefix', '')}{i}" for i in range(count)]
 
 
+def autogrow_member_spec(spec):
+    """The spec one slot of an autogrow group takes, from its template (one member), or None."""
+    try:
+        template = (spec[1] or {}).get("template") or {}
+        inputs = template.get("input") or {}
+        members = {**(inputs.get("optional") or {}), **(inputs.get("required") or {})}
+        if len(members) == 1:
+            return next(iter(members.values()))
+    except Exception:  # noqa: BLE001 - an unreadable template is an untyped slot
+        return None
+    return None
+
+
+def selected_option_key(spec, value):
+    """The option of a dynamic combo that *value* selects: the value itself when it
+    is an option key, the combo's default or first option when it is absent
+    (``None``), and ``None`` (nothing in force) for any other value."""
+    keys = _dynamic_combo_option_keys(spec)
+    if not keys:
+        return None
+    if value is None:
+        default = spec[1].get("default") if isinstance(spec[1], dict) else None
+        return str(default) if default is not None and str(default) in keys else keys[0]
+    return str(value) if isinstance(value, str) and value in keys else None
+
+
+def expand_input_specs(required: dict | None, optional: dict | None = None,
+                       values: dict | None = None, _prefix: str = "", _depth: int = 0) -> dict:
+    """Every input in force on a node, as the API prompt addresses it: ``{name: spec}``.
+
+    A ``COMFY_DYNAMICCOMBO_V3`` brings the inputs of its *selected* option, named
+    ``<combo>.<input>`` (the option is ``values[<combo>]``; when absent, the
+    combo's default or first option, as the frontend's widget starts). An
+    autogrow group is kept under its own name and expanded into one entry per
+    slot, ``<group>.<slot>``, typed by the group's template. Both nest:
+    ``model.reference_images.image_1`` is a slot of a group inside an option.
+    A dynamic combo whose value names no option contributes nothing.
+    """
+    values = values or {}
+    out: dict = {}
+    for source in (optional or {}, required or {}):
+        for name, spec in source.items():
+            full = f"{_prefix}{name}"
+            out[full] = spec
+            if is_autogrow_spec(spec):
+                member = autogrow_member_spec(spec) or ["*", {}]
+                for slot in autogrow_slot_names(spec):
+                    out[f"{full}.{slot}"] = member
+            elif _dynamic_combo_option_keys(spec) and _depth < 6:
+                chosen = selected_option_key(spec, values.get(full))
+                if chosen is None:
+                    continue
+                for opt in spec[1].get("options") or []:
+                    if isinstance(opt, dict) and str(opt.get("key")) == chosen:
+                        inner = opt.get("inputs") or {}
+                        out.update(expand_input_specs(inner.get("required"), inner.get("optional"),
+                                                      values, f"{full}.", _depth + 1))
+    return out
+
+
+def describe_input_names(expanded: dict, limit: int = 40) -> list[str]:
+    """The names of an :func:`expand_input_specs` result for a message to the agent:
+    each autogrow group's slots collapsed to ``<group>.<first>..<last>``."""
+    groups = {n: autogrow_slot_names(s) for n, s in expanded.items() if is_autogrow_spec(s)}
+    shown: list[str] = []
+    for name in expanded:
+        owner = next((g for g in groups if name.startswith(g + ".")), None)
+        if owner is not None:
+            continue
+        slots = groups.get(name)
+        if slots:
+            shown.append(f"{name}.{slots[0]}" + (f"..{slots[-1]}" if len(slots) > 1 else ""))
+        else:
+            shown.append(name)
+    return shown[:limit] + ([f"... ({len(shown) - limit} more)"] if len(shown) > limit else [])
+
+
 def is_v3_schema(node_info) -> bool:
     """True when *node_info* (one ``/object_info`` entry) describes a V3 node.
 

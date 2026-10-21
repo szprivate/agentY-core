@@ -34,6 +34,8 @@ from agenty_core.tools.assembly_deterministic import (
     _is_wire as _is_wire_value,
     autogrow_slot_names as _autogrow_slot_names,
     declared_input_keys as _declared_input_keys,
+    describe_input_names as _describe_input_names,
+    expand_input_specs as _expand_input_specs,
     dynamic_sub_specs as _dynamic_sub_specs,
     is_autogrow_spec as _is_autogrow_group,
     normalize_autogrow_keys as _normalize_autogrow_keys,
@@ -1341,9 +1343,21 @@ def _api_to_graph(workflow: dict) -> dict:
                 continue
             if _is_link(ins.get(name)) or (isinstance(t, str) and t in _LINK_ONLY_TYPES):
                 conns.append((name, t if isinstance(t, str) else "*")); seen.add(name)
+        # A dotted wire belongs to the option a dynamic combo has selected
+        # (model.reference_images.image_1): typed by that option's own spec, and a
+        # slot of a group keeps its short label, as the frontend saves it.
+        in_force = (_expand_input_specs(spec.get("required"), spec.get("optional"), ins)
+                    if any("." in str(n) and _is_link(v) for n, v in ins.items()) else {})
         for name, v in ins.items():  # linked custom inputs absent from schema
             if _is_link(v) and name not in seen:
-                conns.append((name, "*")); seen.add(name)
+                sp = in_force.get(name)
+                typ = "*"
+                if isinstance(sp, list) and sp:
+                    typ = "COMBO" if isinstance(sp[0], list) else str(sp[0])
+                    owner = name.rsplit(".", 1)[0]
+                    if _is_autogrow_group(in_force.get(owner)):
+                        grown.add(name)
+                conns.append((name, typ)); seen.add(name)
         # A widget driven by a wire keeps its place in widgets_values - official
         # templates hold "" there for a linked prompt - so only true sockets leave
         # the widget order. Dropping the linked prompt shifted every value of
@@ -1671,6 +1685,49 @@ def _parse_autogrow(name: str, opts: dict) -> dict:
     return entry
 
 
+def _parse_dynamic_combo(name: str, definition) -> dict:
+    """Render a V3 dynamic combo with the inputs each option brings, dotted as the
+    API prompt addresses them (``model.prompt``, ``model.reference_images.image_1``).
+
+    The combo's own value picks the option; only that option's inputs exist on the
+    node, and none of them is a top-level input - which is why the plain schema
+    (``model``, ``seed``, ``watermark``) made every one of them look unknown.
+    """
+    opts = definition[1] if len(definition) > 1 and isinstance(definition[1], dict) else {}
+    keys = [str(o.get("key")) for o in (opts.get("options") or [])
+            if isinstance(o, dict) and o.get("key") is not None]
+    default = opts.get("default")
+    option_inputs: dict = {}
+    for opt in opts.get("options") or []:
+        if not isinstance(opt, dict) or opt.get("key") is None:
+            continue
+        inner = opt.get("inputs") or {}
+        # Parsed with the dotted prefix so a nested autogrow reports full addresses.
+        flat: dict = {}
+        for section in ("required", "optional"):
+            sub = _parse_inputs_schema({f"{name}.{n}": sp for n, sp in (inner.get(section) or {}).items()})
+            for n, e in sub.items():
+                e = dict(e)
+                if section == "optional":
+                    e["optional"] = True
+                flat[n] = e
+        option_inputs[str(opt["key"])] = flat
+    entry = {
+        "type": "COMFY_DYNAMICCOMBO_V3",
+        "dynamic": True,
+        "options": keys,
+        "default": default if default in keys else (keys[0] if keys else None),
+        "option_inputs": option_inputs,
+        "note": (f"Dynamic combo: set '{name}' to one option; the inputs listed under "
+                 f"that option in option_inputs are then addressed as '{name}.<input>' "
+                 f"(autogrow slots as '{name}.<group>.<slot>'). Inputs of the other "
+                 f"options do not exist on the node."),
+    }
+    if "tooltip" in opts:
+        entry["tooltip"] = opts["tooltip"]
+    return entry
+
+
 def _parse_inputs_schema(spec: dict) -> dict:
     """Turn ComfyUI's input spec into a friendlier format."""
     result = {}
@@ -1683,6 +1740,9 @@ def _parse_inputs_schema(spec: dict) -> dict:
                 # V3 dynamic autogrow input — surface the grown type + slot keys
                 # instead of the opaque COMFY_AUTOGROW_V3 sentinel.
                 result[name] = _parse_autogrow(name, opts if isinstance(opts, dict) else {})
+                continue
+            if type_info == "COMFY_DYNAMICCOMBO_V3" and isinstance(opts, dict):
+                result[name] = _parse_dynamic_combo(name, definition)
                 continue
             if isinstance(type_info, list):
                 entry["type"] = "COMBO"
@@ -5026,20 +5086,14 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
 def _undeclared_wire_error(nid, cls: str, key: str, node: dict, required: dict,
                            optional: dict | None) -> str:
     """The error for a wire under a key *cls* does not declare, naming what it takes."""
-    specs = {**(optional or {}), **(required or {})}
-    keys, _open = _declared_input_keys(node, required, optional)
-    groups = sorted(g for g in keys if _is_autogrow_group(specs.get(g)))
-    shown = [k for k in sorted(keys)
-             if k not in groups and not any(k.startswith(g + ".") for g in groups)]
-    for g in groups:
-        slots = _autogrow_slot_names(specs[g])
-        if slots:
-            shown.append(f"{g}.{slots[0]}..{slots[-1]}")
-    more = f", ... ({len(shown) - 24} more)" if len(shown) > 24 else ""
+    # Every input in force, a dynamic combo's selected option and the autogrow
+    # groups inside it included, slots collapsed to a range.
+    expanded = _expand_input_specs(required, optional, node.get("inputs") or {})
+    shown = _describe_input_names(expanded, 60)
     return (f"Node {nid} ({cls}): '{key}' is wired but is not an input of {cls}. "
             f"ComfyUI passes a wire on under any key, so the run would fail with "
             f"\"unexpected keyword argument '{key}'\". Inputs it takes: "
-            f"{', '.join(shown[:24])}{more}.")
+            f"{', '.join(shown)}.")
 
 
 def normalize_autogrow_wires(workflow: dict) -> list[str]:
