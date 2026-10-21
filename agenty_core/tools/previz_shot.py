@@ -405,8 +405,18 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
            "rotation": rot_keys[0]["v"], "scale": [1, 1, 1], "fov": round(float(fov), 3),
            "resolution": [int(resolution[0]), int(resolution[1])], "pivot": [0, 0, 0], "visible": True,
            "tracks": {"position": pos_keys, "rotation": rot_keys}, "parent": PIVOT_ID}
+    # Where the camera really goes, in scene coordinates: its own keys are local to the turning pivot
+    # (they stay on the pivot's axis), so check the path here, not in the scene file's camera track.
+    def world_at(frac: float):
+        u = _eased(frac, ease)
+        yaw = math.radians(yaw0 + deg * u)
+        d, h = d0 + (d1 - d0) * u, h0 + (h1 - h0) * u
+        return _r([cpos[0] + math.sin(yaw) * d, cpos[1] + h, cpos[2] + math.cos(yaw) * d], 3)
     summary = {"orbit": {"center": _r(cpos, 3), "start_yaw": round(yaw0, 2), "degrees": deg,
-                         "distance": [d0, d1], "height": [h0, h1], "seconds": seconds, "ease": ease}}
+                         "distance": [d0, d1], "height": [h0, h1], "seconds": seconds, "ease": ease,
+                         "camera_world_path": {"start": world_at(0.0), "middle": world_at(0.5), "end": world_at(1.0)},
+                         "note": "The camera's own track is local to the pivot, which turns by `degrees`; "
+                                 "camera_world_path is where it really is (start, half-way, end)."}}
     return pivot, cam, last + 1, summary
 
 
