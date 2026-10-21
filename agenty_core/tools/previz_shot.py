@@ -330,10 +330,90 @@ def ground_item(y: float, color: str = "#4a5564", size: float = 4000.0) -> dict:
             "pivot": [0, 0, 0], "visible": True, "tracks": {}, "parent": None}
 
 
+PIVOT_ID = "orbitpivot"
+
+
+def _eased(u: float, ease: str) -> float:
+    """Where a key's ease puts the value at fraction *u* of the way: the viewer's "smooth" is the
+    cubic with flat tangents at both keys (smoothstep), "linear" a straight line, "hold" a step."""
+    u = max(0.0, min(1.0, u))
+    if ease == "smooth":
+        return u * u * (3.0 - 2.0 * u)
+    if ease == "hold":
+        return 0.0 if u < 1.0 else 1.0
+    return u
+
+
+def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolution, ease: str = "linear"):
+    """A camera rig that circles a subject: (pivot_group, camera, length, summary).
+
+    The way an operator builds it: a pivot (group) stands on the subject and only turns about the
+    vertical axis, ``degrees`` over the move; the camera is its child, on the pivot's +Z axis, moving
+    straight back (``distance``) and up (``height``) while it tilts down to keep the subject in frame.
+    Every track is a single angle or a straight line, so nothing can roll or wobble the way three
+    interpolated Euler angles do on a 180-degree turn.
+
+    orbit: {"center": [x, y, z] in scene coordinates, or {"forward", "right", "up"} metres from the
+    picture's camera; "degrees": 180 (positive turns left, seen from above); "seconds": 5;
+    "distance": [start, end] metres from the centre; "height": [start, end] metres above the centre;
+    "start_yaw": degrees, default = the side facing the picture's camera; "look_at_height": metres
+    above the centre the camera aims at (default 0, the centre itself)}.
+    """
+    center = orbit.get("center") or {}
+    if isinstance(center, dict):
+        cpos = camera_pose_keys(base_pos, base_rot, [{"t": 0, **center}], fps)[0][1]
+    else:
+        cpos = [float(x) for x in center]
+        if len(cpos) != 3:
+            raise ValueError("orbit center is [x, y, z] or {forward, right, up}")
+    deg = float(orbit.get("degrees", 180.0))
+    seconds = float(orbit.get("seconds", 5.0))
+    if seconds <= 0:
+        raise ValueError("orbit seconds must be > 0")
+    d0, d1 = (float(x) for x in (orbit.get("distance") or [2.0, 2.0]))
+    h0, h1 = (float(x) for x in (orbit.get("height") or [0.0, 0.0]))
+    aim = float(orbit.get("look_at_height", 0.0))
+    if min(d0, d1) <= 0:
+        raise ValueError("orbit distance must be > 0")
+    if orbit.get("start_yaw") is not None:
+        yaw0 = float(orbit["start_yaw"])
+    else:
+        dx, dz = base_pos[0] - cpos[0], base_pos[2] - cpos[2]
+        if abs(dx) + abs(dz) < 1e-6:                        # centred on the picture's camera: face where it looks
+            back = _col(euler_to_matrix(base_rot), 2)
+            dx, dz = back[0], back[2]
+        yaw0 = math.degrees(math.atan2(dx, dz))             # Ry(yaw) turns local +Z towards (dx, dz)
+    ease = ease if ease in _EASES else "linear"
+    last = int(round(seconds * fps))
+    pivot = {"id": PIVOT_ID, "kind": "group", "name": "Orbit pivot", "position": _r(cpos),
+             "rotation": [0.0, round(yaw0, 3), 0.0], "scale": [1, 1, 1], "pivot": [0, 0, 0], "visible": True,
+             "parent": None,
+             "tracks": {"rotation": [{"f": 0, "v": [0.0, round(yaw0, 3), 0.0], "ease": ease},
+                                     {"f": last, "v": [0.0, round(yaw0 + deg, 3), 0.0], "ease": ease}]}}
+    # The camera's own keys: dense (every 3 frames) so the tilt follows the true look-at angle; each
+    # sample already carries the move's ease, so the keys between them are linear.
+    step = 3
+    frames = sorted(set(list(range(0, last, step)) + [last]))
+    pos_keys, rot_keys = [], []
+    for f in frames:
+        u = _eased(f / last if last else 1.0, ease)
+        d, h = d0 + (d1 - d0) * u, h0 + (h1 - h0) * u
+        pitch = -math.degrees(math.atan2(h - aim, d))
+        pos_keys.append({"f": f, "v": _r([0.0, h, d]), "ease": "linear"})
+        rot_keys.append({"f": f, "v": [round(pitch, 3), 0.0, 0.0], "ease": "linear"})
+    cam = {"id": CAMERA_ID, "kind": "camera", "name": "Shot camera", "position": pos_keys[0]["v"],
+           "rotation": rot_keys[0]["v"], "scale": [1, 1, 1], "fov": round(float(fov), 3),
+           "resolution": [int(resolution[0]), int(resolution[1])], "pivot": [0, 0, 0], "visible": True,
+           "tracks": {"position": pos_keys, "rotation": rot_keys}, "parent": PIVOT_ID}
+    summary = {"orbit": {"center": _r(cpos, 3), "start_yaw": round(yaw0, 2), "degrees": deg,
+                         "distance": [d0, d1], "height": [h0, h1], "seconds": seconds, "ease": ease}}
+    return pivot, cam, last + 1, summary
+
+
 def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, seconds: float, fps: float,
                 fov: Optional[float], resolution, ease: str, keep_world: bool = False,
                 model_scale=1.0, model_position=None, model_rotation=None, render: Optional[dict] = None,
-                ground=True, ground_color: str = ""):
+                ground=True, ground_color: str = "", orbit: Optional[dict] = None):
     """The previz scene for a camera move. Returns (scene, summary)."""
     ground_info = None
     if world is not None:
@@ -375,6 +455,13 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
                 scene["items"][0].pop("scene_model", None)
     else:
         raise ValueError("give a world (name) or a model (path to a mesh)")
+    if orbit:
+        pivot, cam, length, osum = orbit_items(orbit, base_pos, base_rot, fps, base_fov, resolution, ease)
+        scene["items"] = [i for i in scene["items"] if i.get("id") not in (CAMERA_ID, PIVOT_ID)] + [pivot, cam]
+        scene.update({"fps": float(fps), "length": length, "lengthSet": True, "activeCamera": CAMERA_ID})
+        if render:
+            scene["render"] = render
+        return scene, {"frames": length, "fps": fps, "ground": ground_info, **osum}
     if not moves:
         raise ValueError("no camera moves given")
     moves = sorted(moves, key=lambda m: float(m.get("t", 0)))
@@ -423,7 +510,7 @@ def _resolve_model(path: str) -> str:
 @tool
 def render_camera_move(
     name: str,
-    moves: list[dict],
+    moves: Optional[list[dict]] = None,
     world: str = "",
     model: str = "",
     seconds: float = 0.0,
@@ -442,6 +529,7 @@ def render_camera_move(
     render: bool = True,
     add_to_canvas: bool = True,
     timeout_seconds: float = 900.0,
+    orbit: Optional[dict] = None,
 ) -> str:
     """Fly a camera through a 3D scene in the bEpic viewer and render the move to a clip.
 
@@ -483,6 +571,17 @@ def render_camera_move(
         render: False opens the scene and the camera in the viewer without rendering.
         add_to_canvas: A finished render also lands on the ComfyUI canvas as a loader node.
         timeout_seconds: How long to wait for the render.
+        orbit: Instead of moves, circle a subject the way an operator rigs it - for "circle around him",
+            "orbit 180 degrees while pulling back". A pivot stands on the subject and turns about the
+            vertical axis; the camera is its child and moves straight back / up while it keeps the
+            subject in frame, so the arc is perfectly smooth and the horizon level (keyframed moves
+            through a big turn wobble and roll). {"center": [x, y, z] (scene coordinates) or
+            {"forward", "right", "up"} metres from the picture's camera, "degrees": 180 (positive
+            turns left, seen from above), "seconds": 5, "distance": [0.8, 7] (metres from the centre,
+            start -> end), "height": [0, 1.4] (metres above the centre), "look_at_height": 0 (where
+            on the subject it aims, above the centre), "start_yaw": degrees (default: the side
+            facing the picture's camera)}. Put the centre at the subject's eye / chest height.
+            `ease` applies to the whole move ("linear" = constant speed).
 
     Returns:
         JSON: status, path (the rendered clip), frames, fps, scene_file, keys (the camera path).
@@ -499,7 +598,8 @@ def render_camera_move(
         scene, summary = build_scene(world=world_scene, model=_resolve_model(model), moves=moves or [],
                                      seconds=seconds, fps=fps, fov=fov or None, resolution=(width, height),
                                      ease=ease, keep_world=keep_world, model_scale=model_scale,
-                                     render=render_cfg, ground=ground, ground_color=ground_color)
+                                     render=render_cfg, ground=ground, ground_color=ground_color,
+                                     orbit=orbit)
         body = {"scene": scene, "name": name, "focus": True, "add_node": bool(add_to_canvas)}
         if render:
             body["render"] = {**render_cfg, "camera": CAMERA_ID, "useCameraRes": True}

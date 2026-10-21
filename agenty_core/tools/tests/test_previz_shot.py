@@ -158,5 +158,55 @@ class ToolTests(unittest.TestCase):
         self.assertIn("too old", out["error"])
 
 
+
+
+class OrbitRig(unittest.TestCase):
+    """orbit: a pivot on the subject turns about Y only; the camera is its child on +Z."""
+
+    def _scene(self, **orbit):
+        from agenty_core.tools import previz_shot as P
+        spec = {"center": [1.0, 1.7, -3.0], "degrees": 180, "seconds": 5, "distance": [0.5, 7.0],
+                "height": [0.0, 1.4], **orbit}
+        return P.orbit_items(spec, [0.0, 1.6, 0.0], [0.0, 0.0, 0.0], 24, 40.0, (1280, 720), "linear")
+
+    def test_pivot_turns_about_y_only(self):
+        pivot, cam, length, _ = self._scene()
+        self.assertEqual(length, 121)
+        rot = pivot["tracks"]["rotation"]
+        self.assertEqual(len(rot), 2)
+        self.assertTrue(all(k["v"][0] == 0 and k["v"][2] == 0 for k in rot))
+        self.assertAlmostEqual(rot[1]["v"][1] - rot[0]["v"][1], 180.0)
+        self.assertEqual(cam["parent"], pivot["id"])
+
+    def test_starts_facing_the_picture_camera(self):
+        # the picture's camera stands at +Z of the centre (and to its left): yaw0 points local +Z at it
+        pivot, _cam, _l, _ = self._scene()
+        import math
+        self.assertAlmostEqual(pivot["tracks"]["rotation"][0]["v"][1], math.degrees(math.atan2(-1.0, 3.0)), places=2)
+
+    def test_camera_moves_straight_back_and_up_and_aims_at_the_centre(self):
+        import math
+        _p, cam, _l, _ = self._scene()
+        pos, rot = cam["tracks"]["position"], cam["tracks"]["rotation"]
+        self.assertEqual(pos[0]["v"], [0.0, 0.0, 0.5])
+        self.assertEqual(pos[-1]["v"], [0.0, 1.4, 7.0])
+        for p, r in zip(pos, rot):
+            self.assertEqual(p["v"][0], 0.0)
+            self.assertEqual(r["v"][1:], [0.0, 0.0])                     # no yaw, no roll of its own
+            self.assertAlmostEqual(r["v"][0], -math.degrees(math.atan2(p["v"][1], p["v"][2])), places=2)
+        self.assertEqual({k["ease"] for k in pos}, {"linear"})
+
+    def test_build_scene_uses_the_rig(self):
+        from agenty_core.tools import previz_shot as P
+        scene, summary = P.build_scene(model="", world={"version": 1, "items": [
+            {"id": "refcam", "kind": "camera", "position": [0, 1.6, 0], "rotation": [0, 0, 0], "fov": 40}]},
+            moves=[], seconds=0, fps=24, fov=None, resolution=(864, 480), ease="linear", ground=False,
+            orbit={"center": {"forward": 3, "up": 0.1}, "distance": [1, 5]})
+        ids = [i["id"] for i in scene["items"]]
+        self.assertIn("orbitpivot", ids)
+        self.assertEqual(scene["activeCamera"], "shotcam")
+        self.assertEqual(summary["orbit"]["center"], [0.0, 1.7, -3.0])
+
+
 if __name__ == "__main__":
     unittest.main()
