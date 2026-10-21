@@ -73,8 +73,22 @@ def euler_to_matrix(rot):
     return _mul(_mul(_rx(rot[0]), _ry(rot[1])), _rz(rot[2]))
 
 
+def _unwrap(a, ref):
+    while a - ref > 180:
+        a -= 360
+    while a - ref < -180:
+        a += 360
+    return a
+
+
 def matrix_to_euler(m, near=None):
-    """Inverse of euler_to_matrix, degrees; angles unwrapped toward `near` (the previous key)."""
+    """Inverse of euler_to_matrix, degrees.
+
+    With `near` (the previous key) this is an Euler filter: every rotation has two XYZ solutions,
+    (x, y, z) and (x + 180, 180 - y, z + 180). Each is unwrapped toward `near` and the one closest
+    to it wins, so consecutive keys never flip to the other solution - interpolating across such a
+    flip swings the camera through a roll/tilt the real move never makes.
+    """
     y = math.asin(max(-1.0, min(1.0, m[0][2])))
     if abs(m[0][2]) < 0.9999999:
         x = math.atan2(-m[1][2], m[2][2])
@@ -83,13 +97,16 @@ def matrix_to_euler(m, near=None):
         x = math.atan2(m[2][1], m[1][1])
         z = 0.0
     out = [math.degrees(x), math.degrees(y), math.degrees(z)]
-    if near is not None:
-        for i in range(3):
-            while out[i] - near[i] > 180:
-                out[i] -= 360
-            while out[i] - near[i] < -180:
-                out[i] += 360
-    return out
+    if near is None:
+        return out
+    alt = [out[0] + 180.0, 180.0 - out[1], out[2] + 180.0]
+    best = None
+    for cand in (out, alt):
+        c = [_unwrap(cand[i], near[i]) for i in range(3)]
+        d = sum((c[i] - near[i]) ** 2 for i in range(3))
+        if best is None or d < best[0]:
+            best = (d, c)
+    return best[1]
 
 
 def look_at_matrix(position, target, up=(0.0, 1.0, 0.0)):
@@ -357,7 +374,10 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
     picture's camera; "degrees": 180 (positive turns left, seen from above); "seconds": 5;
     "distance": [start, end] metres from the centre; "height": [start, end] metres above the centre;
     "start_yaw": degrees, default = the side facing the picture's camera; "look_at_height": metres
-    above the centre the camera aims at (default 0, the centre itself)}.
+    above the centre the camera aims at (default 0, the centre itself); "keys": optional speed
+    curve - [{"t": seconds, "degrees": angle turned so far, "ease": "smooth"|"linear"|"hold"}, ...]
+    starting at t 0 / degrees 0 - for whip turns, holds and slow drifts (a turntable rhythm); it
+    replaces "degrees"/"seconds", and distance/height still run start -> end over the whole move}.
     """
     center = orbit.get("center") or {}
     if isinstance(center, dict):
@@ -366,8 +386,18 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
         cpos = [float(x) for x in center]
         if len(cpos) != 3:
             raise ValueError("orbit center is [x, y, z] or {forward, right, up}")
-    deg = float(orbit.get("degrees", 180.0))
-    seconds = float(orbit.get("seconds", 5.0))
+    keys = orbit.get("keys") or []
+    if keys:
+        keys = sorted(({"t": float(k.get("t", 0)), "degrees": float(k.get("degrees", 0)),
+                        "ease": k.get("ease") or ease} for k in keys), key=lambda k: k["t"])
+        if keys[0]["t"] > 0:
+            keys.insert(0, {"t": 0.0, "degrees": 0.0, "ease": keys[0]["ease"]})
+        if len(keys) < 2 or keys[-1]["t"] <= 0:
+            raise ValueError("orbit keys need at least two keys and a last t > 0")
+        deg, seconds = keys[-1]["degrees"], keys[-1]["t"]
+    else:
+        deg = float(orbit.get("degrees", 180.0))
+        seconds = float(orbit.get("seconds", 5.0))
     if seconds <= 0:
         raise ValueError("orbit seconds must be > 0")
     d0, d1 = (float(x) for x in (orbit.get("distance") or [2.0, 2.0]))
@@ -390,13 +420,25 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
              "parent": None,
              "tracks": {"rotation": [{"f": 0, "v": [0.0, round(yaw0, 3), 0.0], "ease": ease},
                                      {"f": last, "v": [0.0, round(yaw0 + deg, 3), 0.0], "ease": ease}]}}
+    if keys:
+        # Only the pivot's Y angle is keyed (one channel), so a whip is a pure turn. A key's "ease"
+        # says how the turn arrives at it; the viewer reads the ease off the key a segment LEAVES,
+        # so each track key carries the next key's ease.
+        for a, b in zip(keys, keys[1:]):
+            if abs(b["degrees"] - a["degrees"]) >= 180:
+                raise ValueError("orbit keys: each step must turn less than 180 degrees (the viewer "
+                                 "takes the short way round) - add a key in between")
+        pivot["tracks"]["rotation"] = [
+            {"f": int(round(k["t"] * fps)), "v": [0.0, round(yaw0 + k["degrees"], 3), 0.0],
+             "ease": (nxt["ease"] if nxt["ease"] in _EASES else ease)}
+            for k, nxt in zip(keys, keys[1:] + keys[-1:])]
     # The camera's own keys: dense (every 3 frames) so the tilt follows the true look-at angle; each
     # sample already carries the move's ease, so the keys between them are linear.
     step = 3
     frames = sorted(set(list(range(0, last, step)) + [last]))
     pos_keys, rot_keys = [], []
     for f in frames:
-        u = _eased(f / last if last else 1.0, ease)
+        u = (f / last if last else 1.0) if keys else _eased(f / last if last else 1.0, ease)
         d, h = d0 + (d1 - d0) * u, h0 + (h1 - h0) * u
         pitch = -math.degrees(math.atan2(h - aim, d))
         pos_keys.append({"f": f, "v": _r([0.0, h, d]), "ease": "linear"})
@@ -407,13 +449,25 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
            "tracks": {"position": pos_keys, "rotation": rot_keys}, "parent": PIVOT_ID}
     # Where the camera really goes, in scene coordinates: its own keys are local to the turning pivot
     # (they stay on the pivot's axis), so check the path here, not in the scene file's camera track.
+    def angle_at(frac: float):
+        if not keys:
+            return deg * _eased(frac, ease)
+        t = frac * seconds
+        for a, b in zip(keys, keys[1:]):
+            if t <= b["t"]:
+                span = b["t"] - a["t"]
+                u = _eased((t - a["t"]) / span if span > 0 else 1.0, b["ease"])
+                return a["degrees"] + (b["degrees"] - a["degrees"]) * u
+        return keys[-1]["degrees"]
+
     def world_at(frac: float):
-        u = _eased(frac, ease)
-        yaw = math.radians(yaw0 + deg * u)
+        u = frac if keys else _eased(frac, ease)
+        yaw = math.radians(yaw0 + angle_at(frac))
         d, h = d0 + (d1 - d0) * u, h0 + (h1 - h0) * u
         return _r([cpos[0] + math.sin(yaw) * d, cpos[1] + h, cpos[2] + math.cos(yaw) * d], 3)
     summary = {"orbit": {"center": _r(cpos, 3), "start_yaw": round(yaw0, 2), "degrees": deg,
                          "distance": [d0, d1], "height": [h0, h1], "seconds": seconds, "ease": ease,
+                         **({"keys": keys} if keys else {}),
                          "camera_world_path": {"start": world_at(0.0), "middle": world_at(0.5), "end": world_at(1.0)},
                          "note": "The camera's own track is local to the pivot, which turns by `degrees`; "
                                  "camera_world_path is where it really is (start, half-way, end)."}}
@@ -591,7 +645,11 @@ def render_camera_move(
             start -> end), "height": [0, 1.4] (metres above the centre), "look_at_height": 0 (where
             on the subject it aims, above the centre), "start_yaw": degrees (default: the side
             facing the picture's camera)}. Put the centre at the subject's eye / chest height.
-            `ease` applies to the whole move ("linear" = constant speed).
+            `ease` applies to the whole move ("linear" = constant speed). For a product turntable or
+            whip turns with holds, add "keys": [{"t": 0, "degrees": 0}, {"t": 1.3, "degrees": 15},
+            {"t": 1.65, "degrees": 105, "ease": "smooth"}, ...] (angle turned so far at each time);
+            the rig turns only about Y, so a fast whip stays a clean spin. Never build a turntable
+            from absolute position/look_at moves: those cut across the circle and jump.
 
     Returns:
         JSON: status, path (the rendered clip), frames, fps, scene_file, keys (the camera path).

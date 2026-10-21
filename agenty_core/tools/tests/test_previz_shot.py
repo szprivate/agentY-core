@@ -222,3 +222,44 @@ class OrbitReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EulerFilterAndOrbitKeysTest(unittest.TestCase):
+    def test_filter_picks_the_solution_next_to_the_previous_key(self):
+        import agenty_core.tools.previz_shot as P
+        prev = [-106.514, -69.045, -107.613]
+        # the same rotation as the flipped solution agentY's whip keys jumped to
+        flipped = [prev[0] + 180, 180 - prev[1], prev[2] + 180]
+        got = P.matrix_to_euler(P.euler_to_matrix(flipped), prev)
+        for a, b in zip(got, prev):
+            self.assertAlmostEqual(a, b, places=3)
+
+    def test_filter_unwraps_a_turn_past_180(self):
+        import agenty_core.tools.previz_shot as P
+        prev = [0.0, 0.0, 170.0]
+        got = P.matrix_to_euler(P.euler_to_matrix([0.0, 0.0, -170.0]), prev)
+        self.assertAlmostEqual(got[2], 190.0, places=3)
+
+    def test_orbit_keys_drive_only_the_pivot_y_angle(self):
+        import agenty_core.tools.previz_shot as P
+        keys = [{"t": 0, "degrees": 0}, {"t": 1.3, "degrees": 15}, {"t": 1.65, "degrees": 105, "ease": "smooth"},
+                {"t": 2.95, "degrees": 120}, {"t": 6, "degrees": 120, "ease": "hold"}]
+        pivot, cam, length, summary = P.orbit_items(
+            {"center": [0, 0.1, 0], "keys": keys, "distance": [2, 2], "height": [0.8, 0.8]},
+            [0, 1, 2], [0, 0, 0], 24, 40.0, (1920, 1080), "linear")
+        rot = pivot["tracks"]["rotation"]
+        self.assertEqual([k["f"] for k in rot], [0, 31, 40, 71, 144])
+        self.assertTrue(all(k["v"][0] == 0 and k["v"][2] == 0 for k in rot))
+        y0 = rot[0]["v"][1]
+        self.assertEqual([round(k["v"][1] - y0, 3) for k in rot], [0, 15, 105, 120, 120])
+        # ease of the segment leaving a key = the next key's ease
+        self.assertEqual([k["ease"] for k in rot], ["linear", "smooth", "linear", "hold", "hold"])
+        self.assertEqual(length, 145)
+        # the camera never moves toward the subject: constant distance and height
+        self.assertTrue(all(k["v"] == cam["tracks"]["position"][0]["v"] for k in cam["tracks"]["position"]))
+
+    def test_orbit_keys_refuse_a_half_turn_step(self):
+        import agenty_core.tools.previz_shot as P
+        with self.assertRaises(ValueError):
+            P.orbit_items({"center": [0, 0, 0], "keys": [{"t": 0, "degrees": 0}, {"t": 1, "degrees": 200}]},
+                          [0, 1, 2], [0, 0, 0], 24, 40.0, (1920, 1080))
