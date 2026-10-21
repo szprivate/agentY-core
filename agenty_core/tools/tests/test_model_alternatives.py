@@ -43,12 +43,13 @@ class Alternatives(unittest.TestCase):
 
 
 class WhereADownloadGoes(unittest.TestCase):
-    PATHS = {"controlnet": ["D:\AI\comfyui\models\controlnet", "D:\AI\comfyui\models\t2i_adapter",
-                            "L:\software\comfyui\Models\controlnet"]}
+    # ComfyUI lists an is_default extra path first, and saves there.
+    PATHS = {"controlnet": ["L:\software\comfyui\Models\controlnet",
+                            "D:\AI\comfyui\models\controlnet",
+                            "D:\AI\comfyui\models\t2i_adapter"]}
 
-    def test_the_extra_model_path_not_comfyuis_own_folder(self):
-        with mock.patch.object(h, "_folder_paths", return_value=self.PATHS), \
-                mock.patch.object(h, "_configured_models_dir", return_value=None):
+    def test_the_is_default_path_comes_first(self):
+        with mock.patch.object(h, "_folder_paths", return_value=self.PATHS),                 mock.patch.object(h, "_configured_models_dir", return_value=None):
             got, source = h._category_dir("controlnet")
         self.assertEqual(Path(got), Path("L:/software/comfyui/Models/controlnet"))
 

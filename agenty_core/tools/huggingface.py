@@ -134,7 +134,8 @@ def _folder_paths() -> dict:
                   for k, v in r.items() if isinstance(v, list)}
     except Exception:
         fp = {}
-    _FOLDER_PATHS_CACHE = fp
+    if fp:  # a failed lookup is not remembered: ComfyUI may just not be up yet
+        _FOLDER_PATHS_CACHE = fp
     return fp
 
 
@@ -195,24 +196,32 @@ def _resolve_download_dir(
 
 
 def _category_dir(category: str) -> tuple[Path, str]:
-    """The directory ComfyUI loads *category* (e.g. 'vae') from, and its source."""
-    # Every ComfyUI folder-path whose leaf dir matches the category.
-    cand = [p for paths in _folder_paths().values() for p in paths
-            if p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == category]
+    """The directory ComfyUI loads *category* (e.g. 'vae') from, and its source.
+
+    ComfyUI lists an ``is_default: true`` extra_model_paths section's folders
+    FIRST and saves there, so the first path is the destination. A folder someone
+    configured explicitly (env / settings) still wins."""
+    fp = _folder_paths()
+    # The category's own key (custom types such as geometry_estimation are keys
+    # whose dir name may differ), else every folder whose leaf dir matches.
+    cand = list(fp.get(category, []))
+    if not cand:
+        cand = [p for paths in fp.values() for p in paths
+                if p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == category]
     if cand:
-        # 1) a path under a models dir someone configured
         configured = _configured_models_dir()
         if configured is not None:
             extra_base = str(configured).replace("\\", "/").rstrip("/").lower()
             for p in cand:
                 if p.replace("\\", "/").lower().startswith(extra_base):
                     return Path(p), "configured_models_dir"
-        # 2) else a path on a different drive than the (default) first candidate:
-        #    an extra model path (extra_model_paths.yaml), the shared library
-        d0 = cand[0].split(":", 1)[0].lower()
-        for p in cand[1:]:
-            if p.split(":", 1)[0].lower() != d0:
-                return Path(p), "comfyui_extra_path"
+        # on the first (default) drive, the folder named after the type beats an
+        # alias listed before it (diffusion_models -> unet)
+        drive = cand[0].replace("\\", "/").split("/", 1)[0].lower()
+        for p in cand:
+            q = p.replace("\\", "/").rstrip("/")
+            if q.split("/", 1)[0].lower() == drive and q.rsplit("/", 1)[-1].lower() == category:
+                return Path(p), "comfyui_folder_path"
         return Path(cand[0]), "comfyui_folder_path"
     return _models_base_dir() / category, "models_base_dir"
 
@@ -988,10 +997,12 @@ def _download_blocking(
             })
 
         # Build the download URL
-        if subfolder:
-            url = f"https://huggingface.co/{model_id}/resolve/main/{subfolder}/{filename}"
-        else:
-            url = f"https://huggingface.co/{model_id}/resolve/main/{filename}"
+        # Strip stray slashes (a trailing "/" in the subfolder made "//" in the
+        # path) and quote each segment (spaces, '#', '+' in file names).
+        from urllib.parse import quote  # noqa: PLC0415
+        hf_path = "/".join(x for x in (subfolder.replace("\\", "/").strip("/"),
+                                       filename.replace("\\", "/").strip("/")) if x)
+        url = f"https://huggingface.co/{model_id.strip('/')}/resolve/main/{quote(hf_path)}"
 
         headers = {}
         token = get_secret("HF_TOKEN")
