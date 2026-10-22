@@ -416,7 +416,9 @@ def _load_index() -> list:
     # packs (templates/node_packs/, mirrored from ComfyUI at startup and not in
     # git — see templates_sync.sync_node_pack_examples).
     for index_path in (_custom_templates_dir() / "index.json",
-                       _custom_templates_dir() / "node_packs" / "index.json"):
+                       _custom_templates_dir() / "node_packs" / "index.json",
+                       # saved jobs of this machine (tools/local_templates.py)
+                       _custom_templates_dir() / "local" / "index.json"):
         if not index_path.exists():
             continue
         try:
@@ -3382,7 +3384,7 @@ def get_workflow_catalog() -> str:
 
 
 @tool
-def get_workflow_template(template_name: list | str) -> str:
+def get_workflow_template(template_name: list | str, request: str = "") -> str:
     """Load one or more workflow templates by name. Saves each full workflow to its own file and returns a compact summary with the file path.
 
     Each summary includes: node list (id, class, title, key literal inputs),
@@ -3402,9 +3404,32 @@ def get_workflow_template(template_name: list | str) -> str:
             name (as a plain string) returns that template's summary on its own;
             several return {"templates": {name: summary}}, each with its own
             workflow_path.
+        request: Optional - the user's request. When given, each summary carries
+            ``fit``: whether the template really does what is asked (output kind,
+            a storyboard step the request never asked for, model version,
+            first-frame vs reference vs text-only, resolution, audio), with the
+            reasons. ``verdict: "reject"`` means pick another template - a name
+            that sounds right is not enough.
     """
     names = _as_list(template_name)
-    return _one_or_many(names, _get_workflow_template_one, "templates")
+    if not str(request or "").strip():
+        return _one_or_many(names, _get_workflow_template_one, "templates")
+    return _one_or_many(names, lambda n: _with_fit(_get_workflow_template_one(n), n, request), "templates")
+
+
+def _with_fit(raw: str, name: str, request: str) -> str:
+    """Add ``fit`` (template_fit's verdict on *name* for *request*) to a template summary."""
+    try:
+        from agenty_core.utils import template_fit
+        data = json.loads(raw)
+        if not isinstance(data, dict) or data.get("error"):
+            return raw
+        verdict = template_fit.check_template(request, name, str(data.get("description") or ""))
+        if verdict:
+            data["fit"] = {k: v for k, v in verdict.items() if k != "template" and (v or k == "verdict")}
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 - a courtesy; the template is returned regardless
+        return raw
 
 
 def _get_workflow_template_one(template_name: str) -> str:
@@ -4561,7 +4586,9 @@ def update_workflow(
     # blanket interrupt / queue clear that would kill a real render). See
     # _server_validate.
     local_errors.extend(_unreadable_encoder_errors(workflow))
-    server_errors = _server_validate(workflow)
+    # local_only() (run_variants, partner_run): the run that follows is the server-side
+    # check, and submitting every copy to be validated first would run a partner node twice.
+    server_errors = {} if _LOCAL_ONLY.get() else _server_validate(workflow)
 
     is_valid = len(local_errors) == 0 and len(server_errors) == 0
     all_errors = node_errors + local_errors

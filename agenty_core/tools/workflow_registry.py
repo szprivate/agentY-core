@@ -44,7 +44,8 @@ def _name_in_index(name: str, index_path: Path) -> bool:
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 @tool
-def register_workflow_template(workflow_file: str, index_path: str = "") -> str:
+def register_workflow_template(workflow_file: str, index_path: str = "", description: str = "",
+                               local: bool = False) -> str:
     """Register a custom ComfyUI workflow JSON as a reusable template.
 
     In-process equivalent of ``scripts/add_workflow.ps1``, extended so a workflow
@@ -69,18 +70,33 @@ def register_workflow_template(workflow_file: str, index_path: str = "") -> str:
     but raw widget values are kept under ``__widgets_values`` — re-register once
     ComfyUI is running for a fully named API workflow.
 
+    ``local=True`` keeps it on THIS MACHINE only: it goes to the git-ignored
+    ``local/`` folder of the custom templates (its own ``index.json``), skips the
+    shared catalog and never feeds the recipe database. Use it for a job that was
+    solved here and should be the fast path next time ("save this as a template
+    for me"); the name may differ from the file stem when the file is a throw-away.
+    Matching requests are offered the saved job first (retrieval prefers it).
+
     Args:
         workflow_file: Path to the ComfyUI workflow ``.json`` (API or graph
             format). Relative paths resolve against the repository root.
         index_path: Optional override for the ``index.json`` path. Empty (default)
             uses the configured custom-templates index. The JSON is copied next to
             this index.
+        description: Catalog description. With ``local=True`` write one: what the
+            job does, which inputs change (files, the prompt) and the key settings;
+            when empty one is generated from the graph.
+        local: Save as a machine-local template (see above) instead of a shared one.
 
     Returns:
         JSON summary with the parsed entry, the index path written, the path the
         JSON was copied to, whether it was converted from graph format, and
         whether the catalog was updated — or ``{"error": ...}``.
     """
+    if local:
+        from agenty_core.tools import local_templates
+        return json.dumps(local_templates.register_local_file(workflow_file, "", description),
+                          ensure_ascii=False, default=str)
     try:
         # Lazy import to avoid import-time side effects / any cycle.
         from agenty_core.tools.comfyui import _convert_graph_to_api, _is_graph_format
@@ -129,6 +145,7 @@ def register_workflow_template(workflow_file: str, index_path: str = "") -> str:
         entry = parse_workflow(
             workflow,
             name=name,
+            description=description or None,
             update_index=True,
             index_path=index_path or None,
         )
@@ -175,6 +192,14 @@ def unregister_workflow_template(name: str, index_path: str = "") -> str:
     try:
         if not name:
             return json.dumps({"error": "Template name is required"})
+
+        # A machine-local template (register_workflow_template(local=True)) is removed
+        # from its own folder; nothing shared is touched.
+        from agenty_core.tools import local_templates
+        if not index_path and any(e.get("name") == name for e in local_templates._read_entries()):
+            local_templates.forget_local(name)
+            return json.dumps({"removed": name, "local": True,
+                               "message": f"Unregistered local template '{name}'."}, ensure_ascii=False)
 
         root = _project_root()
         idx_written = workflow_remove(name, index_path=index_path or None)

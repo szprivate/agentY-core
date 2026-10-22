@@ -5,14 +5,16 @@ The policy (which programs, which folders, and why) lives in
 """
 
 import json
+import os
 import subprocess
+import tempfile
 
 from agenty_core._compat import tool
 from agenty_core import sandbox
 
 
 @tool
-def run_script(command: str, timeout: int = 120) -> str:
+def run_script(command: str = "", timeout: int = 120, code: str = "", args: str = "") -> str:
     """Run a single program and return its stdout/stderr.
 
     Use this to execute skill scripts (e.g. Python scripts under skills/) and the
@@ -32,10 +34,43 @@ def run_script(command: str, timeout: int = 120) -> str:
     ComfyUI's directories, or a temp file. A refusal says exactly what was
     disallowed, so read it and adjust rather than retrying the same command.
 
+    **Python in one step:** pass the source as ``code`` (leave ``command`` empty)
+    and it is written to a temp file and run with agentY's interpreter — no
+    ``write_text_file`` first. ``args`` is an optional single-line argument string
+    for the script (``sys.argv[1:]``). The same approval, code log and
+    media-publishing as any other ``run_script`` call apply.
+
     Args:
         command: The command to run (e.g. 'python ./skills/image-downsize/scripts/downsize.py ...').
         timeout: Maximum seconds to wait for the command to finish (default 120).
+        code: Python source to run instead of a command (written to a temp file for you).
+        args: Arguments for ``code`` (one line), e.g. an image path.
     """
+    tmp_path = ""
+    if code and str(code).strip():
+        if command and str(command).strip():
+            return json.dumps({"error": "run_script: give either `command` or `code`, not both.",
+                               "refused": True})
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="agenty_snippet_", suffix=".py")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(str(code))
+        except OSError as exc:
+            return json.dumps({"error": f"run_script could not write the snippet: {exc}"})
+        # Vetted like any command: the interpreter plus the temp file plus the
+        # caller's arguments (path arguments must stay inside the allowed folders).
+        command = f'python "{tmp_path}" {args or ""}'.strip()
+    try:
+        return _run_command(command, timeout)
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _run_command(command: str, timeout: int) -> str:
     argv, why = sandbox.check_command(command)
     if argv is None:
         # An error, not an exception: the model reads this and picks another way.

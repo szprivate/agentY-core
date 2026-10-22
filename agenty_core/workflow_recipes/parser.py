@@ -622,6 +622,9 @@ class Corpus:
                 continue
             paths = []
             for root, _dirs, files in os.walk(folder):
+                # `local/` holds jobs solved on one machine (tools/local_templates.py):
+                # readable by the catalog, never part of the shared recipe database.
+                _dirs[:] = [d for d in _dirs if d.lower() != "local"]
                 for fn in files:
                     if fn.lower().endswith(".json"):
                         paths.append(os.path.join(root, fn))

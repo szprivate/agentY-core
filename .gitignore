@@ -15,3 +15,8 @@ config/workflow_recipes_object_info_cache.json
 # at agent startup (templates_sync.sync_node_pack_examples). A fact about one
 # machine, and other people's files: never committed.
 comfyui_workflow_templates_custom/templates/node_packs/
+
+# Jobs solved on this machine, saved as templates for the next matching request
+# (agenty_core/tools/local_templates.py). A user's own work: never committed, and
+# the recipe generator skips the folder.
+comfyui_workflow_templates_custom/templates/local/
