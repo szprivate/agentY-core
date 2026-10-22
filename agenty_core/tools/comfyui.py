@@ -2665,29 +2665,8 @@ def submit_prompt(workflow_path: str, client_id: str = "") -> str:
         return json.dumps({"error": str(e)})
 
 
-@tool
-def duplicate_workflow(source_path: str) -> str:
-    """Create a copy of an existing workflow JSON with a fresh random seed.
-
-    Use this during **batch runs** (``count_iter > 1``) to produce iteration
-    copies from the base validated workflow.  Each duplicate gets a new random
-    seed injected into every KSampler / RandomNoise / similar seed field so
-    outputs are genuinely varied.
-
-    Typical batch flow:
-    1. Assemble + validate the base workflow normally — this is iteration 1.
-    2. For iterations 2..N: call ``duplicate_workflow(base_path)`` and validate
-       the returned path.
-    3. Hand every validated workflow off for execution the same way you run a
-       single workflow (one handoff per iteration).
-
-    Args:
-        source_path: Path to the already-validated base workflow JSON.
-
-    Returns:
-        JSON with ``new_path`` (the path of the newly created workflow copy)
-        or ``error`` on failure.
-    """
+def _duplicate_workflow_one(source_path: str) -> str:
+    """One fresh-seeded copy of *source_path* (see :func:`duplicate_workflow`)."""
     import random
     import shutil
 
@@ -2737,6 +2716,61 @@ def duplicate_workflow(source_path: str) -> str:
         "seeds_randomised": changed,
         "message": f"Workflow duplicated to {candidate.name} with {changed} seed(s) randomised.",
     })
+
+
+@tool
+def duplicate_workflow(source_path: str, count: int = 1) -> str:
+    """Create fresh-seeded copies of an existing workflow JSON.
+
+    Use this during **batch runs** (``count_iter > 1``) to produce iteration
+    copies from the base validated workflow.  Each duplicate gets a new random
+    seed injected into every KSampler / RandomNoise / similar seed field so
+    outputs are genuinely varied.
+
+    Need N copies? Pass ``count=N`` — ONE call returns all N paths, instead of N
+    round trips that each replay the whole conversation.
+
+    Typical batch flow:
+    1. Assemble + validate the base workflow normally — this is iteration 1.
+    2. For iterations 2..N: call ``duplicate_workflow(base_path, count=N-1)`` and
+       validate each returned path.
+    3. Hand every validated workflow off for execution the same way you run a
+       single workflow (one handoff per iteration).
+
+    Args:
+        source_path: Path to the already-validated base workflow JSON.
+        count: How many copies to make (default 1, at most 50).
+
+    Returns:
+        With ``count=1``: JSON with ``new_path`` (or ``error``) exactly as ever.
+        With ``count>1``: the first copy's fields plus ``new_paths`` (all of
+        them, in order) and ``count``.
+    """
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        n = 1
+    n = max(1, min(n, 50))
+    first = json.loads(_duplicate_workflow_one(source_path))
+    if n == 1 or "new_path" not in first:
+        return json.dumps(first)
+    paths, warnings = [first["new_path"]], []
+    if first.get("warning"):
+        warnings.append(first["warning"])
+    for _ in range(n - 1):
+        one = json.loads(_duplicate_workflow_one(source_path))
+        if "new_path" not in one:
+            warnings.append(one.get("error") or "a copy failed")
+            break
+        paths.append(one["new_path"])
+        if one.get("warning"):
+            warnings.append(one["warning"])
+    out = dict(first)
+    out.update({"new_paths": paths, "count": len(paths),
+                "message": f"{len(paths)} copies of {Path(source_path).name} made, each with its own seeds."})
+    if warnings:
+        out["warnings"] = warnings
+    return json.dumps(out)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
