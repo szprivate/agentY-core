@@ -542,7 +542,7 @@ def default_scene_path(script_path: str, app: str) -> str:
 
 @tool
 def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_to: str = "", render_to: str = "",
-              render_engine: str = "fast", resolution: str = "", stage: str = "blockout",
+              render_engine: str = "", resolution: str = "", stage: str = "blockout",
               force_reason: str = "") -> str:
     """Run a whole build script file in a 3D app (Blender, Maya or Houdini), then optionally save and render a still.
 
@@ -563,8 +563,9 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         save_to: where to save the scene (a .blend / .ma / .mb / .hip). Batch: defaults to <script folder>/_dcc/<name>.<ext>.
             Live: empty means do not save; a path saves a COPY and leaves the open session on the user's own file.
         render_to: a .png path to render a still of the scene camera to. Empty means no render.
-        render_engine: "fast" (Blender Workbench, Maya hardware / playblast, Houdini OpenGL) or "final"
-            (Blender Cycles, Maya Arnold, Houdini Karma).
+        render_engine: "fast" (Blender Workbench, Maya hardware / playblast, Houdini OpenGL: unlit grey shapes,
+            no shadows - right for a blockout) or "final" (Blender Cycles, Maya Arnold, Houdini Karma: materials,
+            sun and shadows). Empty (default) picks by stage: "final" for stage="look", "fast" otherwise.
         resolution: render size as "WIDTHxHEIGHT" (default: the scene's own).
         stage: "blockout" (default, always allowed), "detail" or "look". Set it on EVERY build. detail and look are
             GATED: they run only if the last dcc_silhouette_check(script_path=<this script>) passed (rule below),
@@ -588,10 +589,13 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
     sp = Path(script_path).expanduser()
     if not sp.is_file():
         return _err(f"build script not found: {script_path}")
-    if render_engine not in ("fast", "final"):
-        return _err("render_engine must be 'fast' or 'final'")
     if stage not in STAGES:
         return _err(f"stage must be one of {', '.join(STAGES)}, not {stage!r}")
+    # A "look" render judged with the fast (unlit, shadowless) engine sent an agent chasing
+    # its lighting for a dozen passes: the look stage renders final unless told otherwise.
+    render_engine = (render_engine or "").strip().lower() or ("final" if stage == "look" else "fast")
+    if render_engine not in ("fast", "final"):
+        return _err("render_engine must be 'fast' or 'final'")
     gate = gate_decision(str(sp.resolve()), stage, force_reason)
     if not gate["allowed"]:
         return _err(gate["error"], gate=gate["gate"], stage=stage)

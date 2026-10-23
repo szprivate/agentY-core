@@ -169,6 +169,24 @@ class Arguments(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("batch", r["error"])
 
+    def test_look_stage_renders_final_by_default(self):
+        # The look stage judged with the unlit fast engine sent an agent chasing its lighting.
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write("pass\n")
+        seen = {}
+        def fake_run(app, mode, job, timeout=0):
+            seen.setdefault("engines", []).append(job["render_engine"])
+            return {"ok": True}
+        try:
+            with mock.patch("agenty_core.tools.dcc.run_job", side_effect=fake_run),                     mock.patch("agenty_core.tools.dcc.gate_decision",
+                               return_value={"allowed": True, "gate": {"forced": False}}):
+                dcc.dcc_build(f.name, render_to="x.png", stage="look")
+                dcc.dcc_build(f.name, render_to="x.png", stage="blockout")
+                dcc.dcc_build(f.name, render_to="x.png", stage="look", render_engine="fast")
+            self.assertEqual(seen["engines"], ["final", "fast", "fast"])
+        finally:
+            Path(f.name).unlink()
+
     def test_unknown_app_mode_engine_resolution(self):
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write("pass\n")

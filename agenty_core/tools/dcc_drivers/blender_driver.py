@@ -47,6 +47,18 @@ def _enable_gpu(scene):
         pass
 
 
+def _use_enabled_gpu(scene):
+    """Live session: render on the GPU when the user's Blender already has one enabled for
+    Cycles. The user's preferences are left exactly as they are."""
+    import bpy
+    try:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        if prefs.compute_device_type != "NONE" and any(d.use and d.type != "CPU" for d in prefs.devices):
+            scene.cycles.device = "GPU"
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _render(job, scene, live):
     import bpy
     r = scene.render
@@ -76,6 +88,8 @@ def _render(job, scene, live):
                 scene.cycles.use_denoising = True
                 if not live:
                     _enable_gpu(scene)
+                else:
+                    _use_enabled_gpu(scene)
             try:
                 bpy.ops.render.render(write_still=True)
                 out["engine"] = eng
