@@ -405,7 +405,9 @@ with open(_job["result_path"], "w", encoding="utf-8") as _f:
 def _batch_wrapper(app: str) -> str:
     head, tail = "", _BATCH_TAIL
     if app == "maya":
-        head = "import maya.standalone\nmaya.standalone.initialize(name='python')\n"
+        head = ("import sys as _s0\nif _s0.platform == 'win32':\n"
+                "    import ctypes as _ct\n    _ct.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)  # no Windows crash dialog\n"
+                "import maya.standalone\nmaya.standalone.initialize(name='python')\n")
         # Shut Maya down before the hard exit: os._exit on a live maya.standalone crashed
         # every run (a crash dump, a [Recovered] scene in Temp, the Autodesk error dialog).
         tail += ("\n_sys.stdout.flush()\n_sys.stderr.flush()\n"
@@ -551,7 +553,7 @@ def default_scene_path(script_path: str, app: str) -> str:
 @tool
 def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_to: str = "", render_to: str = "",
               render_engine: str = "", resolution: str = "", stage: str = "blockout",
-              force_reason: str = "") -> str:
+              force_reason: str = "", timeout_minutes: int = 0) -> str:
     """Run a whole build script file in a 3D app (Blender, Maya or Houdini), then optionally save and render a still.
 
     This is the ONLY way a model should be rebuilt: keep one script, change its constants, call this again. The
@@ -584,6 +586,10 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         force_reason: a non-empty sentence that lets a detail / look build through the gate anyway. The result then
             carries gate {forced: true, reason, last_check}. Only for a point that is truly unmeasurable: say which
             point and why. Never to skip a failing check.
+        timeout_minutes: how long the headless run may take before it is killed (batch only). 0 = the default
+            (15 min, 60 min with a final render). Raise it (max 480) for a script that also simulates / caches /
+            renders a frame sequence: a Houdini RBD sim or a Karma sequence does not fit the default. The script's
+            stdout only comes back when the run ends, so such a script should also write its own progress log file.
 
     The script learns the stage: the global ``DCC_STAGE`` (also the environment variable of the same name) is
     "blockout", "detail" or "look" while it runs. Build only the block-out above the ``# --- DETAIL ---`` line when
@@ -627,7 +633,9 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         job["scene_in"] = job["save_to"]
     t0 = time.time()
     try:
-        res = run_job(app, mode, job, timeout=3600 if (render_to and render_engine == "final") else 900)
+        default_t = 3600 if (render_to and render_engine == "final") else 900
+        timeout_s = min(max(int(timeout_minutes), 0), 480) * 60 or default_t
+        res = run_job(app, mode, job, timeout=timeout_s)
     except DccError as e:
         return _err(str(e), app=app, mode=mode)
     out = {"ok": bool(res.get("ok")), "gate": gate["gate"], "app": app, "mode": mode, "stdout_tail": _tail(res.get("stdout", "")),

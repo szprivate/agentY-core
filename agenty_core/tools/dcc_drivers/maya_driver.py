@@ -56,6 +56,26 @@ def _save_copy(path):
         cmds.file(modified=modified)
 
 
+def _collect(outdir, stem, path, written):
+    """Maya files a picture under <images>/<camera>/<prefix>.png (or <prefix>.png): find the newest one and
+    move it to ``path``. True when ``path`` exists afterwards."""
+    found = [f for f in written if isinstance(f, str) and os.path.isfile(f)]
+    if not found:
+        for root, _d, files in os.walk(outdir):
+            found += [os.path.join(root, f) for f in files if f.startswith(stem) and f.lower().endswith(".png")
+                      and os.path.abspath(os.path.join(root, f)) != os.path.abspath(path)]
+    if found:
+        newest = max(found, key=os.path.getmtime)
+        if os.path.abspath(newest) != os.path.abspath(path):
+            import shutil
+            shutil.move(newest, path)
+            try:
+                os.rmdir(os.path.dirname(newest))
+            except OSError:
+                pass
+    return os.path.exists(path)
+
+
 def _render(job, live):
     cmds = _cmds()
     cam = _find_camera(job.get("camera"))
@@ -70,6 +90,8 @@ def _render(job, live):
     out = {"path": path, "engine": "arnold" if final else ("playblast" if live else "mayaHardware2"),
            "resolution": [w, h]}
     xform = cmds.listRelatives(cam, parent=True, fullPath=True)[0]
+    if os.path.exists(path):
+        os.remove(path)   # a picture left by an earlier run must not pass for this one
     try:
         if live and not final:
             panel = cmds.getPanel(withFocus=True)
@@ -92,6 +114,16 @@ def _render(job, live):
         cmds.workspace(fileRule=["images", outdir])
         for c in cmds.ls(type="camera", long=True) or []:
             cmds.setAttr(c + ".renderable", c == cam)
+        def hardware():
+            cmds.setAttr("defaultRenderGlobals.currentRenderer", "mayaHardware2", type="string")
+            for attr, val in (("gammaCorrectionEnable", 1), ("gammaValue", 2.2), ("lightingMode", 1), ("useMaximumHardwareLights", 1), ("multiSampleEnable", 1), ("multiSampleCount", 16), ("ssaoEnable", 1),
+                              ("ssaoAmount", 1.5), ("ssaoRadius", 8), ("lineAAEnable", 1), ("shadowEnable", 1), ("hwFogEnable", 0)):
+                try:
+                    cmds.setAttr("hardwareRenderingGlobals." + attr, val)
+                except Exception:  # noqa: BLE001
+                    pass
+            return cmds.render(xform, x=w, y=h) or []
+
         written = []
         if final:
             cmds.loadPlugin("mtoa", quiet=True)
@@ -102,26 +134,23 @@ def _render(job, live):
             except Exception:  # noqa: BLE001
                 pass
             cmds.setAttr("defaultArnoldRenderOptions.AASamples", 3)
-            written = cmds.render(xform, x=w, y=h) or []
+            # arnoldRender, not cmds.render: in a standalone session cmds.render does not run Arnold at all
+            # (it writes a flat viewport-style picture that ignores the lights) yet reports success.
+            try:
+                cmds.arnoldRender(cam=xform, width=w, height=h, batch=True)
+            except Exception as e:  # noqa: BLE001
+                out["arnold_error"] = "%s: %s" % (type(e).__name__, e)
+            if not _collect(outdir, stem, path, []):
+                # No Arnold picture: in batch it aborts without a licence (no RLM / Autodesk entitlement).
+                out["engine"] = "mayaHardware2"
+                out["fallback"] = ("Arnold wrote no picture (usually no licence: set ARNOLD_LICENSE_ORDER / "
+                                   "solidangle_LICENSE or sign in); rendered with Maya Hardware 2.0 instead")
+                written = hardware()
         else:
-            cmds.setAttr("defaultRenderGlobals.currentRenderer", "mayaHardware2", type="string")
-            written = cmds.render(xform, x=w, y=h) or []
+            written = hardware()
         if isinstance(written, str):
             written = [written]
-        # Maya files the picture under <images>/<camera>/<prefix>.png: find it, put it where it was asked
-        found = [f for f in written if isinstance(f, str) and os.path.isfile(f)]
-        if not found:
-            for root, _d, files in os.walk(outdir):
-                found += [os.path.join(root, f) for f in files if f.startswith(stem) and f.lower().endswith(".png")]
-        if found:
-            newest = max(found, key=os.path.getmtime)
-            if os.path.abspath(newest) != os.path.abspath(path):
-                import shutil
-                shutil.move(newest, path)
-                try:
-                    os.rmdir(os.path.dirname(newest))
-                except OSError:
-                    pass
+        _collect(outdir, stem, path, written)
         out["exists"] = os.path.exists(path)
         if not out["exists"]:
             out["error"] = "the renderer wrote no picture"
