@@ -6,14 +6,17 @@ import os
 import traceback
 
 
-def exec_build_script(path):
-    """Run the whole build script file. Returns (ok, stdout, error, traceback_text)."""
+def exec_build_script(path, stage=""):
+    """Run the whole build script file. Returns (ok, stdout, error, traceback_text).
+    ``stage`` (blockout / detail / look) is handed to the script as the global ``DCC_STAGE`` and the environment
+    variable ``DCC_STAGE``, so a script can build only what the stage allows."""
     buf = io.StringIO()
     try:
         with open(path, encoding="utf-8") as f:
             src = f.read()
         code = compile(src, path, "exec")
-        g = {"__name__": "__main__", "__file__": path}
+        g = {"__name__": "__main__", "__file__": path, "DCC_STAGE": stage or "look"}
+        os.environ["DCC_STAGE"] = stage or "look"
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             exec(code, g)
         return True, buf.getvalue(), "", ""

@@ -585,6 +585,11 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
             carries gate {forced: true, reason, last_check}. Only for a point that is truly unmeasurable: say which
             point and why. Never to skip a failing check.
 
+    The script learns the stage: the global ``DCC_STAGE`` (also the environment variable of the same name) is
+    "blockout", "detail" or "look" while it runs. Build only the block-out above the ``# --- DETAIL ---`` line when
+    it is "blockout"; the detail code below the line when it is "detail" or "look"; materials / lights / look
+    settings only for "look". Without this a block-out build would run the whole script.
+
     The gate rule: the check writes <script>.check.json with overall_pass and two hashes of the script. A detail /
     look build needs overall_pass AND an unchanged ``blockout_sha``, the hash of the script text ABOVE a
     ``# --- DETAIL ---`` line (whitespace ignored). Edits below the marker never need a re-check; any edit above
@@ -617,7 +622,7 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
     job = {"action": "build", "script_path": str(sp.resolve()), "scene_in": save_to if mode == "batch" else "",
            "save_to": str(Path(save_to).expanduser().resolve()) if save_to else "",
            "render_to": str(Path(render_to).expanduser().resolve()) if render_to else "",
-           "render_engine": render_engine, "resolution": resolution.strip()}
+           "render_engine": render_engine, "resolution": resolution.strip(), "stage": stage}
     if mode == "batch":
         job["scene_in"] = job["save_to"]
     t0 = time.time()

@@ -114,7 +114,7 @@ def build(job):
         hou.hipFile.load(job["scene_in"], suppress_save_prompt=True, ignore_load_warnings=True)
     else:
         hou.hipFile.clear(suppress_save_prompt=True)
-    ok, out, err, tb = exec_build_script(job["script_path"])
+    ok, out, err, tb = exec_build_script(job["script_path"], job.get("stage", ""))
     res = {"ok": ok, "stdout": out, "error": err, "traceback": tb}
     res["objects"] = _objects_summary()
     if ok and job.get("save_to"):

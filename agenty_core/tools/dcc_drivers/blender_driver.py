@@ -112,7 +112,7 @@ def build(job):
     live = job["live"]
     if not live:
         _open_or_new(job.get("scene_in"))
-    ok, out, err, tb = exec_build_script(job["script_path"])
+    ok, out, err, tb = exec_build_script(job["script_path"], job.get("stage", ""))
     res = {"ok": ok, "stdout": out, "error": err, "traceback": tb}
     try:
         bpy.context.view_layer.update()
