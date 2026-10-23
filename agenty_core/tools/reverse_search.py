@@ -16,7 +16,9 @@ and reports ``error_kind: "captcha"`` when it is stopped.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures
 import json
 import logging
 import os
@@ -375,6 +377,17 @@ def reverse_image_search(
         ``{"error": "<message>", "error_kind": "..."}``; ``"missing_dependency"``
         means Playwright is not installed.
     """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _reverse_image_search(image, engines, max_results, download_dir)
+    # Playwright's sync API refuses to run on a thread that has an event loop (the MCP
+    # server calls tools from one), so the browser work goes to a worker thread.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_reverse_image_search, image, engines, max_results, download_dir).result()
+
+
+def _reverse_image_search(image, engines, max_results, download_dir) -> str:
     try:
         try:
             from playwright.sync_api import sync_playwright  # type: ignore[import]
