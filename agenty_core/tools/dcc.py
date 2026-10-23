@@ -553,7 +553,7 @@ def default_scene_path(script_path: str, app: str) -> str:
 @tool
 def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_to: str = "", render_to: str = "",
               render_engine: str = "", resolution: str = "", stage: str = "blockout",
-              force_reason: str = "", timeout_minutes: int = 0) -> str:
+              force_reason: str = "", timeout_minutes: int = 0, frames: str = "") -> str:
     """Run a whole build script file in a 3D app (Blender, Maya or Houdini), then optionally save and render a still.
 
     This is the ONLY way a model should be rebuilt: keep one script, change its constants, call this again. The
@@ -586,6 +586,9 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         force_reason: a non-empty sentence that lets a detail / look build through the gate anyway. The result then
             carries gate {forced: true, reason, last_check}. Only for a point that is truly unmeasurable: say which
             point and why. Never to skip a failing check.
+        frames: Houdini only, with render_engine "fast": a frame range like "1-96" to render as a SEQUENCE through the
+            OpenGL ROP; render_to must then contain $F4 (e.g. .../frame.$F4.png). Empty = one still. Encoding the
+            sequence to a video is not done here (do it in the build script or with ffmpeg).
         timeout_minutes: how long the headless run may take before it is killed (batch only). 0 = the default
             (15 min, 60 min with a final render). Raise it (max 480) for a script that also simulates / caches /
             renders a frame sequence: a Houdini RBD sim or a Karma sequence does not fit the default. The script's
@@ -628,7 +631,8 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
     job = {"action": "build", "script_path": str(sp.resolve()), "scene_in": save_to if mode == "batch" else "",
            "save_to": str(Path(save_to).expanduser().resolve()) if save_to else "",
            "render_to": str(Path(render_to).expanduser().resolve()) if render_to else "",
-           "render_engine": render_engine, "resolution": resolution.strip(), "stage": stage}
+           "render_engine": render_engine, "resolution": resolution.strip(), "stage": stage,
+           "frames": frames.strip()}
     if mode == "batch":
         job["scene_in"] = job["save_to"]
     t0 = time.time()

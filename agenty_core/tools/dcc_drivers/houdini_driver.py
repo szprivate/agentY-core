@@ -1,4 +1,6 @@
 # Runs inside Houdini (hython). Y up. Batch only: Houdini has no live bridge here (see dcc.py).
+import glob
+import re
 # build: exec the script, save the .hip, optionally render a still. check: raw camera + projections.
 
 _UNIT_MM = {"mm": 1.0, "m": 1000.0, "in": 25.4, "ft": 304.8, "cm": 10.0, "km": 1e6}
@@ -61,12 +63,21 @@ def _render(job):
             for a, b in (("res1", w), ("res2", h)):
                 if rop.parm(a):
                     rop.parm(a).set(b)
-            rop.parm("trange").set(0)
             rop.parm("picture").set(path)
+            fr = str(job.get("frames") or "").replace(" ", "")
+            if fr:
+                a, _, b = fr.partition("-")
+                rop.parm("trange").set(1)
+                rop.parm("f1").set(int(a))
+                rop.parm("f2").set(int(b or a))
+                rop.parm("f3").set(1)
+                out["frames"] = fr
+            else:
+                rop.parm("trange").set(0)
             rop.render()
         else:
             _karma(cam, path, w, h)
-        out["exists"] = os.path.exists(path)
+        out["exists"] = os.path.exists(path) or bool(job.get("frames") and glob.glob(re.sub(r"\$F\d*", "*", path)))
         if not out["exists"]:
             out["error"] = "the renderer wrote no picture"
     except Exception as e:  # noqa: BLE001
