@@ -22,7 +22,10 @@ def seedance(res="720p", dur=6, video=False, task="auto", model="Seedance 2.5", 
               "model.duration": dur, "model.task_type": task, "model.prompt": "x"}
     if video:
         inputs["model.reference_videos.video_1"] = ["5", 0]
-    return {"9": {"class_type": "ByteDance2ReferenceNodeV2", "inputs": inputs}}
+    wf = {"9": {"class_type": "ByteDance2ReferenceNodeV2", "inputs": inputs}}
+    if video:
+        wf["5"] = {"class_type": "LoadVideo", "inputs": {"file": "clip.mp4"}}
+    return wf
 
 
 class Base(unittest.TestCase):
@@ -80,6 +83,41 @@ class PriceEstimate(Base):
         self.assertAlmostEqual(e1080["min_usd"], 2.9392, places=3)
         self.assertLess(est["min_usd"], est["max_usd"])
 
+    def test_known_reference_video_length_tightens_the_worst_case(self):
+        calls = []
+        orig = pc._video_seconds
+        pc._video_seconds = lambda name: calls.append(name) or 6.0
+        try:
+            est = pc.estimate_workflow(seedance("720p", 6, video=True))
+            self.assertEqual(calls, ["clip.mp4"])
+            self.assertAlmostEqual(est["min_usd"], 1.1943, places=3)
+            self.assertAlmostEqual(est["max_usd"], 2.3804, places=3)     # 6 s out + 6 s in, not +30 s
+            self.assertEqual(est["nodes"][0]["refined_by_video_s"], 6.0)
+            # nothing known about the clip: the 30 s worst case stays
+            pc._video_seconds = lambda name: None
+            self.assertAlmostEqual(pc.estimate_workflow(seedance("720p", 6, video=True))["max_usd"], 7.1248, places=3)
+            # a clip that comes from another node (no file to read) is unknown too
+            wf = seedance("720p", 6, video=True)
+            wf["5"]["inputs"] = {"images": ["2", 0]}
+            pc._video_seconds = lambda name: 6.0
+            self.assertAlmostEqual(pc.estimate_workflow(wf)["max_usd"], 7.1248, places=3)
+        finally:
+            pc._video_seconds = orig
+
+    def test_video_seconds_reads_the_file_duration(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "clip.mp4").write_bytes(b"x")
+        import agenty_core.tools.workspace_tools as W
+        o = (W.media_info, W._resolve)
+        W.media_info = lambda p: json.dumps({"ok": True, "duration_s": 6.5})
+        W._resolve = lambda c: d / "clip.mp4" if c == "clip.mp4" else d / "nope"
+        pc._video_len_cache.clear()
+        try:
+            self.assertEqual(pc._video_seconds("clip.mp4"), 6.5)
+            self.assertIsNone(pc._video_seconds("missing.mp4"))
+        finally:
+            W.media_info, W._resolve = o
+
     def test_connected_input_changes_the_price(self):
         base = {"1": {"class_type": "Flux2ProImageNode", "inputs": {"width": 1024, "height": 1024}}}
         self.assertAlmostEqual(pc.estimate_workflow(base)["max_usd"], 0.03, places=4)
@@ -124,15 +162,36 @@ class Gate(Base):
         self.assertFalse(est["paid"])
         self.assertEqual(self.balance_calls, [])
 
-    def test_insufficient_credits_refuses(self):
-        self.balance["effective_balance_cents"] = 150      # $1.50 against up to $7.12
+    def test_insufficient_credits_only_when_even_the_minimum_does_not_fit(self):
+        self.balance["effective_balance_cents"] = 100      # $1.00 against $1.19 - $7.12
         with self.assertRaises(pc.CostGateError) as cm:
             pc.preflight(seedance("720p", 6, video=True), confirm=True)   # even confirmed
         self.assertEqual(cm.exception.error_kind, "insufficient_credits")
         msg = str(cm.exception)
-        self.assertIn("$7.12", msg)
-        self.assertIn("$1.50", msg)
+        self.assertIn("$1.19", msg)
+        self.assertIn("$1.00", msg)
         self.assertEqual(cm.exception.payload()["error_kind"], "insufficient_credits")
+
+    def test_top_of_range_above_balance_asks_instead_of_refusing(self):
+        # known 6 s clip: $1.19 - $2.39; balance $2.11 sits inside the range
+        orig = pc._video_seconds
+        pc._video_seconds = lambda name: 6.0
+        self.balance["effective_balance_cents"] = 211
+        try:
+            with self.assertRaises(pc.CostGateError) as cm:
+                pc.preflight(seedance("720p", 6, video=True))
+            self.assertEqual(cm.exception.error_kind, "confirm_cost")
+            self.assertIn("may not be covered", str(cm.exception))
+            self.assertIn("$1.19-$2.38", str(cm.exception))
+            self.assertIn("$2.11", str(cm.exception))
+            pc.preflight(seedance("720p", 6, video=True), confirm=True)
+            # under the confirmation level but possibly short: still asks
+            pc._threshold_provider = lambda: 10.0
+            with self.assertRaises(pc.CostGateError) as cm2:
+                pc.preflight(seedance("720p", 6, video=True))
+            self.assertEqual(cm2.exception.error_kind, "confirm_cost")
+        finally:
+            pc._video_seconds = orig
 
     def test_confirm_threshold(self):
         # $2.00 >= default $1.00 -> asks

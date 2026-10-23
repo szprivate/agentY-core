@@ -190,9 +190,70 @@ def _read_price(res: Any) -> tuple[float, float] | None:
     return None
 
 
-def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None) -> dict | None:
+# Several video-capable formulas price the worst case for a connected reference
+# video as a fixed extra 30 s on top of the output length (Seedance 2.5:
+# ``$hi := $costFor(out + ($hasVideo ? 30 : 0))``). When the real length of the
+# connected clip(s) is known it replaces the 30; the formula is otherwise untouched.
+_REF_VIDEO_WORST_CASE = "($hasVideo ? 30 : 0)"
+
+_VIDEO_KEYS = ("file", "video", "filename", "path")
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mxf")
+_video_len_cache: dict[tuple, float | None] = {}
+
+
+def _video_seconds(path_value: str) -> float | None:
+    """Duration in seconds of a video named by a loader widget (cached by file
+    mtime); None when it can't be found or probed."""
+    name = str(path_value or "").strip()
+    if not name:
+        return None
+    try:
+        from agenty_core.tools.workspace_tools import _resolve, media_info
+        for cand in (name, "input/" + name.replace("\\", "/")):
+            p = _resolve(cand)
+            if not p.is_file():
+                continue
+            key = (str(p), p.stat().st_mtime_ns)
+            if key not in _video_len_cache:
+                got = json.loads(media_info(str(p)))
+                d = got.get("duration_s") if isinstance(got, dict) else None
+                _video_len_cache[key] = float(d) if d else None
+            return _video_len_cache[key]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("partner_credits: no duration for %s (%s)", name, exc)
+    return None
+
+
+def reference_video_seconds(workflow: dict, node_inputs: dict, badge: dict) -> float | None:
+    """Total length of the videos wired into the node's ``*video*`` input groups,
+    read from the loader nodes' files. None unless EVERY connected clip is known
+    (a partly known total would understate the worst case)."""
+    groups = [g for g in ((badge.get("depends_on") or {}).get("input_groups") or []) if "video" in g]
+    total, seen = 0.0, False
+    for g in groups:
+        for k, v in (node_inputs or {}).items():
+            if not k.startswith(g + ".") or not _is_link(v):
+                continue
+            src = (workflow or {}).get(str(v[0]))
+            secs = None
+            if isinstance(src, dict):
+                for key in _VIDEO_KEYS:
+                    val = (src.get("inputs") or {}).get(key)
+                    if isinstance(val, str) and val.lower().endswith(VIDEO_EXTS):
+                        secs = _video_seconds(val)
+                        break
+            if secs is None:
+                return None
+            total += secs
+            seen = True
+    return round(total, 3) if seen else None
+
+
+def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None,
+                  ref_video_s: float | None = None) -> dict | None:
     """Price one node. None = not a paid node. Otherwise
-    ``{"min_usd","max_usd","known","approximate","reason"}``."""
+    ``{"min_usd","max_usd","known","approximate","reason"}``. *ref_video_s* is the
+    known length of connected reference video (tightens the worst case)."""
     info = info if info is not None else _node_info(class_type)
     badge = (info or {}).get("price_badge")
     if not isinstance(badge, dict) or not badge.get("expr"):
@@ -202,7 +263,11 @@ def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None) 
         out["reason"] = f"unsupported price engine {badge.get('engine')!r}"
         return out
     try:
-        res = _evaluate(badge["expr"], _context_for(node_inputs, badge, info))
+        expr = badge["expr"]
+        if ref_video_s is not None and _REF_VIDEO_WORST_CASE in expr:
+            expr = expr.replace(_REF_VIDEO_WORST_CASE, f"($hasVideo ? {float(ref_video_s)!r} : 0)")
+            out["refined_by_video_s"] = ref_video_s
+        res = _evaluate(expr, _context_for(node_inputs, badge, info))
     except Exception as exc:  # noqa: BLE001
         out["reason"] = f"price expression failed ({type(exc).__name__})"
         return out
@@ -231,8 +296,13 @@ def estimate_workflow(workflow: dict, info_for: Callable[[str], Any] | None = No
             continue
         ct = str(node["class_type"])
         info = info_for(ct) if info_for else _node_info(ct)
-        est = estimate_node(ct, node.get("inputs") or {}, info if isinstance(info, dict) else None) \
-            if isinstance(info, dict) else None
+        ref_s = None
+        if isinstance(info, dict) and isinstance(info.get("price_badge"), dict):
+            try:
+                ref_s = reference_video_seconds(workflow, node.get("inputs") or {}, info["price_badge"])
+            except Exception:  # noqa: BLE001 - a probe must never stop an estimate
+                ref_s = None
+        est = estimate_node(ct, node.get("inputs") or {}, info, ref_s) if isinstance(info, dict) else None
         if est is None:
             continue
         paid = True
@@ -374,21 +444,24 @@ def _gate(est: dict, confirm: bool, workflow_path: str) -> dict:
     names = ", ".join(sorted({n["class_type"] for n in est["nodes"]}))
     est["summary"] = (f"{_range(est)} on partner credits ({names})" if est["max_usd"] > 0
                       else f"price unknown ({names})")
-    if bal is not None and est["max_usd"] > bal["effective_usd"] + 1e-9:
+    if bal is not None and est["min_usd"] > bal["effective_usd"] + 1e-9:
         raise CostGateError(
             "insufficient_credits",
-            f"Not run: the estimate is up to {_money(est['max_usd'])} ({names}) but the Comfy credit "
-            f"balance is {_money(bal['effective_usd'])}. Nothing was submitted; the user has to top up "
-            "or pick a cheaper setting (lower resolution, shorter duration).", est, bal)
+            f"Not run: even the lowest estimate, {_money(est['min_usd'])} ({names}), is above the Comfy "
+            f"credit balance of {_money(bal['effective_usd'])}. Nothing was submitted; the user has to "
+            "top up or pick a cheaper setting (lower resolution, shorter duration).", est, bal)
     ok = (confirm or _confirm_all.get()
           or _confirmed_paths.get(_norm(workflow_path), -1.0) >= est["max_usd"] - 1e-9)
     thr = confirm_threshold()
-    if est["max_usd"] >= thr and est["max_usd"] > 0 and not ok:
+    short = bool(bal is not None and est["max_usd"] > bal["effective_usd"] + 1e-9)
+    if ((est["max_usd"] >= thr and est["max_usd"] > 0) or short) and not ok:
         raise CostGateError(
             "confirm_cost",
-            f"Not run: this costs {_range(est)} on partner credits ({names}), at or above the "
-            f"{_money(thr)} confirmation level"
+            f"Not run: this costs {_range(est)} on partner credits ({names}), "
+            + (f"at or above the {_money(thr)} confirmation level" if est["max_usd"] >= thr
+               else "under the confirmation level")
             + (f"; balance {_money(bal['effective_usd'])}" if bal else "")
+            + ("; the top of the range is above the balance, so it may not be covered" if short else "")
             + ". Tell the user the estimate and ask whether to go ahead; only when they say yes, "
               "run it again with confirm_cost=True.", est, bal)
     return est
