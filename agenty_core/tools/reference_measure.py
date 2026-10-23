@@ -147,6 +147,81 @@ def pair_metrics(a, b) -> dict:
             "vertical_diff_m": dy, "horizontal_m": math.hypot(dx, dz)}
 
 
+def pair_yaw_deg(a, b) -> float:
+    """Yaw of the segment a-b in the ground plane relative to the camera's image plane, in a levelled frame
+    (X right, Z away): atan2(dz, dx) with the left end first. Positive: the RIGHT end is farther away."""
+    left, right = (a, b) if a[0] <= b[0] else (b, a)
+    return math.degrees(math.atan2(float(right[2] - left[2]), float(right[0] - left[0])))
+
+
+SCALE_RANGE = (0.5, 2.0)
+
+
+def apply_anchor(result: dict, anchor: Optional[dict]) -> dict:
+    """Rescale a finished ``analyse`` result so that the anchor pair measures ``anchor["meters"]``.
+    Every length in the result (point positions, distances, heights, pair numbers, camera height) is replaced by
+    its scaled value; the unscaled numbers stay under ``raw``. Without an anchor nothing changes except a
+    top-level warning that the metres are unscaled."""
+    warnings = result.setdefault("warnings", [])
+    if not anchor:
+        warnings.append("absolute metres are UNSCALED: MoGe is often 10-40 % off at 20-30 m. Pass anchor={'pair': "
+                        "[nameA, nameB], 'meters': known_size} (a railing ~1.0 m, a door ~2.0 m) before they become "
+                        "build constants. Ratios, angles and yaw are unaffected.")
+        result["scale"] = None
+        return result
+    try:
+        pair = [str(n) for n in anchor["pair"]]
+        meters = float(anchor["meters"])
+        if len(pair) != 2 or meters <= 0:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        warnings.append("anchor ignored: it must be {'pair': [nameA, nameB], 'meters': positive number}; metres are unscaled")
+        result["scale"] = None
+        return result
+    ref = next((q for q in result["pairs"] if [q["a"], q["b"]] == pair or [q["b"], q["a"]] == pair), None)
+    if ref is None:
+        # the anchor pair was not asked for as a pair: measure it from the points
+        pts = {q["name"]: q for q in result["points"] if q.get("valid")}
+        if pair[0] in pts and pair[1] in pts:
+            ref = {"distance_m": pair_metrics(pts[pair[0]]["position_m"], pts[pair[1]]["position_m"])["distance_m"]}
+    if ref is None or not ref.get("distance_m"):
+        warnings.append("anchor ignored: no valid measurement for the pair %s; metres are unscaled" % pair)
+        result["scale"] = None
+        return result
+    k = meters / ref["distance_m"]
+    result["scale"] = round(k, 4)
+    result["anchor"] = {"pair": pair, "meters": meters, "measured_raw_m": round(ref["distance_m"], 3)}
+    if not SCALE_RANGE[0] <= k <= SCALE_RANGE[1]:
+        warnings.append("scale factor %.2f is outside %.1f-%.1f: the anchor points are probably on the wrong spots "
+                        "(background behind a thin railing?) or the anchor size is wrong; do not trust the scaled metres"
+                        % (k, *SCALE_RANGE))
+    raw: dict = {}
+    if result.get("camera_height_m") is not None:
+        raw["camera_height_m"] = result["camera_height_m"]
+        result["camera_height_m"] = round(result["camera_height_m"] * k, 2)
+    raw_pts = []
+    for q in result["points"]:
+        if not q.get("valid"):
+            continue
+        raw_pts.append({"name": q["name"], "position_m": q["position_m"], "distance_m": q["distance_m"],
+                        **({"height_above_ground_m": q["height_above_ground_m"]} if "height_above_ground_m" in q else {})})
+        q["position_m"] = [round(c * k, 3) for c in q["position_m"]]
+        q["distance_m"] = round(q["distance_m"] * k, 2)
+        if "height_above_ground_m" in q:
+            q["height_above_ground_m"] = round(q["height_above_ground_m"] * k, 3)
+    raw_pairs = []
+    for q in result["pairs"]:
+        if "error" in q:
+            continue
+        raw_pairs.append({kk: q[kk] for kk in ("a", "b", "distance_m", "vertical_diff_m", "horizontal_m")})
+        for kk in ("distance_m", "vertical_diff_m", "horizontal_m"):
+            q[kk] = round(q[kk] * k, 3)
+    raw["points"], raw["pairs"] = raw_pts, raw_pairs
+    result["raw"] = raw
+    result["frame"] += "; lengths scaled by the anchor (x%.3f), unscaled numbers are under 'raw'" % k
+    return result
+
+
 def horizon_from_normal(normal_cam, f_px: float, width: int, height: int) -> dict:
     """Where the ground plane's horizon falls in the image. `normal_cam`: the ground normal in the camera's
     own Y-up frame (X right, Y up, Z forward). Returns y_from_top at the image centre (fraction and px) and
@@ -318,7 +393,8 @@ def load_or_run(image_path: str) -> tuple:
     return data, False
 
 
-def analyse(data: dict, points: Optional[list] = None, pairs: Optional[list] = None, ground_hint: str = "") -> dict:
+def analyse(data: dict, points: Optional[list] = None, pairs: Optional[list] = None, ground_hint: str = "",
+            anchor: Optional[dict] = None) -> dict:
     """The tool's maths on a loaded MoGe result (also what the tests drive with synthetic arrays)."""
     import numpy as np
     pts = np.asarray(data["points"], dtype="float64")
@@ -383,17 +459,19 @@ def analyse(data: dict, points: Optional[list] = None, pairs: Optional[list] = N
         a, b = str(pair[0]), str(pair[1])
         if a in by_name and b in by_name:
             m = pair_metrics(by_name[a], by_name[b])
-            out_pairs.append({"a": a, "b": b, **{k: round(v, 3) for k, v in m.items()}})
+            out_pairs.append({"a": a, "b": b, **{k: round(v, 3) for k, v in m.items()},
+                              "yaw_deg": round(pair_yaw_deg(by_name[a], by_name[b]), 1),
+                              "nearer": a if by_name[a][2] <= by_name[b][2] else b})
         else:
             missing = [n for n in (a, b) if n not in by_name]
             out_pairs.append({"a": a, "b": b, "error": f"no valid measurement for {', '.join(missing)}"})
     result["pairs"] = out_pairs
-    return result
+    return apply_anchor(result, anchor)
 
 
 @tool
 def measure_reference(image_path: str, points: Optional[list] = None, pairs: Optional[list] = None,
-                      ground_hint: str = "") -> str:
+                      ground_hint: str = "", anchor: Optional[dict] = None) -> str:
     """Measure a reference photo with MoGe (monocular metric geometry): camera field of view, camera height
     above the ground, the horizon, and the 3D position of points you pick in the picture.
 
@@ -404,9 +482,10 @@ def measure_reference(image_path: str, points: Optional[list] = None, pairs: Opt
     camera). MoGe runs once per picture (a few seconds on the GPU, needs the MoGe model in ComfyUI) and is
     cached next to the image, so later calls with other points are instant.
 
-    Metric scale is approximate (MoGe is typically within +-10-20 %): cross-check with one object whose real
-    size you know (a door about 2.0 m, a stair step about 0.18 m, a person about 1.7 m) and scale all numbers
-    by known / measured. Ratios and angles are far more reliable than absolute metres. Points on thin
+    Metric scale is approximate (MoGe is often 10-40 % off at 20-30 m, it ran 1.3x too large for a house 29 m
+    away): pass ``anchor`` (a pair of points whose real size you know: railing ~1.0 m, door ~2.0 m, a step
+    ~0.18 m) and every length comes back scaled; without it a top-level warning says the metres are unscaled.
+    Ratios, angles and yaw are far more reliable than absolute metres. Points on thin
     structures (railings, stilts) can land on the background: pick the thickest part and check
     ``valid_pixels`` and the distance. If ``camera_height_m`` is null, name visible ground in ``ground_hint``.
 
@@ -417,6 +496,10 @@ def measure_reference(image_path: str, points: Optional[list] = None, pairs: Opt
         pairs: [["stilt_base", "deck_edge"], ...] names from ``points``; per pair the metric distance,
             the vertical difference (second minus first, along up) and the horizontal distance. A deck height
             is the pair [ground_contact, deck_line].
+        anchor: {"pair": [nameA, nameB], "meters": 1.0}: the pair must be points you gave. scale = meters /
+            measured distance of the pair. Every point position, distance, height, pair length and the camera
+            height are then SCALED in the result (the unscaled numbers stay under ``raw``), with ``scale`` and
+            ``anchor`` reported. A scale outside 0.5-2.0 raises a warning (anchor on the wrong spot).
         ground_hint: where visible ground is, to fit the ground plane: "bottom 25%" (the default), "bottom
             40%", or "rect x0,y0,x1,y1" in fractions. Use it when something other than ground fills the bottom.
 
@@ -424,13 +507,21 @@ def measure_reference(image_path: str, points: Optional[list] = None, pairs: Opt
         JSON: image_size, fov_vertical_deg / fov_horizontal_deg, focal_px, camera_height_m, horizon
         (y_from_top fraction at the image centre, roll_deg), per point position_m [x, y, z] in a
         ground-aligned frame (camera at the origin, Y up, ground at y = -camera_height_m, Z away from the
-        camera), distance_m, height_above_ground_m or valid=false with a reason, and per pair the numbers.
+        camera), distance_m, height_above_ground_m or valid=false with a reason, and per pair the numbers:
+        distance_m, vertical_diff_m, horizontal_m, ``yaw_deg`` and ``nearer``. warnings, scale, anchor, raw.
+
+    Yaw (per pair): the angle of the segment a-b in the ground plane relative to the camera's image plane,
+    atan2(dz, dx) in the levelled frame (X right, Z away) with the left end first. POSITIVE yaw: the RIGHT end is
+    farther from the camera (a facade seen from the front-left recedes to the right); NEGATIVE: the left end is
+    farther; 0: parallel to the image plane (seen straight on). ``nearer`` is the name of the end closer to the
+    camera. Yaw does not depend on scale. Reproduce it in the model by rotating the model or moving the camera,
+    and pass the same number as ``yaw_pairs`` to dcc_silhouette_check.
     """
     try:
         if not image_path or not os.path.isfile(image_path):
             return json.dumps({"status": "error", "error": f"image not found: {image_path}"})
         data, cached = load_or_run(image_path)
-        result = analyse(data, points, pairs, ground_hint)
+        result = analyse(data, points, pairs, ground_hint, anchor)
         result.update(status="ok", cached=cached)
         return json.dumps(result)
     except Exception as exc:  # noqa: BLE001

@@ -72,6 +72,35 @@ class Base(unittest.TestCase):
     def check(self, res, points, **kw):
         return json.loads(dcc.dcc_silhouette_check(points, app=self.app, mode="batch", scene=res["saved"], **kw))
 
+    # An edge that recedes to the right by 45 degrees: A (left, nearer) -> B (right, farther).
+    YAW_A, YAW_B = None, None
+
+    def yaw_and_gate(self, res):
+        """The viewpoint check and the gate, against the real app: yaw 45 in the model."""
+        a, b = self.YAW_A, self.YAW_B
+        pts = [{"name": "A", "world": a, "target": self.exp(a)}, {"name": "B", "world": b, "target": self.exp(b)}]
+        sp = str(self.dir / "build.py")
+        ok = self.check(res, pts, script_path=sp,
+                        yaw_pairs=[{"pair": ["A", "B"], "target_yaw_deg": 45, "tolerance_deg": 5}])
+        self.assertTrue(ok["ok"], ok)
+        self.assertTrue(ok["overall_pass"], ok)
+        self.assertAlmostEqual(ok["yaw_pairs"][0]["yaw_deg"], 45.0, delta=0.5)
+        self.assertEqual(ok["yaw_pairs"][0]["nearer"], "A")
+        self.assertEqual((ok["n_pass"], ok["n_total"]), (3, 3))
+        # the gate now lets a detail build through
+        d = json.loads(dcc.dcc_build(sp, app=self.app, mode="batch", save_to=res["saved"], stage="detail"))
+        self.assertTrue(d["ok"], d)
+        self.assertFalse(d["gate"]["forced"])
+        # a straight-on photo (yaw 0) fails the same camera, with a hint, and closes the gate
+        bad = self.check(res, pts, script_path=sp,
+                         yaw_pairs=[{"pair": ["A", "B"], "target_yaw_deg": 0, "tolerance_deg": 8}])
+        self.assertFalse(bad["overall_pass"])
+        self.assertEqual((bad["n_pass"], bad["n_total"]), (2, 3))
+        self.assertIn("facade yaw 45 deg vs photo 0 deg", bad["worst"][-1]["hint"])
+        d = json.loads(dcc.dcc_build(sp, app=self.app, mode="batch", save_to=res["saved"], stage="detail"))
+        self.assertFalse(d["ok"])
+        self.assertIn("facade yaw", d["error"])
+
 
 # Cube 2 m centred at CUBE; camera at CAM looking along the world axis noted per app.
 class TestBlenderBatch(Base):
@@ -127,6 +156,11 @@ print("built", len(col.objects))
         self.assertEqual(res["render"]["resolution"], [200, 100])
         self.assertTrue(out.stat().st_size > 100)
 
+    YAW_A, YAW_B = [0.0, 3.0, 2.0], [2.0, 5.0, 2.0]
+
+    def test_yaw_and_gate(self):
+        self.yaw_and_gate(self.build(self.SCRIPT % {"cube": self.CUBE, "cam": self.CAM, "sx": 0.0, "sy": 0.0}))
+
     def test_a_wrong_point_fails_with_a_hint(self):
         res = self.build(self.SCRIPT % {"cube": self.CUBE, "cam": self.CAM, "sx": 0.0, "sy": 0.0})
         w = self.corners()[0]
@@ -172,6 +206,11 @@ print("built maya")
         self.assertEqual(res["objects"]["top_level"], ["dcc_grp"])
         out = self.check(res, corners_points(self.corners(), self.exp))
         assert_all_pass(self, out)
+
+    YAW_A, YAW_B = [0.0, 1.0, 8.0], [2.0, 1.0, 6.0]
+
+    def test_yaw_and_gate(self):
+        self.yaw_and_gate(self.build(self.SCRIPT % {"cube": self.CUBE, "cam": self.CAM, "hfo": 0.0, "vfo": 0.0}))
 
     def test_film_offset(self):
         # 0.1 inch of film offset on a 36 mm (1.417 in) wide frame: 0.0706 of the width, 0.1 / 0.7087 of the height
@@ -220,6 +259,11 @@ print("built houdini")
         self.assertEqual(res["stdout_tail"].strip(), "built houdini")
         self.assertEqual(sorted(res["objects"]["top_level"]), ["Cam", "Cube"])
         assert_all_pass(self, self.check(res, corners_points(self.corners(), self.exp)))
+
+    YAW_A, YAW_B = [0.0, 1.0, 8.0], [2.0, 1.0, 6.0]
+
+    def test_yaw_and_gate(self):
+        self.yaw_and_gate(self.build(self.SCRIPT % {"cube": self.CUBE, "cam": self.CAM}))
 
     def test_named_camera(self):
         res = self.build(self.SCRIPT % {"cube": self.CUBE, "cam": self.CAM})

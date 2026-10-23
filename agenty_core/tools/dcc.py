@@ -29,6 +29,7 @@ are cross-checked against the pure function.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import math
 import os
@@ -186,6 +187,143 @@ def shape_check(points: list, projected: list, tolerance: float) -> dict:
             out["overall_hint"] = ("every point is off by about (%+.3f, %+.3f) the same way: this is the camera "
                                    "(position, aim or lens shift), not the model's proportions" % (mx, my))
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Viewpoint (yaw) and the build gate (pure)
+# ---------------------------------------------------------------------------------------------------------------
+
+DETAIL_MARKER = "# --- DETAIL ---"
+STAGES = ("blockout", "detail", "look")
+
+
+def camera_space(point, cam: dict) -> tuple:
+    """World point -> (right, up, depth) in the camera's own frame (depth grows away from the camera)."""
+    d = [point[i] - cam["position"][i] for i in range(3)]
+    return _dot(d, cam["right"]), _dot(d, cam["up"]), -_dot(d, cam["back"])
+
+
+def pair_yaw(a, b) -> dict:
+    """Yaw of the segment a-b in the ground plane relative to the image plane, from two camera-space points
+    (right, up, depth). ``yaw_deg = atan2(dz, dx)`` with the segment turned so that dx >= 0 (the left end first):
+    positive means the RIGHT end is farther away (a facade seen from the front-left), negative the left end is.
+    0 is a segment parallel to the image plane (a camera straight in front of a flat facade). ``nearer`` is the
+    end ("a" or "b") closer to the camera."""
+    (ax, _, az), (bx, _, bz) = a, b
+    left, right = ((ax, az), (bx, bz)) if ax <= bx else ((bx, bz), (ax, az))
+    yaw = math.degrees(math.atan2(right[1] - left[1], right[0] - left[0]))
+    return {"yaw_deg": yaw, "nearer": "a" if az <= bz else "b"}
+
+
+def yaw_check(points: list, yaw_pairs: list, cam: dict) -> list:
+    """Judge each {"pair": [nameA, nameB], "target_yaw_deg": x, "tolerance_deg": 8} against the camera.
+    Returns rows with a ``pass`` and a ``hint`` so they join the pass / fail count."""
+    by_name = {p["name"]: p["world"] for p in points}
+    rows = []
+    for yp in yaw_pairs:
+        a, b = str(yp["pair"][0]), str(yp["pair"][1])
+        tgt, tol = float(yp["target_yaw_deg"]), float(yp.get("tolerance_deg", 8.0))
+        row = {"pair": [a, b], "name": f"yaw {a} -> {b}", "target_yaw_deg": tgt, "tolerance_deg": tol}
+        ca, cb = camera_space(by_name[a], cam), camera_space(by_name[b], cam)
+        if ca[2] <= 1e-9 or cb[2] <= 1e-9:
+            row.update(yaw_deg=None, hint="an end of the pair is behind the camera: the camera faces away from it "
+                                          "or sits on the wrong side of the model")
+            row["pass"] = False
+        else:
+            y = pair_yaw(ca, cb)
+            yaw = y["yaw_deg"]
+            nearer = a if y["nearer"] == "a" else b
+            ok = abs(yaw - tgt) <= tol
+            hint = ""
+            if not ok:
+                hint = ("facade yaw %.0f deg vs photo %.0f deg: " % (yaw, tgt)
+                        + ("move the camera left / rotate the model so the right end recedes more" if yaw < tgt else
+                           "move the camera right / rotate the model so the right end recedes less")
+                        + " (in the model %s is the nearer end)" % nearer)
+            row.update(yaw_deg=round(yaw, 1), nearer=nearer, hint=hint)
+            row["pass"] = ok
+        rows.append(row)
+    return rows
+
+
+def _clean_yaw_pairs(yaw_pairs, points: list) -> list:
+    if isinstance(yaw_pairs, str):
+        yaw_pairs = json.loads(yaw_pairs)
+    if not isinstance(yaw_pairs, list):
+        raise ValueError("yaw_pairs must be a list of {pair:[nameA,nameB], target_yaw_deg, tolerance_deg}")
+    names = {p["name"] for p in points}
+    out = []
+    for i, yp in enumerate(yaw_pairs):
+        pr = yp.get("pair") if isinstance(yp, dict) else None
+        if not (isinstance(pr, (list, tuple)) and len(pr) == 2):
+            raise ValueError(f"yaw_pairs[{i}]: 'pair' must be [nameA, nameB]")
+        missing = [str(n) for n in pr if str(n) not in names]
+        if missing:
+            raise ValueError(f"yaw_pairs[{i}]: {missing} not among the points (give both ends as points with 'world')")
+        if not isinstance(yp.get("target_yaw_deg"), (int, float)):
+            raise ValueError(f"yaw_pairs[{i}]: 'target_yaw_deg' must be a number")
+        out.append({"pair": [str(pr[0]), str(pr[1])], "target_yaw_deg": float(yp["target_yaw_deg"]),
+                    "tolerance_deg": float(yp.get("tolerance_deg", 8.0))})
+    return out
+
+
+def script_hashes(path: str) -> dict:
+    """``sha``: the whole script. ``blockout_sha``: the script ABOVE the ``# --- DETAIL ---`` line (trailing
+    whitespace and line endings ignored); with no marker it is the whole script, so any edit changes it."""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").split("\n")]
+    cut = next((i for i, ln in enumerate(lines) if ln.strip().startswith(DETAIL_MARKER)), None)
+    top = lines if cut is None else lines[:cut]
+
+    def h(ls):
+        return hashlib.sha1("\n".join(ls).encode("utf-8")).hexdigest()[:16]
+    return {"sha": h(lines), "blockout_sha": h(top), "has_marker": cut is not None}
+
+
+def check_file_path(script_path: str) -> Path:
+    return Path(str(script_path) + ".check.json")
+
+
+def gate_decision(script_path: str, stage: str, force_reason: str = "") -> dict:
+    """Decide whether ``stage`` may be built. Returns {"allowed", "gate", "error"}.
+    blockout: always. detail / look: the last ``<script>.check.json`` must have overall_pass AND the same
+    ``blockout_sha`` as the script now (so only lines below the DETAIL marker may have changed; with no marker
+    any edit needs a fresh check). ``force_reason`` lets it through, recorded in ``gate``."""
+    if stage == "blockout":
+        return {"allowed": True, "gate": {"stage": stage}}
+    rec = None
+    why = ""
+    cf = check_file_path(script_path)
+    if not cf.is_file():
+        why = (f"no silhouette check recorded for this script ({cf.name} is missing): run dcc_silhouette_check with "
+               f"script_path=<this script> and get overall_pass first")
+    else:
+        try:
+            rec = json.loads(cf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            why = f"{cf.name} is unreadable: run dcc_silhouette_check again"
+    summary = None
+    if rec is not None:
+        summary = {k: rec.get(k) for k in ("overall_pass", "n_pass", "n_total", "worst_distance", "timestamp")}
+        now = script_hashes(script_path)
+        if not rec.get("overall_pass"):
+            fails = rec.get("failing") or []
+            lines = "; ".join("%s: %s" % (f.get("name"), f.get("hint") or "off by %s" % f.get("distance"))
+                              for f in fails[:8])
+            why = ("the last silhouette check FAILED (%s of %s pass, worst %s): %s. Fix the block-out constants, "
+                   "run dcc_build with stage='blockout' and check again"
+                   % (rec.get("n_pass"), rec.get("n_total"), rec.get("worst_distance"), lines or "see the check"))
+        elif rec.get("blockout_sha") != now["blockout_sha"]:
+            why = ("the script changed since the passing check%s: run dcc_silhouette_check again"
+                   % ("" if now["has_marker"] else " (it has no '%s' line, so any edit counts; put the marker above "
+                      "the detail code so detail edits do not need a re-check)" % DETAIL_MARKER))
+    if not why:
+        return {"allowed": True, "gate": {"stage": stage, "forced": False, "last_check": summary}}
+    if force_reason and force_reason.strip():
+        return {"allowed": True, "gate": {"stage": stage, "forced": True, "reason": force_reason.strip(),
+                                          "why_blocked": why, "last_check": summary}}
+    return {"allowed": False, "error": f"stage '{stage}' refused: {why}",
+            "gate": {"stage": stage, "forced": False, "last_check": summary}}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -404,7 +542,8 @@ def default_scene_path(script_path: str, app: str) -> str:
 
 @tool
 def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_to: str = "", render_to: str = "",
-              render_engine: str = "fast", resolution: str = "") -> str:
+              render_engine: str = "fast", resolution: str = "", stage: str = "blockout",
+              force_reason: str = "") -> str:
     """Run a whole build script file in a 3D app (Blender, Maya or Houdini), then optionally save and render a still.
 
     This is the ONLY way a model should be rebuilt: keep one script, change its constants, call this again. The
@@ -427,9 +566,20 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         render_engine: "fast" (Blender Workbench, Maya hardware / playblast, Houdini OpenGL) or "final"
             (Blender Cycles, Maya Arnold, Houdini Karma).
         resolution: render size as "WIDTHxHEIGHT" (default: the scene's own).
+        stage: "blockout" (default, always allowed), "detail" or "look". Set it on EVERY build. detail and look are
+            GATED: they run only if the last dcc_silhouette_check(script_path=<this script>) passed (rule below),
+            otherwise the build is refused (ok false, nothing run) with the failing points and their hints.
+        force_reason: a non-empty sentence that lets a detail / look build through the gate anyway. The result then
+            carries gate {forced: true, reason, last_check}. Only for a point that is truly unmeasurable: say which
+            point and why. Never to skip a failing check.
+
+    The gate rule: the check writes <script>.check.json with overall_pass and two hashes of the script. A detail /
+    look build needs overall_pass AND an unchanged ``blockout_sha``, the hash of the script text ABOVE a
+    ``# --- DETAIL ---`` line (whitespace ignored). Edits below the marker never need a re-check; any edit above
+    it does. A script with no marker hashes whole: any edit needs a fresh passing check.
 
     Returns:
-        JSON: {ok, app, mode, stdout_tail, error (with the script's own line), traceback, objects: {count, top_level,
+        JSON: {ok, gate, app, mode, stdout_tail, error (with the script's own line), traceback, objects: {count, top_level,
         collections}, saved, render: {path, engine, resolution, exists | error}}.
     """
     bad = _bad_app_mode(app, mode)
@@ -440,6 +590,11 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         return _err(f"build script not found: {script_path}")
     if render_engine not in ("fast", "final"):
         return _err("render_engine must be 'fast' or 'final'")
+    if stage not in STAGES:
+        return _err(f"stage must be one of {', '.join(STAGES)}, not {stage!r}")
+    gate = gate_decision(str(sp.resolve()), stage, force_reason)
+    if not gate["allowed"]:
+        return _err(gate["error"], gate=gate["gate"], stage=stage)
     if resolution and not re.fullmatch(r"\s*\d+\s*[xX]\s*\d+\s*", resolution):
         return _err("resolution must look like 1280x720")
     if mode == "batch" and not save_to:
@@ -455,7 +610,7 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
         res = run_job(app, mode, job, timeout=3600 if (render_to and render_engine == "final") else 900)
     except DccError as e:
         return _err(str(e), app=app, mode=mode)
-    out = {"ok": bool(res.get("ok")), "app": app, "mode": mode, "stdout_tail": _tail(res.get("stdout", "")),
+    out = {"ok": bool(res.get("ok")), "gate": gate["gate"], "app": app, "mode": mode, "stdout_tail": _tail(res.get("stdout", "")),
            "error": res.get("error", ""), "traceback": res.get("traceback", ""),
            "objects": res.get("objects"), "saved": res.get("saved", ""), "render": res.get("render"),
            "seconds": round(time.time() - t0, 1)}
@@ -485,7 +640,8 @@ def _clean_points(points) -> list:
 
 @tool
 def dcc_silhouette_check(points: list, app: str = "blender", mode: str = "live", scene: str = "",
-                         camera: str = "", tolerance: float = 0.03) -> str:
+                         camera: str = "", tolerance: float = 0.03, yaw_pairs: Optional[list] = None,
+                         script_path: str = "") -> str:
     """Check a model's proportions against the reference photo BY NUMBERS: project key points through the scene
     camera and compare with where they sit in the photo. No images, so it cannot hallucinate.
 
@@ -504,10 +660,20 @@ def dcc_silhouette_check(points: list, app: str = "blender", mode: str = "live",
         scene: batch only: path of the saved scene file.
         camera: name of a camera object (Houdini: node path); empty means the scene's camera.
         tolerance: largest allowed distance, in fractions of the frame (0.03 = 3 % of the picture).
+        yaw_pairs: viewpoint check, [{"pair": [nameA, nameB], "target_yaw_deg": 21, "tolerance_deg": 8}]. Both names
+            are points above (only their world positions are used). The yaw of the segment in the ground plane,
+            relative to the image plane, is computed from the two points in CAMERA space: atan2(depth difference,
+            sideways difference) with the left end first. Positive: the right end is farther away (a facade seen
+            from the front-left); 0: the camera is straight in front of a flat facade. Use the yaw
+            measure_reference gave for the same edge. A wrong camera side or a straight-on camera fails here, with a
+            hint. Each pair counts as one more point in overall_pass / n_pass. Assumes a level camera.
+        script_path: the build script this check is for. When given, the result is written to
+            <script_path>.check.json, which is what dcc_build(stage="detail" / "look") reads as its gate. ALWAYS pass it.
 
     Returns:
         JSON: {ok, overall_pass, points: [{name, projected, target, dx, dy, distance, pass, in_front, hint}] with the
-        worst failures first, worst: [...], overall_hint, camera, cross_check}. dx, dy are projected minus target;
+        worst failures first, worst: [...], n_pass, n_total, yaw_pairs: [{pair, yaw_deg, target_yaw_deg, nearer,
+        pass, hint}], overall_hint, camera, cross_check, check_file}. dx, dy are projected minus target;
         a negative dy means the model point sits higher in the frame than in the photo.
     """
     bad = _bad_app_mode(app, mode)
@@ -516,8 +682,11 @@ def dcc_silhouette_check(points: list, app: str = "blender", mode: str = "live",
     try:
         pts = _clean_points(points)
         tol = float(tolerance)
-    except (ValueError, TypeError, json.JSONDecodeError) as e:
+        yps = _clean_yaw_pairs(yaw_pairs, pts) if yaw_pairs else []
+    except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as e:
         return _err(str(e))
+    if script_path and not Path(script_path).expanduser().is_file():
+        return _err(f"script_path not found: {script_path}")
     if mode == "batch":
         if not scene:
             return _err("batch mode needs scene= the file dcc_build returned in 'saved'")
@@ -550,9 +719,42 @@ def dcc_silhouette_check(points: list, app: str = "blender", mode: str = "live",
             warnings.append("the app's own projection and the pure camera maths differ by "
                             f"{cross['max_abs_diff']:.4f}: the numbers below are the app's (trusted) values")
     out.update(shape_check(pts, native, tol))
+    if yps:
+        rows = yaw_check(pts, yps, {k: raw[k] for k in ("position", "right", "up", "back")})
+        out["yaw_pairs"] = rows
+        failed_yaw = [r for r in rows if not r["pass"]]
+        out["failed"] += len(failed_yaw)
+        out["overall_pass"] = out["failed"] == 0
+        if failed_yaw:
+            out["worst"] = out.get("worst", []) + [{"name": r["name"], "distance": None, "hint": r["hint"]}
+                                                   for r in failed_yaw]
+    out["n_total"] = out["points_checked"] + len(yps)
+    out["n_pass"] = out["n_total"] - out["failed"]
     out["camera"] = cam_info
     if cross is not None:
         out["cross_check"] = cross
     if warnings:
         out["warnings"] = warnings
+    if script_path:
+        out["check_file"] = _write_check_file(script_path, out, scene, camera)
     return json.dumps(out)
+
+
+def _write_check_file(script_path: str, out: dict, scene: str, camera: str) -> str:
+    sp = Path(script_path).expanduser().resolve()
+    cf = check_file_path(str(sp))
+    judged = [p for p in out.get("points", []) if "distance" in p]
+    failing = [{"name": p["name"], "distance": p["distance"], "hint": p["hint"]} for p in judged if not p["pass"]]
+    failing += [{"name": r["name"], "distance": None, "hint": r["hint"]}
+                for r in out.get("yaw_pairs", []) if not r["pass"]]
+    worst = max([f["distance"] for f in failing if f["distance"] is not None], default=None)
+    rec = {"overall_pass": bool(out["overall_pass"]), "worst_distance": worst, "n_pass": out["n_pass"],
+           "n_total": out["n_total"], "tolerance": out["tolerance"], "failing": failing, "points": out["points"],
+           "yaw_pairs": out.get("yaw_pairs", []), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+           "scene": scene, "camera_name": camera, "camera": out["camera"], "script": str(sp), **script_hashes(str(sp))}
+    try:
+        cf.write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    except OSError as e:
+        out.setdefault("warnings", []).append(f"could not write {cf}: {e}")
+        return ""
+    return str(cf)

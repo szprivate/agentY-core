@@ -311,5 +311,220 @@ class CrossCheck(unittest.TestCase):
         self.assertTrue(r["warnings"])
 
 
+RAW = {"name": "C", "kind": "PERSP", "position": [0, 0, 10], "right": [1, 0, 0], "up": [0, 1, 0], "back": [0, 0, 1],
+       "focal_mm": 50, "sensor_width_mm": 36, "sensor_height_mm": 24, "sensor_fit": "AUTO", "res_x": 1000, "res_y": 500}
+
+
+def fake_check(pts, camera=RAW):
+    """What run_job returns for a check: the raw camera and the 'native' projections (pure maths here)."""
+    cam = dcc.camera_from_raw("blender", camera)
+    return {"ok": True, "camera": camera, "native": [list(dcc.project_point(p["world"], cam)) for p in pts]}
+
+
+def on_target(world):
+    return {"name": "x", "world": world,
+            "target": list(dcc.project_point(world, dcc.camera_from_raw("blender", RAW))[:2])}
+
+
+def good_points():
+    pts = []
+    for i, w in enumerate(([-2, 0, 0], [2, 0, -4], [0, 3, -2], [0, 0, -2])):
+        p = on_target(w)
+        p["name"] = f"p{i}"
+        pts.append(p)
+    return pts
+
+
+class YawMaths(unittest.TestCase):
+    def test_sign_and_magnitude(self):
+        # camera-space (right, up, depth): the right end farther -> positive
+        self.assertAlmostEqual(dcc.pair_yaw((0, 0, 5), (4, 0, 5))["yaw_deg"], 0.0)
+        self.assertAlmostEqual(dcc.pair_yaw((0, 0, 5), (4, 0, 9))["yaw_deg"], 45.0)
+        self.assertAlmostEqual(dcc.pair_yaw((4, 0, 9), (0, 0, 5))["yaw_deg"], 45.0)      # pair order is irrelevant
+        self.assertAlmostEqual(dcc.pair_yaw((0, 0, 9), (4, 0, 5))["yaw_deg"], -45.0)
+        self.assertEqual(dcc.pair_yaw((0, 0, 5), (4, 0, 9))["nearer"], "a")
+        self.assertEqual(dcc.pair_yaw((4, 0, 9), (0, 0, 5))["nearer"], "b")
+
+    def test_yaw_check_against_the_camera(self):
+        cam = {k: RAW[k] for k in ("position", "right", "up", "back")}
+        pts = [{"name": "L", "world": [-2, 0, 0]}, {"name": "R", "world": [2, 0, -4]}]
+        ok = dcc.yaw_check(pts, [{"pair": ["L", "R"], "target_yaw_deg": 40, "tolerance_deg": 8}], cam)[0]
+        self.assertTrue(ok["pass"])
+        self.assertAlmostEqual(ok["yaw_deg"], 45.0, places=1)
+        self.assertEqual(ok["nearer"], "L")
+        bad = dcc.yaw_check(pts, [{"pair": ["L", "R"], "target_yaw_deg": 0}], cam)[0]
+        self.assertFalse(bad["pass"])
+        self.assertIn("facade yaw 45 deg vs photo 0 deg", bad["hint"])
+        self.assertIn("right", bad["hint"])
+        behind = dcc.yaw_check([{"name": "L", "world": [0, 0, 0]}, {"name": "R", "world": [1, 0, 20]}],
+                               [{"pair": ["L", "R"], "target_yaw_deg": 0}], cam)[0]
+        self.assertFalse(behind["pass"])
+
+    def test_bad_yaw_pairs_are_explained(self):
+        pts = good_points()
+        for bad, word in (([{"pair": ["p0", "zz"], "target_yaw_deg": 1}], "not among"),
+                          ([{"pair": ["p0"], "target_yaw_deg": 1}], "[nameA, nameB]"),
+                          ([{"pair": ["p0", "p1"]}], "target_yaw_deg")):
+            with mock.patch("agenty_core.tools.dcc.run_job", return_value=fake_check(pts)):
+                self.assertIn(word, json.loads(dcc.dcc_silhouette_check(pts, yaw_pairs=bad))["error"])
+
+
+class YawInTheCheck(unittest.TestCase):
+    def run_check(self, yaw_pairs, **kw):
+        pts = good_points()
+        with mock.patch("agenty_core.tools.dcc.run_job", return_value=fake_check(pts)):
+            return json.loads(dcc.dcc_silhouette_check(pts, yaw_pairs=yaw_pairs, **kw))
+
+    def test_matching_yaw_passes_and_counts(self):
+        r = self.run_check([{"pair": ["p0", "p1"], "target_yaw_deg": 45, "tolerance_deg": 5}])
+        self.assertTrue(r["overall_pass"], r)
+        self.assertEqual((r["n_pass"], r["n_total"]), (5, 5))
+        self.assertEqual(r["yaw_pairs"][0]["nearer"], "p0")
+
+    def test_straight_on_camera_fails_the_check_with_a_hint(self):
+        r = self.run_check([{"pair": ["p0", "p1"], "target_yaw_deg": -20, "tolerance_deg": 8}])
+        self.assertFalse(r["overall_pass"])
+        self.assertEqual((r["n_pass"], r["n_total"]), (4, 5))
+        self.assertTrue(any("facade yaw" in w["hint"] for w in r["worst"]))
+
+    def test_no_yaw_pairs_changes_nothing(self):
+        r = self.run_check(None)
+        self.assertTrue(r["overall_pass"])
+        self.assertEqual(r["n_total"], 4)
+        self.assertNotIn("yaw_pairs", r)
+
+
+class Gate(unittest.TestCase):
+    MARK = dcc.DETAIL_MARKER
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sp = Path(self.tmp.name) / "b.py"
+        self.sp.write_text("W = 4.0\n" + self.MARK + "\nDOORS = 2\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, pts=None, yaw=None):
+        pts = pts or good_points()
+        with mock.patch("agenty_core.tools.dcc.run_job", return_value=fake_check(pts)):
+            return json.loads(dcc.dcc_silhouette_check(pts, yaw_pairs=yaw, script_path=str(self.sp)))
+
+    def build(self, **kw):
+        with mock.patch("agenty_core.tools.dcc.run_job", return_value={"ok": True, "objects": {}}) as m:
+            r = json.loads(dcc.dcc_build(str(self.sp), **kw))
+        return r, m.call_count
+
+    def test_blockout_is_always_allowed(self):
+        r, n = self.build()
+        self.assertTrue(r["ok"])
+        self.assertEqual(n, 1)
+        self.assertEqual(r["gate"]["stage"], "blockout")
+
+    def test_bad_stage(self):
+        self.assertIn("stage must be", json.loads(dcc.dcc_build(str(self.sp), stage="polish"))["error"])
+
+    def test_no_check_refuses_and_runs_nothing(self):
+        for stage in ("detail", "look"):
+            r, n = self.build(stage=stage)
+            self.assertFalse(r["ok"])
+            self.assertEqual(n, 0)
+            self.assertIn("no silhouette check", r["error"])
+
+    def test_check_writes_the_record(self):
+        out = self.check()
+        rec = json.loads(Path(out["check_file"]).read_text(encoding="utf-8"))
+        self.assertTrue(rec["overall_pass"])
+        self.assertEqual((rec["n_pass"], rec["n_total"]), (4, 4))
+        for k in ("timestamp", "sha", "blockout_sha", "points", "camera", "worst_distance", "scene"):
+            self.assertIn(k, rec)
+        self.assertTrue(out["check_file"].endswith("b.py.check.json"))
+
+    def test_passing_check_opens_detail_and_look(self):
+        self.check()
+        for stage in ("detail", "look"):
+            r, n = self.build(stage=stage)
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(n, 1)
+            self.assertFalse(r["gate"]["forced"])
+            self.assertTrue(r["gate"]["last_check"]["overall_pass"])
+
+    def test_failing_check_refuses_with_the_failing_points_and_hints(self):
+        pts = good_points()
+        pts[1]["target"][1] += 0.2
+        out = self.check(pts)
+        self.assertFalse(out["overall_pass"])
+        r, n = self.build(stage="detail")
+        self.assertFalse(r["ok"])
+        self.assertEqual(n, 0)
+        self.assertIn("p1", r["error"])
+        self.assertIn("too", r["error"])                    # the hint text
+        self.assertIn("Fix the block-out constants", r["error"])
+
+    def test_a_failing_yaw_pair_blocks_too(self):
+        self.check(yaw=[{"pair": ["p0", "p1"], "target_yaw_deg": 0}])
+        r, n = self.build(stage="detail")
+        self.assertFalse(r["ok"])
+        self.assertIn("facade yaw", r["error"])
+
+    def test_edit_below_the_marker_keeps_the_check_valid(self):
+        self.check()
+        self.sp.write_text("W = 4.0\n" + self.MARK + "\nDOORS = 5\nWINDOWS = 9\n", encoding="utf-8")
+        r, n = self.build(stage="detail")
+        self.assertTrue(r["ok"], r)
+
+    def test_edit_above_the_marker_needs_a_new_check(self):
+        self.check()
+        self.sp.write_text("W = 4.5\n" + self.MARK + "\nDOORS = 2\n", encoding="utf-8")
+        r, n = self.build(stage="detail")
+        self.assertFalse(r["ok"])
+        self.assertEqual(n, 0)
+        self.assertIn("changed since", r["error"])
+        self.check()
+        self.assertTrue(self.build(stage="detail")[0]["ok"])
+
+    def test_whitespace_and_line_endings_do_not_count_as_a_change(self):
+        self.check()
+        self.sp.write_bytes(b"W = 4.0   \r\n" + self.MARK.encode() + b"\r\nDOORS = 2\r\n")
+        self.assertTrue(self.build(stage="detail")[0]["ok"])
+
+    def test_without_a_marker_any_edit_needs_a_new_check(self):
+        self.sp.write_text("W = 4.0\nDOORS = 2\n", encoding="utf-8")
+        self.check()
+        self.assertTrue(self.build(stage="detail")[0]["ok"])
+        self.sp.write_text("W = 4.0\nDOORS = 3\n", encoding="utf-8")
+        r, n = self.build(stage="detail")
+        self.assertFalse(r["ok"])
+        self.assertIn(self.MARK, r["error"])
+
+    def test_force_reason_lets_it_through_and_says_so(self):
+        pts = good_points()
+        pts[0]["target"][0] += 0.2
+        self.check(pts)
+        r, n = self.build(stage="look", force_reason="  stilt base hidden behind the dune, unmeasurable  ")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(n, 1)
+        g = r["gate"]
+        self.assertTrue(g["forced"])
+        self.assertEqual(g["reason"], "stilt base hidden behind the dune, unmeasurable")
+        self.assertFalse(g["last_check"]["overall_pass"])
+        self.assertIn("FAILED", g["why_blocked"])
+
+    def test_blank_force_reason_does_not_force(self):
+        r, n = self.build(stage="detail", force_reason="   ")
+        self.assertFalse(r["ok"])
+
+    def test_force_on_a_passing_gate_is_not_marked_forced(self):
+        self.check()
+        r, _ = self.build(stage="detail", force_reason="not needed")
+        self.assertFalse(r["gate"]["forced"])
+
+    def test_unreadable_check_file(self):
+        dcc.check_file_path(str(self.sp)).write_text("{nope", encoding="utf-8")
+        r, n = self.build(stage="detail")
+        self.assertFalse(r["ok"])
+        self.assertIn("unreadable", r["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

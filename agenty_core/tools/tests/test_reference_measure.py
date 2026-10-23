@@ -123,5 +123,84 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(r["cached"])
 
 
+def facade(yaw_deg, cam_h=2.0, fov_y=40.0, W=200, H=300, dist=10.0):
+    """Like synthetic(), but the wall above the horizon is a vertical plane through (0, y, dist) whose direction
+    in the ground plane is (cos yaw, sin yaw): positive yaw = the right end is farther away."""
+    d = synthetic(cam_h, fov_y, W, H)
+    f = (H / 2) / math.tan(math.radians(fov_y) / 2)
+    v, u = np.mgrid[0:H, 0:W]
+    ray = np.stack([(u + .5 - W / 2) / f, -(v + .5 - H / 2) / f, np.ones_like(u, dtype=float)], axis=-1)
+    th = math.radians(yaw_deg)
+    n = np.array([-math.sin(th), 0.0, math.cos(th)])
+    t = (n @ np.array([0.0, 0.0, dist])) / (ray @ n)
+    above = ray[..., 1] >= 0
+    d["points"][above] = (ray * t[..., None])[above]
+    return d
+
+
+# two pixels on the wall at the same height, left and right
+WALL = [{"name": "L", "px": [0.2, 0.3]}, {"name": "R", "px": [0.8, 0.3]},
+        {"name": "G0", "px": [0.5, 0.95]}, {"name": "G1", "px": [0.5, 0.80]}]
+
+
+class AnchorAndYawTests(unittest.TestCase):
+    def test_yaw_sign_and_magnitude(self):
+        for yaw in (25.0, -15.0, 0.0):
+            r = rm.analyse(facade(yaw), WALL, [["L", "R"]])
+            self.assertAlmostEqual(r["pairs"][0]["yaw_deg"], yaw, delta=1.5, msg=yaw)
+        r = rm.analyse(facade(25.0), WALL, [["L", "R"]])
+        self.assertEqual(r["pairs"][0]["nearer"], "L")          # positive yaw: the right end is farther
+        r = rm.analyse(facade(-25.0), WALL, [["R", "L"]])      # order of the pair must not flip the sign
+        self.assertLess(r["pairs"][0]["yaw_deg"], -20)
+        self.assertEqual(r["pairs"][0]["nearer"], "R")
+
+    def test_pair_yaw_pure(self):
+        self.assertAlmostEqual(rm.pair_yaw_deg((0, 0, 5), (4, 0, 5)), 0.0)
+        self.assertAlmostEqual(rm.pair_yaw_deg((0, 0, 5), (4, 0, 9)), 45.0)
+        self.assertAlmostEqual(rm.pair_yaw_deg((4, 0, 9), (0, 0, 5)), 45.0)
+        self.assertAlmostEqual(rm.pair_yaw_deg((0, 0, 9), (4, 0, 5)), -45.0)
+
+    def test_without_anchor_warns_and_keeps_raw(self):
+        r = rm.analyse(facade(0.0), WALL, [["G0", "G1"]])
+        self.assertIsNone(r["scale"])
+        self.assertTrue(any("UNSCALED" in w for w in r["warnings"]))
+        self.assertNotIn("raw", r)
+
+    def test_anchor_scales_everything(self):
+        raw = rm.analyse(facade(0.0), WALL, [["G0", "G1"], ["L", "R"]])
+        measured = raw["pairs"][0]["distance_m"]
+        r = rm.analyse(facade(0.0), WALL, [["G0", "G1"], ["L", "R"]], anchor={"pair": ["G0", "G1"], "meters": 1.0})
+        k = 1.0 / measured
+        self.assertAlmostEqual(r["scale"], k, places=3)
+        self.assertAlmostEqual(r["pairs"][0]["distance_m"], 1.0, places=2)
+        self.assertAlmostEqual(r["pairs"][1]["distance_m"], raw["pairs"][1]["distance_m"] * k, delta=0.01)
+        self.assertAlmostEqual(r["camera_height_m"], raw["camera_height_m"] * k, delta=0.01)
+        self.assertAlmostEqual(r["points"][1]["position_m"][0], raw["points"][1]["position_m"][0] * k, delta=0.01)
+        self.assertAlmostEqual(r["raw"]["pairs"][0]["distance_m"], measured, places=3)
+        self.assertAlmostEqual(r["raw"]["camera_height_m"], raw["camera_height_m"], places=2)
+        self.assertEqual(r["pairs"][1]["yaw_deg"], raw["pairs"][1]["yaw_deg"])     # yaw does not scale
+
+    def test_scale_warning_bounds(self):
+        measured = rm.analyse(facade(0.0), WALL, [["G0", "G1"]])["pairs"][0]["distance_m"]
+        inside = rm.analyse(facade(0.0), WALL, [["G0", "G1"]], anchor={"pair": ["G0", "G1"], "meters": measured * 1.9})
+        self.assertFalse(any("outside" in w for w in inside["warnings"]), inside["warnings"])
+        for factor in (2.2, 0.4):
+            r = rm.analyse(facade(0.0), WALL, [["G0", "G1"]], anchor={"pair": ["G0", "G1"], "meters": measured * factor})
+            self.assertTrue(any("outside 0.5-2.0" in w for w in r["warnings"]), (factor, r["warnings"]))
+
+    def test_bad_anchor_is_reported_not_applied(self):
+        for bad in ({"pair": ["G0", "nope"], "meters": 1.0}, {"pair": ["G0", "G1"]}, {"pair": ["G0", "G1"], "meters": -1}):
+            r = rm.analyse(facade(0.0), WALL, [["G0", "G1"]], anchor=bad)
+            self.assertIsNone(r["scale"])
+            self.assertTrue(any("anchor ignored" in w for w in r["warnings"]), r["warnings"])
+
+    def test_tool_passes_the_anchor(self):
+        with mock.patch.object(rm, "load_or_run", return_value=(facade(10.0), True)):
+            with mock.patch("os.path.isfile", return_value=True):
+                r = json.loads(rm.measure_reference("x.jpg", WALL, [["G0", "G1"]], anchor={"pair": ["G0", "G1"], "meters": 1.0}))
+        self.assertAlmostEqual(r["pairs"][0]["distance_m"], 1.0, places=2)
+        self.assertIn("scale", r)
+
+
 if __name__ == "__main__":
     unittest.main()
