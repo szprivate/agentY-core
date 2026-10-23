@@ -37,6 +37,11 @@ dependencies = [
     "OpenEXR>=3.2",
 ]
 
+[project.optional-dependencies]
+# tools/reverse_search.py drives the system Chrome/Edge (no browser download);
+# without it the tool answers with a missing_dependency error.
+reverse-search = ["playwright>=1.40"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agenty_core*"]
