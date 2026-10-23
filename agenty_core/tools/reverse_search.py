@@ -517,6 +517,7 @@ def reverse_image_search(
     engines: Optional[list] = None,
     max_results: int = 20,
     download_dir: str = "",
+    detail: str = "compact",
 ) -> str:
     """Reverse image search: find other photos of the same object or place, or where a picture is from.
 
@@ -540,8 +541,15 @@ def reverse_image_search(
                       can be viewed: full-size ``similar`` originals first;
                       thumbnails (<250 px), copies of the query picture and
                       repeated content are skipped. Empty downloads nothing.
+        detail: "compact" (default): per engine only best_guess, counts, ~5 top
+                page titles, plus ``downloaded`` and a ``next`` hint (a few KB; LOOK
+                at the downloaded pictures). "full": everything below (~50 KB).
 
     Returns:
+        compact: ``{"image", "engines": [{"engine", "best_guess", "n_results",
+        "n_similar", "top": ["title - host"], "error"?, "error_kind"?}],
+        "dir", "downloaded": [{"file", "width", "height", "kind", "source"}] (or
+        ``image_urls`` when download_dir is empty), "next"}``. full:
         JSON ``{"image", "engines": [{"engine", "page_url", "best_guess",
         "results": [{"page_url", "image_url", "title", "width", "height"}],
         "similar": [{"image_url" (full size when known), "thumb_url", "page_url",
@@ -556,11 +564,11 @@ def reverse_image_search(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return _reverse_image_search(image, engines, max_results, download_dir)
+        return _reverse_image_search(image, engines, max_results, download_dir, detail)
     # Playwright's sync API refuses to run on a thread that has an event loop (the MCP
     # server calls tools from one), so the browser work goes to a worker thread.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(_reverse_image_search, image, engines, max_results, download_dir).result()
+        return pool.submit(_reverse_image_search, image, engines, max_results, download_dir, detail).result()
 
 
 def _download_candidates(reports: list) -> list:
@@ -591,13 +599,65 @@ def _download_candidates(reports: list) -> list:
     return out
 
 
-def _reverse_image_search(image, engines, max_results, download_dir) -> str:
+_NEXT_HINT = ("Look at the downloaded pictures; keep only those that show the same object; "
+              "ignore copies of the query photo.")
+
+
+def _compact(out: dict) -> dict:
+    """What an agent needs to act on: counts, a few page titles, and the downloaded pictures."""
+    engines = []
+    for rep in out.get("engines", []):
+        e: dict = {"engine": rep.get("engine", ""), "best_guess": rep.get("best_guess", ""),
+                   "n_results": len(rep.get("results", [])), "n_similar": len(rep.get("similar", []))}
+        if rep.get("error"):
+            e["error"] = str(rep["error"])[:160]
+            e["error_kind"] = rep.get("error_kind", "failed")
+        top = []
+        for r in rep.get("results", []):
+            title = (r.get("title") or "").strip()
+            host = _host(r.get("page_url", ""))
+            if title and title.lower().removeprefix("www.") != host.removeprefix("www."):
+                line = f"{title[:80]} — {host}"
+            else:
+                line = host
+            if line and line not in top:
+                top.append(line)
+            if len(top) >= 5:
+                break
+        e["top"] = top
+        engines.append(e)
+    res: dict = {"image": out.get("image", ""), "engines": engines}
+    if out.get("downloaded"):
+        paths = [d.get("path", "") for d in out["downloaded"]]
+        res["dir"] = os.path.dirname(paths[0]) if paths else ""      # path = dir + file
+        res["downloaded"] = [{"file": os.path.basename(d.get("path", "")), "width": d.get("width"),
+                              "height": d.get("height"), "kind": d.get("kind", ""),
+                              "source": _host(d.get("page_url") or d.get("source_url", ""))}
+                             for d in out["downloaded"]]
+    elif "downloaded" not in out:
+        urls: list = []
+        for rep in out.get("engines", []):
+            urls += [x["image_url"] for x in rep.get("similar", []) if x.get("full_size") and x.get("image_url")]
+            urls += [x["image_url"] for x in rep.get("results", []) if x.get("image_url") and x["image_url"] == x.get("page_url")]
+        res["image_urls"] = list(dict.fromkeys(urls))[:8]
+    else:
+        res["downloaded"] = []
+    if out.get("download_error"):
+        res["download_error"] = out["download_error"]
+    if res.get("downloaded") or res.get("image_urls"):
+        res["next"] = _NEXT_HINT
+    else:
+        res["next"] = "Nothing found or downloaded; check the engine errors, retry once, or continue without it."
+    return res
+
+
+def _reverse_image_search(image, engines, max_results, download_dir, detail="compact") -> str:
     try:
         try:
             from playwright.sync_api import sync_playwright  # type: ignore[import]
         except ImportError:
             return _err("Playwright is not installed.", "missing_dependency",
-                        hint="pip install playwright (uses the system Chrome; no browser download)")
+                        hint="Reverse image search is not installed. Re-run agentY's installer and enable it, or: .venv\\Scripts\\python.exe -m pip install playwright (uses your installed Chrome or Edge; no browser download)")
 
         image = (image or "").strip()
         if not image:
@@ -649,7 +709,9 @@ def _reverse_image_search(image, engines, max_results, download_dir) -> str:
             except Exception as exc:  # noqa: BLE001
                 out["downloaded"] = []
                 out["download_error"] = str(exc)[:200]
-        return json.dumps(out, ensure_ascii=False, indent=2)
+        if str(detail or "compact").strip().lower() == "full":
+            return json.dumps(out, ensure_ascii=False, indent=2)
+        return json.dumps(_compact(out), ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001
         logger.warning("reverse_image_search failed: %s", exc)
         return _err(str(exc)[:300], "failed")

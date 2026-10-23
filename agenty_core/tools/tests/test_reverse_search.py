@@ -122,7 +122,7 @@ class Failures(unittest.TestCase):
         with mock.patch("builtins.__import__", side_effect=fake):
             out = json.loads(rs.reverse_image_search("https://example.com/a.jpg"))
         self.assertEqual(out["error_kind"], "missing_dependency")
-        self.assertIn("pip install playwright", out["hint"])
+        self.assertIn("-m pip install playwright", out["hint"])
 
     def test_bad_inputs_do_not_raise(self):
         pw = mock.MagicMock()
@@ -131,6 +131,52 @@ class Failures(unittest.TestCase):
             self.assertEqual(json.loads(rs.reverse_image_search("/no/such/file.jpg"))["error_kind"], "bad_input")
             self.assertEqual(json.loads(rs.reverse_image_search("https://e.com/a.jpg", engines=["altavista"]))["error_kind"],
                              "bad_input")
+
+
+class Detail(unittest.TestCase):
+    def _big(self, engine):
+        return {"engine": engine, "page_url": "https://e/s", "best_guess": "Stilt house",
+                "results": [{"page_url": f"https://site{i}.com/p/{i}", "image_url": f"https://site{i}.com/{i}.jpg",
+                             "title": "T" * 200, "width": 800, "height": 600} for i in range(20)],
+                "similar": [{"image_url": f"https://c{i}.com/{i}.jpg", "thumb_url": f"https://t/{i}", "page_url": f"https://c{i}.com/p",
+                             "width": 900, "height": 700, "full_size": True} for i in range(40)],
+                "similar_images": [f"https://c{i}.com/{i}.jpg" for i in range(80)]}
+
+    def _run(self, **kw):
+        pw = mock.MagicMock()
+        dl = [{"source_url": "https://c1.com/1.jpg", "page_url": "https://c1.com/p", "path": "/d/yandex_similar_01.jpg",
+               "width": 900, "height": 700, "kind": "similar", "size_bytes": 5, "duplicate_of_query": False}]
+        with mock.patch.dict("sys.modules", {"playwright": pw, "playwright.sync_api": pw}), \
+                mock.patch.object(rs, "_launch"), \
+                mock.patch.object(rs, "_run_engine", side_effect=lambda b, e, i, m: self._big(e)), \
+                mock.patch.object(rs, "_download_all", return_value=dl):
+            return rs.reverse_image_search("https://e.com/a.jpg", **kw)
+
+    def test_compact_is_small(self):
+        raw = self._run(download_dir="/d")
+        out = json.loads(raw)
+        self.assertLess(len(raw), 3000)
+        self.assertNotIn(chr(10), raw)
+        self.assertEqual(out["engines"][0]["n_results"], 20)
+        self.assertEqual(out["engines"][0]["n_similar"], 40)
+        self.assertEqual(len(out["engines"][0]["top"]), 5)
+        self.assertLessEqual(len(out["engines"][0]["top"][0]), 100)
+        self.assertEqual(out["downloaded"][0]["source"], "c1.com")
+        self.assertEqual((out["dir"], out["downloaded"][0]["file"]), ("/d", "yandex_similar_01.jpg"))
+        self.assertIn("next", out)
+
+    def test_compact_without_download_dir_lists_urls(self):
+        raw = self._run()
+        out = json.loads(raw)
+        self.assertEqual(len(out["image_urls"]), 8)
+        self.assertLess(len(raw), 3000)
+
+    def test_full_is_unchanged(self):
+        raw = self._run(download_dir="/d", detail="full")
+        out = json.loads(raw)
+        self.assertGreater(len(raw), 20000)
+        self.assertEqual(len(out["engines"][0]["similar"]), 40)
+        self.assertIn("similar_images", out["engines"][0])
 
 
 if __name__ == "__main__":
