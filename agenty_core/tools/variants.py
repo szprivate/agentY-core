@@ -135,7 +135,7 @@ def _default_batch(paths: list) -> dict:
 
 
 @tool
-def run_variants(workflow_path: str, variants: list, run: bool = True) -> str:
+def run_variants(workflow_path: str, variants: list, run: bool = True, confirm_cost: bool = False) -> str:
     """Make and run N independent variants of ONE workflow in a single call.
 
     For "give me 4 versions", "try three lighting setups", "same shot with each of
@@ -158,10 +158,24 @@ def run_variants(workflow_path: str, variants: list, run: bool = True) -> str:
         workflow_path: Path of the validated base workflow.
         variants: List of variant objects (see above).
         run: True (default) queues and runs them all; False only builds and validates.
+        confirm_cost: True only once the user has agreed to the estimated cost. With paid
+            (partner) nodes the variants' prices are added up; above the confirmation
+            level (default $1) the call is refused with ``error_kind: confirm_cost``
+            until the user has said yes.
     """
+    from agenty_core import partner_credits as _credits
     prepared = prepare_variants(workflow_path, variants)
     if prepared.get("status") == "error" or not run or not prepared.get("ready"):
         return json.dumps({**prepared, "ran": False})
+    try:
+        _est = _credits.preflight_many(list(prepared["ready"]), confirm=confirm_cost)
+    except _credits.CostGateError as gate:
+        return json.dumps({**prepared, **gate.payload(), "ran": False})
+    if confirm_cost:
+        for _p in prepared["ready"]:
+            _credits.confirm_path(_p, float("inf"))
+    if _est.get("paid"):
+        prepared["estimate_usd"] = {"min": _est["min_usd"], "max": _est["max_usd"]}
     hook = _batch_hook or _default_batch
     try:
         ran = hook(list(prepared["ready"]))

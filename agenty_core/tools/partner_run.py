@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import difflib
 import json
+from pathlib import Path
 import logging
 import os
 import random
@@ -519,15 +520,20 @@ def _as_dict(value) -> dict:
 def _default_run(path: str, timeout: float = 1800.0) -> dict:
     """No host hook: submit to ComfyUI and wait for the outputs."""
     from agenty_core import comfyui_exec as X
+    from agenty_core import partner_credits as _credits
     from agenty_core.batch_runner import _wait_for_completion
     from agenty_core.utils.comfyui_client import get_client
     try:
         pid = X._submit_workflow(path)
+    except _credits.CostGateError as gate:
+        return gate.payload()
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "error": str(exc)}
     done = _wait_for_completion(get_client(), pid, timeout=timeout)
+    spent = _credits.settle(pid)
+    extra = {"partner_cost_usd": spent} if spent is not None else {}
     if done.get("error"):
-        return {"status": "error", "prompt_id": pid, "error": done["error"]}
+        return {"status": "error", "prompt_id": pid, "error": done["error"], **extra}
     files = X._extract_output_files(done.get("history") or {})
     outs = []
     for f in files:
@@ -535,12 +541,12 @@ def _default_run(path: str, timeout: float = 1800.0) -> dict:
             outs.append(str(X._resolve_output_path(f["filename"], f.get("subfolder", ""), f.get("type", "output"))))
         except Exception as exc:  # noqa: BLE001
             outs.append(f"{f.get('filename')} (could not be located: {exc})")
-    return {"status": "done", "prompt_id": pid, "outputs": outs}
+    return {"status": "done", "prompt_id": pid, "outputs": outs, **extra}
 
 
 @tool
 def partner_run(node_type: str, inputs: dict | None = None, settings: dict | None = None,
-                save: str = "auto", name: str = "", run: bool = True) -> str:
+                save: str = "auto", name: str = "", run: bool = True, confirm_cost: bool = False) -> str:
     """Build and run ONE partner (API) node directly - no template search.
 
     The preferred route when the request names a partner model or node: Seedance,
@@ -570,7 +576,12 @@ def partner_run(node_type: str, inputs: dict | None = None, settings: dict | Non
     ``workflow_path``).
 
     Costs real money on the user's partner credits when it runs: do not call it
-    speculatively, and not twice for the same request.
+    speculatively, and not twice for the same request. The price shows before it
+    runs (``estimate_usd`` in the answer; ``run=False`` returns it without running).
+    Above the confirmation level (default $1) the run is refused with
+    ``error_kind: confirm_cost`` - tell the user the estimate, ask, and call again
+    with ``confirm_cost=True`` only after a yes. A run the balance cannot cover is
+    refused as ``insufficient_credits``. A finished run reports ``partner_cost_usd``.
 
     Args:
         node_type: Node class name or its display name.
@@ -579,11 +590,34 @@ def partner_run(node_type: str, inputs: dict | None = None, settings: dict | Non
         save: "image", "video" or "auto".
         name: Short name for the output files and the workflow file.
         run: False to build and validate only.
+        confirm_cost: True only once the user has agreed to the estimated cost.
     """
+    from agenty_core import partner_credits as _credits
     prepared = prepare_partner_workflow(node_type, inputs, settings, save, name)
-    if prepared.get("status") != "ready" or not run:
-        return json.dumps(prepared if prepared.get("status") != "ready"
-                          else {**prepared, "status": "ready", "ran": False})
+    if prepared.get("status") != "ready":
+        return json.dumps(prepared)
+    wf: dict = {}
+    try:
+        wf = json.loads(Path(prepared["workflow_path"]).read_text(encoding="utf-8"))
+        est = _credits.estimate_report(wf)
+        if est["paid"]:
+            prepared["estimate_usd"] = {"min": est["min_usd"], "max": est["max_usd"],
+                                        "unknown_nodes": est["unknown"],
+                                        "balance": (est.get("balance") or {}).get("effective_usd")}
+    except Exception:  # noqa: BLE001 - an estimate must never stop a build
+        pass
+    if not run:
+        return json.dumps({**prepared, "status": "ready", "ran": False})
+    if wf:
+        try:
+            _credits.preflight(wf, confirm=confirm_cost, workflow_path=prepared["workflow_path"])
+        except _credits.CostGateError as gate:
+            return json.dumps({**prepared, **gate.payload(), "ran": False})
+        except Exception:  # noqa: BLE001
+            pass
+    if confirm_cost:
+        # The host's run hook submits the file later; the go-ahead travels with it.
+        _credits.confirm_path(prepared["workflow_path"], float("inf"))
     hook = _run_hook or _default_run
     try:
         ran = hook(prepared["workflow_path"])

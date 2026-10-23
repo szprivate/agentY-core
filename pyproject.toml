@@ -35,6 +35,8 @@ dependencies = [
     "scenedetect>=0.7.0",
     # tools/worldlabs_atlas.py reads the depth EXRs World Labs Atlas returns.
     "OpenEXR>=3.2",
+    # partner_credits.py evaluates the JSONata price formulas paid ComfyUI nodes publish.
+    "jsonata-python>=0.7.1",
 ]
 
 [project.optional-dependencies]

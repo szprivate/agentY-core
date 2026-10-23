@@ -2623,15 +2623,22 @@ def get_logs(keyword: str = "", max_lines: int = 100) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @tool
-def submit_prompt(workflow_path: str, client_id: str = "") -> str:
+def submit_prompt(workflow_path: str, client_id: str = "", confirm_cost: bool = False) -> str:
     """Submit a workflow to the ComfyUI execution queue. Returns prompt_id and client_id on success.
 
     A WebSocket-compatible client_id is auto-generated if one is not supplied,
     so progress events can be streamed for this prompt.
 
+    Paid (partner API) nodes show their price before running: the answer carries
+    ``estimate_usd``. A run that costs more than the balance is refused
+    (``error_kind: insufficient_credits``); one at or above the confirmation level
+    (default $1) is refused with ``error_kind: confirm_cost`` - tell the user the
+    estimate and ask first; rerun with ``confirm_cost=True`` only after a yes.
+
     Args:
         workflow_path: File path to the workflow JSON (from get_workflow_template or save_workflow).
         client_id: Optional client identifier for tracking; auto-generated when empty.
+        confirm_cost: True only once the user has agreed to the estimated cost.
     """
     try:
         p = Path(workflow_path)
@@ -2641,6 +2648,12 @@ def submit_prompt(workflow_path: str, client_id: str = "") -> str:
             # Legacy fallback: accept inline JSON string
             workflow = json.loads(workflow_path)
 
+        from agenty_core import partner_credits as _credits
+        try:
+            _cost = _credits.preflight(workflow, confirm=confirm_cost,
+                                       workflow_path=workflow_path if p.exists() else "")
+        except _credits.CostGateError as gate:
+            return json.dumps(gate.payload())
         client = get_client()
         if not client_id:
             client_id = uuid.uuid4().hex
@@ -2649,6 +2662,11 @@ def submit_prompt(workflow_path: str, client_id: str = "") -> str:
         if client.api_key:
             payload["extra_data"] = {"api_key_comfy_org": client.api_key}
         result = client.post("/prompt", json_data=payload)
+        if isinstance(result, dict) and result.get("prompt_id"):
+            _credits.track(result["prompt_id"], _cost)
+            if _cost.get("paid"):
+                result["estimate_usd"] = {"min": _cost["min_usd"], "max": _cost["max_usd"],
+                                          "unknown_nodes": _cost["unknown"]}
         if isinstance(result, dict):
             # Note it as ours, so a Stop can delete this prompt from the queue
             # without touching work the user queued themselves.
@@ -2663,6 +2681,32 @@ def submit_prompt(workflow_path: str, client_id: str = "") -> str:
         return json.dumps(result)
     except json.JSONDecodeError as e:
         return json.dumps({"error": f"Invalid JSON in workflow: {e}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def estimate_workflow_cost(workflow_path: str) -> str:
+    """Price a workflow in Comfy credits BEFORE running it (paid partner nodes only).
+
+    Reads each paid node's own price formula against this workflow's actual
+    settings (resolution, duration, connected reference inputs) and returns the
+    per-node and total ``min`` / ``max`` in USD, the current credit balance and the
+    confirmation level. A node whose price cannot be worked out is listed under
+    ``unknown`` instead of being guessed. A graph with no paid node answers
+    ``paid: false`` at no cost. Nothing is submitted.
+
+    Use it to quote a price to the user, or to compare settings, before asking
+    whether to go ahead.
+
+    Args:
+        workflow_path: File path to the API-format workflow JSON.
+    """
+    try:
+        from agenty_core import partner_credits as _credits
+        wf = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+        rep = _credits.estimate_report(wf)
+        return json.dumps({"status": "ok", **rep})
     except Exception as e:
         return json.dumps({"error": str(e)})
 

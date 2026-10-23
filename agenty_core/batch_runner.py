@@ -357,6 +357,8 @@ def _run_stage(
 
     prompt_id = _submit_workflow(str(item_wf))
     result = _wait_for_completion(client, prompt_id, timeout=_STAGE_TIMEOUT_S)
+    from agenty_core import partner_credits as _credits
+    _credits.settle(prompt_id)
     if "error" in result:
         raise RuntimeError(f"stage {stage_idx + 1}: {result['error']}")
 

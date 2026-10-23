@@ -101,6 +101,10 @@ def _submit_workflow(workflow_path: str, client_id: str = "") -> str:
         raise RuntimeError(f"Workflow file not found: {workflow_path}")
 
     workflow = json.loads(p.read_text(encoding="utf-8"))
+    # Paid partner nodes: refuse what the balance cannot cover and what needs the
+    # user's go-ahead (raises partner_credits.CostGateError) before anything queues.
+    from agenty_core import partner_credits as _credits
+    _cost = _credits.gate_submission(workflow, workflow_path)
     client = get_client()
     payload: dict = {"prompt": workflow}
     if client_id:
@@ -110,6 +114,7 @@ def _submit_workflow(workflow_path: str, client_id: str = "") -> str:
 
     result = client.post("/prompt", json_data=payload)
     if isinstance(result, dict) and "prompt_id" in result:
+        _credits.track(result["prompt_id"], _cost)
         # Ours, so Stop can remove it from the queue and leave the user's alone.
         try:
             from agenty_core.queue_ledger import remember as _remember_prompt
