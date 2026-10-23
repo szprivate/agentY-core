@@ -406,7 +406,11 @@ def _batch_wrapper(app: str) -> str:
     head, tail = "", _BATCH_TAIL
     if app == "maya":
         head = "import maya.standalone\nmaya.standalone.initialize(name='python')\n"
-        tail += "\n_sys.stdout.flush()\n_sys.stderr.flush()\nimport os as _os\n_os._exit(0)\n"
+        # Shut Maya down before the hard exit: os._exit on a live maya.standalone crashed
+        # every run (a crash dump, a [Recovered] scene in Temp, the Autodesk error dialog).
+        tail += ("\n_sys.stdout.flush()\n_sys.stderr.flush()\n"
+                 "try:\n    import maya.standalone as _ms\n    _ms.uninitialize()\nexcept Exception:\n    pass\n"
+                 "import os as _os\n_os._exit(0)\n")
     return head + driver_source(app) + "\n" + tail
 
 
@@ -491,6 +495,10 @@ def _run_batch(app: str, job: dict, timeout: float) -> dict:
             cmd = [exe, str(driver), str(jf)]
             if app == "houdini":
                 env.setdefault("HFS", str(Path(exe).resolve().parent.parent))
+            if app == "maya":
+                # No Autodesk error-report dialog, usage survey or in-product messages for a
+                # headless run nobody is watching.
+                env.update(MAYA_DISABLE_CER="1", MAYA_DISABLE_CIP="1", MAYA_DISABLE_CLIC_IPM="1")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
