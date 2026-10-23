@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 _SUPPORTED = ("yandex", "bing", "google")
 _PAGE_TIMEOUT_MS = 45_000
 _SETTLE_MS = 9_000
+_SIMILAR_LIMIT = 40
+_MIN_SIDE = 250          # smaller downloads are thumbnails, not usable references
+_DOWNLOAD_LIMIT = 16
 # Each engine's own hosts: links into them are navigation, not results.
 _ENGINE_HOSTS = {
     "yandex": ("yandex.", "ya.ru"),
@@ -62,6 +65,16 @@ _EXTRACT_JS = """
     const src = abs(img.currentSrc || img.src || img.getAttribute('data-src') || '');
     if (src.startsWith('http')) out.images.push({src, w: img.naturalWidth || 0, h: img.naturalHeight || 0,
                                                  alt: (img.alt || '').slice(0, 160)});
+  }
+  // Yandex similar-grid tiles carry the full-size original in the href's img_url parameter;
+  // Bing image tiles carry it in the `m` attribute's JSON (murl).
+  out.tiles = [];
+  for (const a of document.querySelectorAll('a[href*="img_url="], a[m*="murl"], [m*="murl"]')) {
+    const img = a.querySelector('img');
+    const el = a.closest('a[href]') || a;
+    out.tiles.push({href: el.href || '', m: a.getAttribute('m') || '',
+      thumb: img ? abs(img.currentSrc || img.src || img.getAttribute('data-src') || '') : '',
+      w: img ? (img.naturalWidth || 0) : 0, h: img ? (img.naturalHeight || 0) : 0});
   }
   out.title = document.title || '';
   out.text = (document.body && document.body.innerText || '').slice(0, 6000);
@@ -130,6 +143,10 @@ def _dedupe_results(raw_links: list, engine: str, max_results: int) -> list:
         # A link straight to a picture file is the picture itself, at full size.
         if urllib.parse.urlparse(href).path.lower().endswith(_IMAGE_EXT):
             image_url = href
+        elif _is_favicon(image_url, link.get("w", 0), link.get("h", 0)):
+            image_url = ""
+            if not dims:
+                width = height = 0
         out.append({"page_url": href, "image_url": image_url, "title": title,
                     "width": width, "height": height})
         if len(out) >= max_results:
@@ -156,6 +173,62 @@ def _similar_images(raw: dict, exclude: set, limit: int) -> list:
         if len(out) >= limit:
             break
     return out
+
+
+def _is_favicon(url: str, w: int = 0, h: int = 0) -> bool:
+    """Bing shows each result's site icon (13-32 px, ``ODF.`` ids) - never a picture of the subject."""
+    if not url or url.startswith("data:"):
+        return True
+    if "/th/id/ODF." in url or "id=ODF." in url:
+        return True
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    try:
+        qw = int((qs.get("w") or ["0"])[0])
+    except ValueError:
+        qw = 0
+    known = [v for v in (int(w or 0), int(h or 0), qw) if v]
+    return bool(known) and max(known) <= 32
+
+
+def _tile_entry(tile: dict, engine: str) -> Optional[dict]:
+    """One similar-image tile -> {image_url (full size), thumb_url, page_url, width, height}."""
+    thumb = str(tile.get("thumb", "") or "")
+    full = page = ""
+    width, height = int(tile.get("w") or 0), int(tile.get("h") or 0)
+    if engine == "yandex":
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(str(tile.get("href", ""))).query)
+        full = (qs.get("img_url") or [""])[0]
+    elif engine == "bing" and tile.get("m"):
+        try:
+            m = json.loads(tile["m"])
+        except (ValueError, TypeError):
+            m = {}
+        full, page = str(m.get("murl") or ""), str(m.get("purl") or "")
+        thumb = thumb or str(m.get("turl") or "")
+    if not full.startswith(("http://", "https://")):
+        full = ""
+    if thumb and not thumb.startswith(("http://", "https://")):
+        thumb = ""
+    if full:
+        width, height = 0, 0   # the tile's size is the thumbnail's, not the original's
+    elif not thumb:
+        return None
+    return {"image_url": full or thumb, "thumb_url": thumb, "page_url": page,
+            "width": width, "height": height, "full_size": bool(full)}
+
+
+def _similar_entries(raw: dict, engine: str, limit: int) -> list:
+    """Structured similar-image entries from the page's tiles, full-size originals first."""
+    seen: set = set()
+    out: list = []
+    for tile in raw.get("tiles", []):
+        e = _tile_entry(tile, engine)
+        if not e or e["image_url"] in seen or _is_favicon(e["thumb_url"], tile.get("w", 0), tile.get("h", 0)) and not e["full_size"]:
+            continue
+        seen.add(e["image_url"])
+        out.append(e)
+    out.sort(key=lambda e: not e["full_size"])   # stable: page order within each group
+    return out[:limit]
 
 
 def _best_guess(raw: dict, engine: str) -> str:
@@ -267,6 +340,27 @@ def _search_url(engine: str, image_url: str) -> str:
     return "https://lens.google.com/uploadbyurl?url=" + q
 
 
+def _yandex_similar_grid(page, raw: dict) -> list:
+    """Open Yandex's full "Similar images" page, scroll for more, return its tiles."""
+    link = next((str(l.get("href", "")) for l in raw.get("links", [])
+                 if "cbir_page=similar" in str(l.get("href", ""))), "")
+    if not link:
+        return []
+    page.goto(link, timeout=_PAGE_TIMEOUT_MS)
+    page.wait_for_timeout(4000)
+    for _ in range(5):
+        try:
+            page.mouse.wheel(0, 2500)
+            page.wait_for_timeout(1500)
+            more = page.locator("button.CbirSimilarList-MoreButton, a.CbirSimilarList-MoreButton")
+            if more.count():
+                more.first.click(timeout=1500)
+        except Exception:  # noqa: BLE001
+            pass
+    grid = page.evaluate(_EXTRACT_JS)
+    return _similar_entries(grid, "yandex", _SIMILAR_LIMIT)
+
+
 def _run_engine(browser, engine: str, image: str, max_results: int) -> dict:
     page = browser.new_page(viewport={"width": 1400, "height": 1100}, locale="en-US")
     page.set_default_timeout(_PAGE_TIMEOUT_MS)
@@ -286,16 +380,26 @@ def _run_engine(browser, engine: str, image: str, max_results: int) -> dict:
         url = page.url
         if _looks_like_captcha(url, raw):
             return {"engine": engine, "page_url": url, "error": "the engine put a captcha in front of the search",
-                    "error_kind": "captcha", "results": [], "similar_images": []}
+                    "error_kind": "captcha", "results": [], "similar": [], "similar_images": []}
         results = _dedupe_results(raw.get("links", []), engine, max_results)
         known = {r["image_url"] for r in results if r["image_url"]}
-        return {
-            "engine": engine,
-            "page_url": url,
-            "best_guess": _best_guess(raw, engine),
-            "results": results,
-            "similar_images": _similar_images(raw, known, max_results),
-        }
+        report = {"engine": engine, "page_url": url, "best_guess": _best_guess(raw, engine), "results": results}
+        similar = _similar_entries(raw, engine, _SIMILAR_LIMIT)
+        if engine == "yandex":
+            # the strip on the result page is 4 thumbnails; the full grid is behind "Similar images"
+            try:
+                grid = _yandex_similar_grid(page, raw)
+                if grid:
+                    similar = grid
+            except Exception as exc:  # noqa: BLE001
+                logger.info("reverse_image_search: yandex similar grid failed: %s", exc)
+        report["similar"] = similar
+        # plain URL list kept for compatibility: full-size originals first, then thumbnails
+        urls = [e["image_url"] for e in similar]
+        urls += [e["thumb_url"] for e in similar if e["thumb_url"]]
+        urls += _similar_images(raw, known | set(urls), max_results)
+        report["similar_images"] = list(dict.fromkeys(urls))
+        return report
     finally:
         try:
             page.close()
@@ -303,32 +407,107 @@ def _run_engine(browser, engine: str, image: str, max_results: int) -> dict:
             pass
 
 
-def _download_all(urls: list, dest: str, limit: int) -> list:
+def _ahash(img) -> list:
+    """16x16 grayscale pixels - a cheap fingerprint for near-duplicate checks."""
+    return list(img.convert("L").resize((16, 16)).getdata())
+
+
+def _near_duplicate(a: list, b: list, threshold: float = 10.0) -> bool:
+    """True when two fingerprints differ by less than ``threshold`` grey levels on average."""
+    if not a or not b or len(a) != len(b):
+        return False
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    # compare after removing overall brightness, so a lightened copy still matches
+    diff = sum(abs((x - ma) - (y - mb)) for x, y in zip(a, b)) / len(a)
+    return diff < threshold
+
+
+def _fetch(urls: list, headers: dict):
     import requests
+
+    for url in urls:
+        if not url:
+            continue
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/") and len(r.content) >= 2000:
+                return url, r.headers.get("content-type", "").split(";")[0].strip(), r.content
+        except Exception as exc:  # noqa: BLE001
+            logger.info("reverse_image_search: download of %s failed: %s", url[:100], exc)
+    return None
+
+
+def _download_all(cands: list, dest: str, limit: int, query_image: str = "") -> list:
+    """Download candidates ``{urls, page_url, kind, engine}`` in order.
+
+    Skips pictures under ``_MIN_SIDE`` px, the query picture itself (near-duplicates)
+    and repeated content; returns one record per saved file.
+    """
+    import hashlib
+    import io
+
+    from PIL import Image
 
     os.makedirs(dest, exist_ok=True)
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+    qhash: list = []
+    try:
+        if _is_url(query_image):
+            got = _fetch([query_image], headers)
+            qdata = got[2] if got else b""
+        else:
+            with open(query_image, "rb") as fh:
+                qdata = fh.read()
+        if qdata:
+            qhash = _ahash(Image.open(io.BytesIO(qdata)))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("reverse_image_search: query picture unreadable for duplicate check: %s", exc)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    todo = cands[:max(limit * 4, 40)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        fetched = list(pool.map(lambda c: _fetch(c["urls"], headers), todo))
+
     saved: list = []
-    for url in urls:
+    hashes: set = set()
+    prints: list = []
+    counters: dict = {}
+    for cand, got in zip(todo, fetched):
         if len(saved) >= limit:
             break
+        if not got:
+            continue
+        url, ctype, data = got
         try:
-            r = requests.get(url, headers=headers, timeout=20)
-            ctype = r.headers.get("content-type", "").split(";")[0].strip()
-            if r.status_code != 200 or not ctype.startswith("image/") or len(r.content) < 2000:
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            width, height = img.size
+            if min(width, height) < _MIN_SIDE:
                 continue
+            digest = hashlib.sha1(data).hexdigest()
+            if digest in hashes:
+                continue
+            fp = _ahash(img)
+            if qhash and _near_duplicate(fp, qhash):
+                continue
+            if any(_near_duplicate(fp, h, 4.0) for h in prints):   # the same photo again, resized
+                continue
+            hashes.add(digest)
+            prints.append(fp)
             ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
-                   "image/gif": ".gif", "image/avif": ".avif"}.get(ctype, "")
-            if not ext:
-                path_ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
-                ext = path_ext if path_ext in _IMAGE_EXT else ".jpg"
-            path = os.path.join(dest, f"reverse_{len(saved) + 1:02d}{ext}")
+                   "image/gif": ".gif", "image/avif": ".avif"}.get(ctype, ".jpg")
+            engine = cand.get("engine") or "web"
+            counters[engine] = counters.get(engine, 0) + 1
+            path = os.path.join(dest, f"{engine}_{cand.get('kind', 'result')}_{counters[engine]:02d}{ext}")
             with open(path, "wb") as fh:
-                fh.write(r.content)
-            saved.append({"source_url": url, "path": path, "size_bytes": len(r.content)})
+                fh.write(data)
+            saved.append({"source_url": url, "page_url": cand.get("page_url", ""), "path": path,
+                          "width": width, "height": height, "kind": cand.get("kind", "result"),
+                          "size_bytes": len(data), "duplicate_of_query": False})
         except Exception as exc:  # noqa: BLE001
-            logger.info("reverse_image_search: download of %s failed: %s", url[:100], exc)
+            logger.info("reverse_image_search: %s unusable: %s", url[:100], exc)
     return saved
 
 
@@ -344,38 +523,35 @@ def reverse_image_search(
     Use this when you have ONE picture and need more of the same subject - other
     angles of a building, other shots of a location, bigger or cleaner copies of
     a photo - or when you must identify what or where something is. It is the
-    opposite of ``web_search_images``, which searches by words. Feed what you
-    find to ``download_image`` (or set ``download_dir`` here) and look at the
-    pictures with your vision tool.
+    opposite of ``web_search_images``, which searches by words.
 
     It opens the machine's Chrome in a window parked off-screen and asks Yandex
-    and Bing's visual search; a run takes about 20-40 seconds per engine. Yandex
-    is the better one for exact copies and other photos of the same thing; Bing
-    often names the subject ("best_guess") and lists related pages. Google Lens
-    ("google") is blocked by a captcha for automated browsers and only reports
-    that.
+    and Bing's visual search; a run takes about 1 minute. ``similar`` holds OTHER
+    PHOTOS OF THE SUBJECT (Yandex's full "Similar images" grid, ~40 items, with
+    full-size originals) - that is where other angles of the same object usually
+    are. ``results`` are pages that show the same or a similar picture. Google
+    Lens ("google") is blocked by a captcha and only reports that.
 
     Args:
-        image: A public image URL, or a path to a local image file (it is
-               uploaded to the engine).
-        engines: Which engines to ask, from "yandex", "bing", "google".
-                 Default ["yandex", "bing"].
-        max_results: Most results to keep per engine (1-50). Default 20.
-        download_dir: When set, the top picture URLs found are downloaded into
-                      this folder (failures skipped) so they can be viewed.
-                      Empty (default) downloads nothing.
+        image: A public image URL, or a path to a local image file (uploaded).
+        engines: From "yandex", "bing", "google". Default ["yandex", "bing"].
+        max_results: Most ``results`` to keep per engine (1-50). Default 20.
+        download_dir: When set, up to 16 pictures are downloaded there so they
+                      can be viewed: full-size ``similar`` originals first;
+                      thumbnails (<250 px), copies of the query picture and
+                      repeated content are skipped. Empty downloads nothing.
 
     Returns:
         JSON ``{"image", "engines": [{"engine", "page_url", "best_guess",
         "results": [{"page_url", "image_url", "title", "width", "height"}],
-        "similar_images": [url, ...]} ...], "downloaded": [{"source_url",
-        "path"}]}``. Results are links to OTHER sites (the engine's own links
-        are left out), deduplicated by page. ``image_url`` is the picture shown
-        on the engine's results page and can be a thumbnail. An engine that was
-        blocked or failed carries its own ``error`` and ``error_kind``
-        ("captcha", "timeout", "failed"). On a whole-call failure returns
-        ``{"error": "<message>", "error_kind": "..."}``; ``"missing_dependency"``
-        means Playwright is not installed.
+        "similar": [{"image_url" (full size when known), "thumb_url", "page_url",
+        "width", "height", "full_size"}], "similar_images": [url, ...]}],
+        "downloaded": [{"source_url", "page_url", "path", "width", "height",
+        "kind": "similar"|"result", "duplicate_of_query": false}]}``. Result
+        ``image_url`` is the result's own picture or empty (never a favicon).
+        A failed engine carries ``error`` and ``error_kind`` ("captcha",
+        "timeout", "failed"); a whole-call failure returns ``{"error",
+        "error_kind"}`` ("missing_dependency": Playwright is not installed).
     """
     try:
         asyncio.get_running_loop()
@@ -385,6 +561,34 @@ def reverse_image_search(
     # server calls tools from one), so the browser work goes to a worker thread.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(_reverse_image_search, image, engines, max_results, download_dir).result()
+
+
+def _download_candidates(reports: list) -> list:
+    """Download order: full-size similar originals (engines interleaved), then full-size
+    result pictures, then similar thumbnails, then result thumbnails."""
+    sim_full: list = []
+    for rep in reports:
+        sim_full.append([{"urls": [e["image_url"], e["thumb_url"]], "page_url": e.get("page_url", ""),
+                          "kind": "similar", "engine": rep["engine"]}
+                         for e in rep.get("similar", []) if e.get("full_size")])
+    inter: list = []
+    for i in range(max((len(x) for x in sim_full), default=0)):
+        inter.extend(x[i] for x in sim_full if i < len(x))
+    res_full, res_thumb, sim_thumb = [], [], []
+    for rep in reports:
+        for r in rep.get("results", []):
+            if r.get("image_url") and r["image_url"] == r.get("page_url"):
+                res_full.append({"urls": [r["image_url"]], "page_url": r["page_url"], "kind": "result", "engine": rep["engine"]})
+            elif r.get("image_url"):
+                res_thumb.append({"urls": [r["image_url"]], "page_url": r["page_url"], "kind": "result", "engine": rep["engine"]})
+        sim_thumb.extend({"urls": [e["image_url"]], "page_url": e.get("page_url", ""), "kind": "similar",
+                          "engine": rep["engine"]} for e in rep.get("similar", []) if not e.get("full_size"))
+    out, seen = [], set()
+    for c in inter + res_full + sim_thumb + res_thumb:
+        if c["urls"][0] not in seen:
+            seen.add(c["urls"][0])
+            out.append(c)
+    return out
 
 
 def _reverse_image_search(image, engines, max_results, download_dir) -> str:
@@ -427,7 +631,7 @@ def _reverse_image_search(image, engines, max_results, download_dir) -> str:
                             kind = "timeout" if "imeout" in type(exc).__name__ + str(exc) else "failed"
                             logger.warning("reverse_image_search %s failed: %s", engine, exc)
                             reports.append({"engine": engine, "error": str(exc).splitlines()[0][:300],
-                                            "error_kind": kind, "results": [], "similar_images": []})
+                                            "error_kind": kind, "results": [], "similar": [], "similar_images": []})
                 finally:
                     try:
                         browser.close()
@@ -439,17 +643,9 @@ def _reverse_image_search(image, engines, max_results, download_dir) -> str:
 
         out: dict = {"image": image, "engines": reports}
         if download_dir:
-            # full-size picture files first, then thumbnails and similar-image tiles
-            urls: list = []
-            for rep in reports:
-                urls.extend(r["image_url"] for r in rep.get("results", [])
-                            if r.get("image_url") == r.get("page_url"))
-            for rep in reports:
-                urls.extend(r["image_url"] for r in rep.get("results", []) if r.get("image_url"))
-                urls.extend(rep.get("similar_images", []))
-            urls = list(dict.fromkeys(urls))
             try:
-                out["downloaded"] = _download_all(urls[:40], download_dir, limit=min(max_results, 10))
+                out["downloaded"] = _download_all(_download_candidates(reports), download_dir,
+                                                  limit=_DOWNLOAD_LIMIT, query_image=image)
             except Exception as exc:  # noqa: BLE001
                 out["downloaded"] = []
                 out["download_error"] = str(exc)[:200]
