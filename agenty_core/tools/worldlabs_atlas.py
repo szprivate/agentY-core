@@ -133,8 +133,12 @@ def _http_error(r) -> AtlasError:
         return AtlasError(f"Idempotency key / id collision. {msg}", "api")
     if st == 422:
         return AtlasError(f"World Labs rejected the request shape: {msg}", "args")
+    if st == 429 and code == "CONCURRENCY_LIMIT_EXCEEDED":
+        return AtlasError("World Labs concurrency limit: the project already has the maximum number of Atlas "
+                          f"operations running; retry after {retry_after or 'a minute'} s. {msg}", "concurrency",
+                          code=code, retry_after=retry_after)
     if st == 429:
-        return AtlasError(f"World Labs rate or concurrency limit ({code or '429'}); retry after "
+        return AtlasError(f"World Labs request rate limit ({code or '429'}); retry after "
                           f"{retry_after or 'a minute'} s. {msg}", "rate_limit", code=code, retry_after=retry_after)
     if st == 503:
         return AtlasError(f"World Labs capacity is temporarily unavailable. {msg}", "rate_limit", retry_after=retry_after)
@@ -158,11 +162,59 @@ def _operation_error(op: dict) -> AtlasError:
                       operation_id=op.get("id"))
 
 
-def _request(method: str, path: str, *, json_body=None, params=None, idem: str = "", timeout: float = 120.0) -> dict:
-    """One API call with a few polite retries on 429 / 503. Returns the JSON body."""
+_CONCURRENCY_BUDGET_S = 90.0   # how long a submit keeps retrying a full concurrency limit
+
+
+def _in_flight() -> list:
+    """The project's RUNNING operations (id, task, age in s), best effort - never raises."""
+    try:
+        body = _request("GET", "/operations", params={"pageSize": 20, "status": "RUNNING"}, _probe=True)
+    except Exception:  # noqa: BLE001
+        return []
+    now = time.time()
+    out = []
+    for o in body.get("operations") or []:
+        if o.get("done"):
+            continue
+        out.append({"id": o.get("id"), "task": (o.get("metadata") or {}).get("task"),
+                    "age_s": int(now - o["createdAtSecs"]) if o.get("createdAtSecs") else None})
+    return out
+
+
+def _local_pending() -> list:
+    try:
+        return [p.stem for p in _root_dir("").glob("*/pending/*.json")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _concurrency_hint(exc: "AtlasError") -> None:
+    """Say what occupies the slots: running operations of the project, and jobs this machine left pending."""
+    running = _in_flight()
+    exc.extra["in_flight"] = running
+    pend = _local_pending()
+    if pend:
+        exc.extra["local_pending"] = pend[:10]
+    if running:
+        ids = ", ".join(f"{o['id']} ({o['task']}, {o['age_s']} s)" for o in running[:5])
+        exc.extra["hint"] = (f"{len(running)} operation(s) are still running: {ids}. Wait for them (atlas_fetch "
+                             "operation_id=...) or cancel one (atlas_fetch operation_id=..., cancel=true).")
+    else:
+        exc.extra["hint"] = ("No operation of this project is listed as running, so the slot is held by a task "
+                             "that has not been released yet (or another key/project of the same account). "
+                             "Wait a minute and retry; do not resubmit in a tight loop.")
+
+
+def _request(method: str, path: str, *, json_body=None, params=None, idem: str = "", timeout: float = 120.0,
+             _probe: bool = False) -> dict:
+    """One API call with polite retries. 429/503 are retried (Retry-After honoured, capped at 60 s);
+    a full concurrency limit is retried for up to ``_CONCURRENCY_BUDGET_S`` and then reported with the
+    operations that occupy the slots."""
     url = f"{_base()}{path}"
     extra = {"Idempotency-Key": idem} if idem else None
-    for attempt in range(4):
+    attempt = 0
+    conc_waited = 0.0
+    while True:
         try:
             r = requests.request(method, url, headers=_headers(extra), json=json_body, params=params,
                                  timeout=timeout)
@@ -170,19 +222,33 @@ def _request(method: str, path: str, *, json_body=None, params=None, idem: str =
             raise AtlasError("World Labs did not answer in time.", "timeout") from exc
         except requests.RequestException as exc:
             raise AtlasError(f"could not reach World Labs: {exc}", "api") from exc
-        if r.status_code in (429, 503) and attempt < 3:
+        if r.status_code in (429, 503) and not _probe:
             ra = (getattr(r, "headers", None) or {}).get("Retry-After")
             try:
                 wait = min(float(ra), 60.0)
             except (TypeError, ValueError):
-                wait = 2.0 * (attempt + 1)
-            if _body_of(r).get("code") != "CONCURRENCY_LIMIT_EXCEEDED":
+                wait = min(2.0 * (attempt + 1), 15.0)
+            if _body_of(r).get("code") == "CONCURRENCY_LIMIT_EXCEEDED":
+                wait = max(wait, 3.0)
+                if conc_waited + wait <= _CONCURRENCY_BUDGET_S:
+                    conc_waited += wait
+                    _sleep(wait)
+                    continue
+                err = _http_error(r)
+                _concurrency_hint(err)
+                raise err
+            if attempt < 3:
+                attempt += 1
                 _sleep(wait)
                 continue
         if r.status_code >= 400:
             raise _http_error(r)
         return _body_of(r)
-    raise AtlasError("World Labs kept refusing (rate limit).", "rate_limit")  # pragma: no cover
+
+
+def _cancel(op_id: str) -> dict:
+    """Ask World Labs to stop an operation (POST /operations/{id}:cancel; a finished one just comes back)."""
+    return _request("POST", f"/operations/{op_id}:cancel")
 
 
 # -- operations ---------------------------------------------------------------
@@ -1003,7 +1069,7 @@ def _splat_mesh(splat_path, name, texture_mode, target_faces, timeout_s, output_
 
 
 @tool
-def atlas_fetch(operation_id: str, output_dir: str = "", timeout_s: int = 120) -> str:
+def atlas_fetch(operation_id: str, output_dir: str = "", timeout_s: int = 120, cancel: bool = False) -> str:
     """Collect an Atlas job that atlas_create_world / atlas_expand_world / atlas_splat_to_mesh timed
     out on (operations are kept 30 days), or just look at one operation's state.
 
@@ -1011,19 +1077,27 @@ def atlas_fetch(operation_id: str, output_dir: str = "", timeout_s: int = 120) -
         operation_id: the ``operation_id`` from the timeout error (op_...).
         output_dir: where the scene lives, if not ComfyUI's output/3d_scenes/atlas.
         timeout_s: how long to wait if it is still running.
+        cancel: true stops the operation instead (frees a concurrency slot held by a stuck job).
 
     Returns:
         The same JSON as the tool that started it; if still running, a ``timeout`` error again; if the
         job was not started from this machine (no saved record), the operation's task and state.
     """
-    return _fetch(operation_id, output_dir, timeout_s)
+    return _fetch(operation_id, output_dir, timeout_s, cancel)
 
 
 @_guard
-def _fetch(operation_id, output_dir, timeout_s):
+def _fetch(operation_id, output_dir, timeout_s, cancel=False):
     op_id = str(operation_id).strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]+", op_id):
         raise AtlasError("operation_id looks malformed", "args")
+    if cancel:
+        op = _cancel(op_id)
+        _, job = _find_pending(op_id, output_dir)
+        if job:
+            _pending_path(Path(job["world_dir"]), op_id).unlink(missing_ok=True)
+        return json.dumps({"status": "cancelled" if op.get("error") or not op.get("done") else "already_finished",
+                           "operation_id": op_id})
     op = _request("GET", f"/operations/{op_id}")
     wd, job = _find_pending(op_id, output_dir)
     if job is None:

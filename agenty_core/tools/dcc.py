@@ -559,6 +559,9 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
     patches the scene itself and refuses a missing file. Coordinates in the script are the app's own (Blender Z up,
     Maya and Houdini Y up).
 
+    In Blender build scripts prefer bmesh / bpy.data over bpy.ops (ops need a window/area context; live mode runs
+    them under a VIEW_3D override, batch has none).
+
     Modes: "live" runs in the app the user has open (Blender through its MCP add-on socket on 9876, Maya through its
     commandPort on 7001; Houdini has no live mode) and changes THEIR scene. "batch" runs in a fresh headless process
     (blender -b / mayapy / hython): it opens save_to if that file already exists (else starts empty), runs the

@@ -160,5 +160,43 @@ def check(job):
         "pixel_aspect_x": r.pixel_aspect_x, "pixel_aspect_y": r.pixel_aspect_y}}
 
 
+def _view3d_override():
+    """Keyword args for bpy.context.temp_override: a window with a VIEW_3D area and its WINDOW region.
+
+    The Blender Lab MCP socket runs code with no window/area context, so bpy.ops that poll on one
+    (primitive_*_add, then bpy.context.active_object) fail. {} when there is no window (background)."""
+    import bpy
+    try:
+        wm = bpy.context.window_manager
+        windows = list(wm.windows) if wm else []
+    except Exception:  # noqa: BLE001
+        return {}
+    for win in windows:
+        for area in win.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for region in area.regions:
+                if region.type == "WINDOW":
+                    ov = {"window": win, "area": area, "region": region}
+                    try:
+                        ov["scene"] = win.scene
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return ov
+    if windows:   # no 3D view open: still give the ops a window and its scene
+        ov = {"window": windows[0]}
+        try:
+            ov["scene"] = windows[0].scene
+        except Exception:  # noqa: BLE001
+            pass
+        return ov
+    return {}
+
+
 def run(job):
-    return dispatch(job, build, check)
+    import bpy
+    ov = _view3d_override()
+    if not ov:
+        return dispatch(job, build, check)
+    with bpy.context.temp_override(**ov):
+        return dispatch(job, build, check)

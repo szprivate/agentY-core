@@ -189,6 +189,19 @@ class ErrorTests(Base):
         self.assertEqual(out["error_kind"], "rate_limit")
         self.assertEqual(sum(1 for c in self.calls if "tasks:" in c[1]), 4)
 
+    def test_concurrency_limit_is_its_own_kind_with_a_hint(self):
+        resp = Resp(429, {"code": "CONCURRENCY_LIMIT_EXCEEDED"}, headers={"Retry-After": "30"})
+        out = self.run_tool(w.atlas_create_world, {
+            ("POST", "/tasks:atlasTextToImage"): resp,
+            ("GET", "/operations"): {"operations": [{"id": "op_run", "done": False, "createdAtSecs": 1,
+                                                      "metadata": {"task": "atlasGenerate"}}]}},
+            name="c", prompt="x")
+        self.assertEqual(out["error_kind"], "concurrency")
+        self.assertEqual(out["in_flight"][0]["id"], "op_run")
+        self.assertIn("op_run", out["hint"])
+        n = sum(1 for c in self.calls if "tasks:" in c[1])
+        self.assertGreater(n, 1)   # retried inside the budget, not given up at once
+
     def test_operation_errors(self):
         def failed(reason, code):
             return {"id": "op_f", "done": True, "response": None,
