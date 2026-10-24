@@ -59,7 +59,7 @@ class RenderTools(unittest.TestCase):
 
     def test_render_job_and_default_output(self):
         with mock.patch.object(render, "_run_job", return_value={"out": "O.mp4", "frames": 90, "width": 1920, "height": 1080}) as run:
-            out = json.loads(mg.mg_render(LOWER, frame_start=10, scale=0.5))
+            out = json.loads(mg.mg_render(LOWER, frame_start=10, scale=0.5, poster=False))
         job = run.call_args.args[0]
         self.assertEqual(job["mode"], "video")
         self.assertTrue(job["out"].endswith("lower_third.mp4"))

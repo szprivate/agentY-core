@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from agenty_core.motion_graphics import poster as _poster
 from agenty_core.motion_graphics import schema
 
 logger = logging.getLogger("agenty_core.motion_graphics")
@@ -185,8 +186,12 @@ def _checked(scene_path: str) -> tuple[str, dict]:
 
 def render_scene(scene_path: str, out_path: str = "", *, format: str = "mp4", frame_range: Optional[tuple] = None,
                  scale: float = 1.0, crf: int = 18, lossless: bool = False,
-                 log: Callable[[str], None] = lambda _m: None, timeout: float = 1800) -> dict:
-    """Render the scene to a video. Returns the renderer's ``done`` event plus ``path``."""
+                 log: Callable[[str], None] = lambda _m: None, timeout: float = 1800, poster: bool = True) -> dict:
+    """Render the scene to a video. Returns the renderer's ``done`` event plus ``path``.
+
+    With ``poster`` (default) a ``<stem>.png`` still next to the video carries the scene (see
+    :mod:`poster`); the result gets ``poster``, or ``poster_error`` when only the still failed.
+    """
     path, scene = _checked(scene_path)
     if format not in ("mp4", "webm", "mov", "gif"):
         raise RenderError("format must be mp4, webm, mov or gif")
@@ -198,7 +203,28 @@ def render_scene(scene_path: str, out_path: str = "", *, format: str = "mp4", fr
     res = _run_job(job, log, timeout)
     res["path"] = res.get("out", out)
     res["duration_frames"] = scene["comp"]["duration"]
+    if poster:
+        try:
+            res["poster"] = _write_poster_still(path, scene, res["path"], log)
+        except Exception as exc:  # noqa: BLE001 - the video is done; the still is a bonus
+            logger.warning("poster still failed: %s", exc)
+            res["poster_error"] = f"{type(exc).__name__}: {exc}"
     return res
+
+
+def _write_poster_still(scene_path: str, scene: dict, video_path: str, log: Callable[[str], None]) -> str:
+    target = os.path.splitext(os.path.abspath(video_path))[0] + ".png"
+    tmp_dir = tempfile.mkdtemp(prefix="mgposter_")
+    try:
+        stills = render_stills(scene_path, [_poster.poster_frame(scene)], os.path.join(tmp_dir, "poster"),
+                               scale=1.0, log=log)
+        if not stills or not os.path.isfile(stills[0].get("out", "")):
+            raise RenderError("the renderer returned no still")
+        _poster.write_poster(stills[0]["out"], scene, scene_path)
+        shutil.move(stills[0]["out"], target)
+        return target
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def render_stills(scene_path: str, frames: list, out_prefix: str = "", *, scale: float = 0.5,

@@ -125,7 +125,7 @@ def mg_scene_preview_frame(scene_path: str, frames: Optional[list[int]] = None, 
 
 @tool
 def mg_render(scene_path: str, out_path: str = "", format: str = "mp4", frame_start: Optional[int] = None,
-              frame_end: Optional[int] = None, scale: float = 1.0, crf: int = 18) -> str:
+              frame_end: Optional[int] = None, scale: float = 1.0, crf: int = 18, poster: bool = True) -> str:
     """Render a motion-graphics scene (``*.mgscene.json``) to a video file.
 
     Validates first (a scene with errors is not rendered). Blocking: a few
@@ -141,10 +141,13 @@ def mg_render(scene_path: str, out_path: str = "", format: str = "mp4", frame_st
         frame_end: Last frame to render, inclusive (default: the last).
         scale: Render scale, 1.0 = the composition size.
         crf: Quality for mp4/webm, lower is better (default 18).
+        poster: Also write ``<name>.png`` next to the video: a poster still (``comp.poster`` frame, else the
+            middle) that carries the whole scene, so the PNG alone reopens in the Motion panel (default True).
 
     Returns:
         JSON: ``path`` of the video, ``frames``, ``width``, ``height``, ``fps``,
-        ``bytes``, ``seconds`` (the render took); or ``error``.
+        ``bytes``, ``seconds`` (the render took), ``poster`` (the PNG path; or ``poster_error`` if only the
+        still failed, the video is fine); or ``error``.
     """
     try:
         rng = None
@@ -155,7 +158,7 @@ def mg_render(scene_path: str, out_path: str = "", format: str = "mp4", frame_st
                 rng = (frame_start or 0, int(scene["comp"]["duration"]) - 1)
         _say("🎬 rendering " + os.path.basename(str(scene_path)) + " (Remotion)")
         res = _render.render_scene(scene_path, out_path, format=format, frame_range=rng, scale=float(scale or 1.0),
-                                   crf=int(crf), log=_log)
+                                   crf=int(crf), log=_log, poster=bool(poster))
         res.pop("event", None)
         return json.dumps(res)
     except (_render.RenderError, ValueError) as exc:
