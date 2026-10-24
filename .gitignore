@@ -20,3 +20,4 @@ comfyui_workflow_templates_custom/templates/node_packs/
 # (agenty_core/tools/local_templates.py). A user's own work: never committed, and
 # the recipe generator skips the folder.
 comfyui_workflow_templates_custom/templates/local/
+agenty_core/motion_graphics/**/_preview/
