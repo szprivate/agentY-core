@@ -48,6 +48,11 @@ class ShowInViewerTests(unittest.TestCase):
         self.assertIn("error", out)
         self.assertEqual(out["refused"], ["/etc/x.png"])
 
+    def test_a_motion_scene_opened_is_not_an_error(self):
+        out, _ = run({"paths": ["C:/x/title.mgscene.json"]}, {"ok": True, "shown": 0, "motion": ["C:/x/title.mgscene.json"]})
+        self.assertNotIn("error", out)
+        self.assertEqual(out["motion"], ["C:/x/title.mgscene.json"])
+
     def test_old_viewer_404(self):
         out, _ = run({"paths": ["a.png"]}, exc=RuntimeError("404 Not Found"))
         self.assertIn("too old", out["error"])

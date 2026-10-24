@@ -145,6 +145,7 @@ def _run_job(job: dict, log: Callable[[str], None], timeout: float) -> dict:
                 elif ev.get("event") == "progress":
                     log(f"rendering {ev.get('pct', 0)}%")
             code = proc.wait()
+            proc.stdout.close()
         finally:
             timer.cancel()
     finally:

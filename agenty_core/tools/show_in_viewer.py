@@ -114,11 +114,11 @@ def show_in_viewer(
         play: Also start playing the first item (ignored with panel ``"edit"``).
 
     Returns:
-        JSON: ``shown`` (how many items were loaded), ``refused`` (paths the viewer
+        JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``refused`` (paths the viewer
         may not open or that are not media), ``opened`` (viewer brought up),
         ``edit`` (Edit panel opened), ``notes`` and ``error`` when it failed.
     """
     res = open_in_viewer(paths, tab_name, group, label, focus, play, panel)
-    if "error" not in res and not res.get("shown"):
+    if "error" not in res and not res.get("shown") and not res.get("motion"):
         res["error"] = "nothing was shown: none of the paths is a media file the viewer may open"
     return json.dumps(res)
