@@ -88,6 +88,16 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+def _parser(be, job):
+    """The backend's progress parser, accepting only the bar that counts the job's steps (trainers also draw
+    bars for sampling, shard loading, caching)."""
+    want = int(job.get("steps") or 0)
+
+    def parse(line, snap):
+        return be.parse(line, snap) and (not want or snap.get("total") == want)
+    return parse
+
+
 def _vram() -> float:
     from .preflight import gpu_memory
     g = gpu_memory()
@@ -155,7 +165,7 @@ def _scan(state: State, backend, final_check=False):
             existing["files"].extend(files)
         else:
             state.sample_log.append({"step": step, "files": files})
-        F.event(state.run, "sample", f"samples at step {step} ({len(files)} files)")
+            F.event(state.run, "sample", f"samples at step {step}")
     if new_by_step:
         state.sample_log.sort(key=lambda e: e["step"])
         F.write_json(state.run / "samples.json", state.sample_log)
@@ -191,7 +201,8 @@ def run_local(run: Path, job: dict) -> int:
         except OSError as exc:
             logf.write(f"could not start: {exc}\n")
             return _fail(state, f"could not start '{st['name']}': {exc}")
-        reader = threading.Thread(target=_read_stream, args=(proc, state, be.parse if st.get("parse") else None, logf), daemon=True)
+        reader = threading.Thread(target=_read_stream, args=(proc, state, _parser(be, job) if st.get("parse") else None, logf),
+                                  daemon=True)
         reader.start()
         tick = 0
         while proc.poll() is None:

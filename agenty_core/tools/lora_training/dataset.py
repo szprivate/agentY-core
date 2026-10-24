@@ -344,7 +344,7 @@ def prepare_dataset(sources, subject: str, kind: str, model: str, name: str = ""
         if not cap and it["included"]:
             needs.append(it["id"])
 
-    warnings = _warnings(items, kind, preset, needs)
+    warnings = _warnings(items, kind, preset, needs, len(buckets))
     manifest = {
         "version": 1, "name": name, "subject": subject, "kind": kind, "model": preset["key"],
         "trigger_word": trigger, "caption_style": style, "status": "draft", "approved_at": None,
@@ -439,7 +439,7 @@ def _prepare_clips(path, src_kind, iid0, ds: Path, preset, res, buckets, clip_se
     return out
 
 
-def _warnings(items, kind, preset, needs) -> list[str]:
+def _warnings(items, kind, preset, needs, n_buckets: int = 0) -> list[str]:
     inc = [i for i in items if i["included"]]
     w = []
     need = MIN_ITEMS.get(kind, 12)
@@ -459,8 +459,7 @@ def _warnings(items, kind, preset, needs) -> list[str]:
         w.append(f"{wm} items had a watermark or overlay text and were removed")
     if needs:
         w.append(f"{len(needs)} items have no caption yet")
-    sizes = {tuple(i["size"]) for i in inc if i.get("size")}
-    if len(sizes) > 6:
+    if n_buckets > 6:
         w.append("many different bucket sizes; training will be slower")
     return w
 

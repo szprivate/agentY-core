@@ -242,6 +242,12 @@ class ParseTests(unittest.TestCase):
         self.assertAlmostEqual(s["it_s"], 0.3125, places=3)
         self.assertAlmostEqual(s["loss"], 0.0912)
 
+    def test_runner_parser_only_takes_the_steps_bar(self):
+        import types
+        parse = R._parser(B.AIToolkit(), {"steps": 30})
+        self.assertTrue(parse("job: 50%|x| 15/30 [00:03<00:03, 3.1it/s, lr: 1e-4 loss: 1e-1]", {}))
+        self.assertFalse(parse("Generating Images: 100%|x| 3/3 [00:03<00:00, 1.08s/it]", {}))
+
     def test_not_progress(self):
         self.assertFalse(B.parse_tqdm("Loading checkpoint shards: 100%|███| 1/1 [00:01<00:00, 1.1it/s]", {}))
         self.assertFalse(B.parse_tqdm("hello", {}))

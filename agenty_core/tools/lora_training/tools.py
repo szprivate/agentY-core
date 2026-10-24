@@ -37,7 +37,7 @@ def _guard(fn):
 def _open_in_viewer(manifest_path: str) -> dict:
     try:
         from agenty_core.tools.show_in_viewer import open_in_viewer
-        return open_in_viewer([manifest_path], label="LoRA dataset", focus=True, panel="dataset")
+        return open_in_viewer([manifest_path], label="LoRA dataset", focus=True)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -144,7 +144,7 @@ def _review(dataset, action, note, user_message, open_viewer, output_dir):
                            "dataset": ds.name})
     info = D.request_review(ds, note)
     viewer = _open_in_viewer(info["manifest"]) if open_viewer else {"skipped": True}
-    shown = bool(viewer) and not viewer.get("error") and not viewer.get("skipped") and not viewer.get("refused")
+    shown = bool(viewer) and not viewer.get("error") and not viewer.get("skipped") and not viewer.get("refused")         and (bool(viewer.get("lora")) or viewer.get("ok") is not False)
     msg = ("The dataset is open in the viewer's Dataset panel: the user can edit captions, drop items and press "
            "'Approve & train'. END YOUR TURN NOW with a short message saying that, and wait; their approval (or note) "
            "arrives as the next message. Do not call train_lora before it." if shown else

@@ -314,7 +314,10 @@ def stop(job: str, keep: bool = True, output_dir: str = "") -> dict:
 
 
 def loras_dir() -> Optional[Path]:
-    """ComfyUI's loras folder (first one off C:)."""
+    """ComfyUI's loras folder (first one off C:); ``AGENTY_LORAS_DIR`` overrides (tests, smoke runs)."""
+    env = os.environ.get("AGENTY_LORAS_DIR", "").strip()
+    if env:
+        return Path(env)
     try:
         from agenty_core.tools.model_research import _model_roots
         cands = [p for cat, p in _model_roots() if cat == "loras"]
