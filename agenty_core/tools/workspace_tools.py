@@ -683,15 +683,47 @@ def _sheet(paths: list[Path], labels: list[str], out: Path, width: int = 1600) -
     return out
 
 
+def _measure_clip(p: Path) -> dict:
+    """The measured facts of a video (utils.video_facts), or {"error"} - never raises."""
+    try:
+        from agenty_core.utils import video_facts
+        return video_facts.measure_video(p)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _measure_sequence(folder: Path, nums: dict, order: list) -> dict:
+    try:
+        from agenty_core.utils import video_facts
+        pick = order if len(order) <= video_facts.MAX_FRAMES else             [order[round(i * (len(order) - 1) / (video_facts.MAX_FRAMES - 1))] for i in range(video_facts.MAX_FRAMES)]
+        pick = list(dict.fromkeys(pick))
+        step = max(1, round((order[-1] - order[0]) / max(1, len(pick) - 1)))
+        import numpy as np
+        from PIL import Image
+        frames = []
+        for n in pick:
+            with Image.open(folder / nums[n]) as im:
+                frames.append(np.asarray(im.convert("RGB")))
+        return video_facts.measure_frames(frames, fps=24.0, step=step if len(pick) < len(order) else 1, labels=pick)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @tool
 def video_frames(path: str, count: int = 6, frames: list | None = None,
-                 times: list | None = None, contact_sheet: bool = True) -> str:
+                 times: list | None = None, contact_sheet: bool = True, measure: bool = True) -> str:
     """Pull still frames out of a video (or pick them from an image sequence) to
     look at — evenly spaced, or the frames / times you name — and, by default,
     one contact sheet with every frame labelled. Hand the paths to view_image or
     analyze_image.
 
     Use this instead of ffmpeg in run_script.
+
+    A video (or a sequence of PNG/JPG frames) also comes back with ``measured``: facts computed from
+    the pixels of the WHOLE clip - is the camera moving or static (and which way), how empty (flat
+    colour) each frame is, sharpness, black frames, brightness jumps, duplicate / frozen frames.
+    These beat a vision model's description: if the two disagree, trust ``measured`` and say so
+    (never call a moving camera "locked off", or a furnished frame "a void", against the numbers).
 
     Args:
         path: A video, a folder of frames, or a "name.####.png" pattern.
@@ -700,6 +732,7 @@ def video_frames(path: str, count: int = 6, frames: list | None = None,
         frames: Frame numbers (0-based for videos; the file numbers for a sequence).
         times: Times in seconds (videos).
         contact_sheet: Also save one image with all frames in a grid (default on).
+        measure: Add the measured clip facts (default on; costs about a second).
     """
     p = _resolve(path)
     count = max(1, min(int(count or 6), 24))
@@ -744,6 +777,8 @@ def video_frames(path: str, count: int = 6, frames: list | None = None,
             if contact_sheet and len(out_paths) > 1:
                 sheet_dir = out_dir or _frames_dir(folder.name)
                 result["contact_sheet"] = str(_sheet(out_paths, labels, sheet_dir / "contact_sheet.jpg"))
+            if measure and len(order) > 1 and out_paths and out_paths[0].suffix.lower() in (".png", ".jpg", ".jpeg"):
+                result["measured"] = _measure_sequence(folder, nums, order)
             return _out(result)
         if not p.is_file():
             return _out({"ok": False, "error": f"No such file: {p}"})
@@ -781,6 +816,8 @@ def video_frames(path: str, count: int = 6, frames: list | None = None,
                   "frames": [{"label": lab, "path": str(m)} for lab, m in zip(labels, made)]}
         if contact_sheet and len(made) > 1:
             result["contact_sheet"] = str(_sheet(made, labels, out_dir / "contact_sheet.jpg"))
+        if measure:
+            result["measured"] = _measure_clip(p)
         return _out(result)
     except Exception as exc:  # noqa: BLE001
         return _out({"ok": False, "error": f"{type(exc).__name__}: {exc}"})

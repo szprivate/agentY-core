@@ -15,6 +15,18 @@ Camera moves are written relative to where the picture's own camera stood (the
 world's ``refcam``, or the origin looking down -Z for a bare mesh): ``forward`` is
 metres along the horizontal view direction, ``up`` metres of height, ``right``
 sideways, ``yaw`` / ``pitch`` / ``roll`` degrees turned.
+
+Frames. Two coordinate systems exist and the move says which one it speaks:
+
+* the PICTURE frame - the source picture's camera is the origin, looking down -Z, Y up (an Atlas
+  ``world.glb``, a MoGe / SHARP mesh: the mesh IS in this frame);
+* the WORLD frame - the scene's own absolute coordinates. A trained Gaussian splat lives in the Atlas
+  world's frame, where the first picture's camera stands at e.g. y = 1.01 (not at the origin).
+
+``forward`` / ``right`` / ``up`` / ``yaw`` / ``pitch`` / ``roll`` are ALWAYS relative to the picture camera.
+Absolute ``position`` / ``look_at`` (and an orbit centre given as a point) are read in ``frame``
+("picture" or "world"); for a mesh both are the same, for a splat they differ by the picture camera's
+pose, which is read from the splat's training job (or the Atlas world's first view).
 """
 
 from __future__ import annotations
@@ -126,6 +138,44 @@ def _r(v, n=4):
 
 
 # -- the camera path ----------------------------------------------------------
+
+
+_REL_FIELDS = ("forward", "right", "up", "yaw", "pitch", "roll")
+FRAMES = ("picture", "world")
+
+
+def pose_from_matrix(R, t, fov=None, source="") -> dict:
+    """A picture-camera pose {R, t, position, rotation, fov, source} from a camera-to-world matrix."""
+    return {"R": [list(map(float, r)) for r in R], "t": [float(x) for x in t], "position": _r(t, 4),
+            "rotation": _r(matrix_to_euler([list(map(float, r)) for r in R]), 3),
+            "fov": float(fov) if fov else None, "source": source}
+
+
+def resolve_frame_moves(moves, frame: str, picture_pose):
+    """`moves` with absolute position / look_at converted from `frame` into scene coordinates.
+
+    With a picture pose that is not the origin (a splat in the Atlas world's frame) the frame must be named:
+    the same numbers are two different places in the two frames, and guessing is how a camera ends up under
+    the floor. Without one (a mesh in the picture frame) both frames are the same and `frame` is optional."""
+    from agenty_core.tools.camera_check import apply_frame
+    if frame not in ("",) + FRAMES:
+        raise ValueError(f"frame must be 'picture' or 'world', not {frame!r}")
+    out, needs = [], False
+    for mv in moves:
+        mv = dict(mv)
+        if mv.get("position") is not None:
+            needs = True
+            for k in ("position", "look_at"):
+                if mv.get(k) is not None:
+                    mv[k] = apply_frame(mv[k], picture_pose, frame)
+        out.append(mv)
+    if needs and picture_pose and not frame:
+        raise ValueError(
+            "this scene is a splat in the world's own frame, where the picture camera stands at "
+            f"{picture_pose['position']} (not at the origin): say what your absolute position / look_at keys "
+            "mean - frame='world' (the splat's own coordinates, as the viewer shows them) or "
+            "frame='picture' (metres from the picture camera: origin = where it stood, -Z = where it looked).")
+    return out
 
 
 def camera_pose_keys(base_pos, base_rot, moves, fps, base_fov=None):
@@ -477,7 +527,8 @@ def orbit_items(orbit: dict, base_pos, base_rot, fps: float, fov: float, resolut
 def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, seconds: float, fps: float,
                 fov: Optional[float], resolution, ease: str, keep_world: bool = False,
                 model_scale=1.0, model_position=None, model_rotation=None, render: Optional[dict] = None,
-                ground=True, ground_color: str = "", orbit: Optional[dict] = None):
+                ground=True, ground_color: str = "", orbit: Optional[dict] = None,
+                picture_pose: Optional[dict] = None, frame: str = "", splat: bool = False):
     """The previz scene for a camera move. Returns (scene, summary)."""
     ground_info = None
     if world is not None:
@@ -505,6 +556,10 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
     elif model:
         scene = {"version": 1, "items": [model_item(model, "Scene model", model_position, model_rotation, model_scale)]}
         base_pos, base_rot, base_fov = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], float(fov or 50.0)
+        if picture_pose:                                       # a splat: the picture camera stands somewhere in its frame
+            base_pos, base_rot = list(picture_pose["t"]), list(picture_pose["rotation"])
+            base_fov = float(fov or picture_pose.get("fov") or 50.0)
+            ground = False
         if ground:                                             # a camera-frame mesh (MoGe, SHARP, Atlas): level its ground
             scene["items"][0]["scene_model"] = {"frame": "camera_gl"}
             leveled = None
@@ -519,13 +574,31 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
                 scene["items"][0].pop("scene_model", None)
     else:
         raise ValueError("give a world (name) or a model (path to a mesh)")
+    if splat and not picture_pose:
+        relative = [m for m in (moves or []) if m.get("position") is None]
+        center = (orbit or {}).get("center")
+        if relative or (orbit and isinstance(center, dict)):
+            raise ValueError(
+                "this is a Gaussian splat and I cannot tell where the picture camera stood in it (no job.json "
+                "with the training camera next to the .ply). Pass atlas_world='<the Atlas world it was trained "
+                "from>' so forward / right / up / yaw moves start at the picture camera, or give every move an "
+                "absolute position + look_at with frame='world'.")
+    moves = resolve_frame_moves(moves or [], frame, picture_pose)
+    if orbit and not isinstance(orbit.get("center"), dict) and orbit.get("center") is not None:
+        from agenty_core.tools.camera_check import apply_frame
+        if picture_pose and not frame:
+            raise ValueError("orbit centre given as a point in a splat: say frame='world' or frame='picture'")
+        orbit = {**orbit, "center": apply_frame(orbit["center"], picture_pose, frame)}
+    picture_info = {"position": _r(base_pos, 4), "rotation": _r(base_rot, 3), "fov": round(float(base_fov), 3),
+                    "source": (picture_pose or {}).get("source") or ("the scene's reference camera" if world is not None
+                                                                     else "the origin, looking down -Z")}
     if orbit:
         pivot, cam, length, osum = orbit_items(orbit, base_pos, base_rot, fps, base_fov, resolution, ease)
         scene["items"] = [i for i in scene["items"] if i.get("id") not in (CAMERA_ID, PIVOT_ID)] + [pivot, cam]
         scene.update({"fps": float(fps), "length": length, "lengthSet": True, "activeCamera": CAMERA_ID})
         if render:
             scene["render"] = render
-        return scene, {"frames": length, "fps": fps, "ground": ground_info, **osum}
+        return scene, {"frames": length, "fps": fps, "ground": ground_info, "picture_camera": picture_info, **osum}
     if not moves:
         raise ValueError("no camera moves given")
     moves = sorted(moves, key=lambda m: float(m.get("t", 0)))
@@ -540,8 +613,9 @@ def build_scene(*, world: Optional[dict] = None, model: str = "", moves: list, s
     scene.update({"fps": float(fps), "length": length, "lengthSet": True, "activeCamera": CAMERA_ID})
     if render:
         scene["render"] = render
-    return scene, {"frames": length, "fps": fps, "ground": ground_info,
-                   "keys": [{"frame": f, "position": _r(p, 3), "rotation": _r(r, 2)} for f, p, r, _v in keys]}
+    return scene, {"frames": length, "fps": fps, "ground": ground_info, "picture_camera": picture_info,
+                   "keys": [{"frame": f, "position": _r(p, 3), "rotation": _r(r, 2),
+                             "forward": _r([-x for x in _col(euler_to_matrix(r), 2)], 3)} for f, p, r, _v in keys]}
 
 
 # -- the tool -----------------------------------------------------------------
@@ -571,6 +645,132 @@ def _resolve_model(path: str) -> str:
     return os.path.abspath(path)
 
 
+def _splat_picture_pose(model_path: str, atlas_world: str = "") -> Optional[dict]:
+    """Where the source picture's camera stands in a splat's frame: from the Atlas world named by
+    `atlas_world` (its first posed view), else from the job.json Brush training left beside the .ply."""
+    from agenty_core.tools.camera_check import read_first_camera
+    if atlas_world:
+        from agenty_core.tools import worldlabs_atlas as wl
+        wd = wl._world_dir(atlas_world)
+        base = wl._first_posed(wl._load_world(wd))
+        K = base["K"]
+        fov = math.degrees(2.0 * math.atan((K["height"] / 2.0) / K["fy"]))
+        return pose_from_matrix(base["R"], base["t"], fov, f"Atlas world '{atlas_world}' (first picture camera)")
+    job = read_first_camera(model_path)
+    if job:
+        return pose_from_matrix(job["R"], job["t"], job.get("fov"), job["source"])
+    return None
+
+
+def _camera_samples(summary: dict):
+    """[(frame, position, rotation)] for the sanity check, from the resolved keys (or the orbit's path)."""
+    if summary.get("keys"):
+        return [(k["frame"], k["position"], k["rotation"]) for k in summary["keys"]]
+    orb = (summary.get("orbit") or {})
+    path, centre = orb.get("camera_world_path"), orb.get("center")
+    if not path or not centre:
+        return []
+    out = []
+    for i, name in enumerate(("start", "middle", "end")):
+        pos = path[name]
+        out.append((i, pos, matrix_to_euler(look_at_matrix(pos, centre))))
+    return out
+
+
+def sanity_check(scene: dict, summary: dict, resolution, ground_y=None, picture_pose=None, frame: str = "",
+                 moves=None) -> dict:
+    """Test the camera path against the scene's own geometry. Returns {"skipped": why} when the scene has no
+    readable geometry, else {"bounds", "problems", "warnings", "samples", "hint"}."""
+    from agenty_core.tools import camera_check as cc
+    got = cc.scene_points(scene)
+    if not got:
+        return {"skipped": "no readable geometry (a .glb or a 3DGS .ply) in the scene to test against"}
+    pts, total, kind = got
+    bounds = cc.scene_bounds(pts, kind, total, ground_y)
+    keys = _camera_samples(summary)
+    if not keys:
+        return {"skipped": "no camera keys", "bounds": bounds}
+    fov = float((summary.get("picture_camera") or {}).get("fov") or 50.0)
+    aspect = float(resolution[0]) / max(1.0, float(resolution[1]))
+    rep = cc.check_path(cc.path_samples(keys), pts, bounds, fov, aspect, strict=(kind == "splat"))
+    out = {"bounds": bounds, "problems": rep["problems"], "warnings": rep["warnings"], "samples": rep["measured"]}
+    if rep["problems"]:
+        out["hint"] = _frame_hint(pts, bounds, keys, fov, aspect, picture_pose, frame, moves or [], kind == "splat")
+    return out
+
+
+def _frame_hint(pts, bounds, keys, fov, aspect, picture_pose, frame, moves, strict) -> str:
+    """Say what the picture-camera relation is, and whether the other frame would have put the camera inside."""
+    from agenty_core.tools import camera_check as cc
+    pc = picture_pose["position"] if picture_pose else None
+    hint = ("forward / right / up / yaw / pitch / roll moves start at the PICTURE camera"
+            + (f" (it stands at {pc} in this scene)" if pc else "")
+            + "; absolute position / look_at keys are read in `frame`.")
+    abs_moves = [m for m in moves if m.get("position") is not None]
+    if picture_pose and abs_moves and frame in FRAMES:
+        other = "world" if frame == "picture" else "picture"
+        if frame == "world":      # as given they were scene coordinates; read as picture-frame they would move by the pose
+            alt = [(f, cc.apply_frame(pos, picture_pose, "picture"), rot) for f, pos, rot in keys]
+        else:                     # were converted from picture metres; read as raw scene coordinates they are the numbers given
+            alt = [(f, cc.invert_frame(pos, picture_pose), rot) for f, pos, rot in keys]
+        rep2 = cc.check_path(cc.path_samples(alt), pts, bounds, fov, aspect, strict=strict)
+        if not rep2["problems"]:
+            hint += (f" The keys as you typed them would be INSIDE the scene under frame='{other}' (you passed "
+                     f"frame='{frame}'): the frame is probably the wrong one.")
+    return hint
+
+
+def _expects_motion(moves, orbit) -> bool:
+    if orbit:
+        return True
+    keyset = {json.dumps({k: v for k, v in m.items() if k != "t"}, sort_keys=True) for m in (moves or [])}
+    return len(keyset) > 1
+
+
+def _render_path(path) -> Optional[str]:
+    if not path:
+        return None
+    if os.path.isfile(str(path)):
+        return str(path)
+    try:
+        from agenty_core.utils.comfyui_client import comfyui_output_dir
+        out = comfyui_output_dir()
+        if out and os.path.isfile(os.path.join(str(out), str(path))):
+            return os.path.join(str(out), str(path))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _measure_render(path, expect_motion: bool = True) -> dict:
+    """The rendered clip's measured facts + warnings where they contradict the move or show garbage."""
+    p = _render_path(path)
+    if not p:
+        return {}
+    try:
+        from agenty_core.utils import video_facts
+        m = video_facts.measure_video(p)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not m or m.get("error"):
+        return {"measured_error": (m or {}).get("error")}
+    warn = []
+    e = m["empty_fraction"]
+    if e["void_frames"]:
+        warn.append(f"{len(e['void_frames'])} frame(s) are a void (>= 85% flat colour, first at frame {e['void_frames'][0]}): "
+                    "the camera left the scene or looks at nothing")
+    elif e["mostly_empty_frames"]:
+        warn.append(f"{len(e['mostly_empty_frames'])} frame(s) are mostly empty (>= 60% flat colour)")
+    if m["brightness"]["black_frames"]:
+        warn.append(f"black frames: {m['brightness']['black_frames'][:6]}")
+    cam = m.get("camera") or {}
+    if expect_motion and cam.get("state") == "static":
+        warn.append("the move has motion but the render is static - the camera did not move in the picture")
+    if (m.get("motion") or {}).get("longest_frozen_run", 0) >= 3:
+        warn.append("frozen frames: the render stalls")
+    return {"measured": m, "measured_summary": video_facts.summary_text(m), "render_warnings": warn}
+
+
 @tool
 def render_camera_move(
     name: str,
@@ -594,6 +794,9 @@ def render_camera_move(
     add_to_canvas: bool = True,
     timeout_seconds: float = 900.0,
     orbit: Optional[dict] = None,
+    frame: str = "",
+    atlas_world: str = "",
+    check: bool = True,
 ) -> str:
     """Fly a camera through a 3D scene in the bEpic viewer and render the move to a clip.
 
@@ -611,11 +814,13 @@ def render_camera_move(
             "roll": deg, "fov": deg}. Omitted fields are 0. forward is metres along the
             horizontal view direction. Needs at least two, e.g. a low push-in with a slight
             rise: [{"t":0}, {"t":5, "forward":40, "up":1.5}]. For absolute control use
-            {"t", "position":[x,y,z], "look_at":[x,y,z]} in scene coordinates.
+            {"t", "position":[x,y,z], "look_at":[x,y,z]}, read in `frame` (below).
         world: A bEpic world's name; its scene model (or depth view) is the set. The terrain,
             scatter and lamps are left out unless keep_world.
         model: Instead of a world: absolute path of a mesh (.glb/.ply/.obj), built in the
-            picture's camera (MoGe, SHARP) so the camera starts at the origin looking -Z.
+            picture's camera (MoGe, SHARP) so the camera starts at the origin looking -Z. Or a trained
+            Gaussian splat (.ply from train_splat): it lives in the Atlas world's absolute frame, with the
+            picture's camera standing somewhere in it (e.g. y = 1.01) - see `frame` and `atlas_world`.
         seconds: Informational; the length comes from the last move's "t".
         fps: Frame rate of the render (24 matches most clips).
         fov: Vertical field of view in degrees; 0 = the picture's own (the world's reference camera).
@@ -635,6 +840,18 @@ def render_camera_move(
         render: False opens the scene and the camera in the viewer without rendering.
         add_to_canvas: A finished render also lands on the ComfyUI canvas as a loader node.
         timeout_seconds: How long to wait for the render.
+        frame: How absolute `position` / `look_at` keys (and an orbit centre given as a point) are read.
+            "picture": metres from the picture camera - it is the origin, looking down -Z, Y up.
+            "world": the scene's own absolute coordinates (for a splat the Atlas world's frame the viewer
+            shows, where the picture camera stands at e.g. [0, 1.01, 0]). For a mesh both are the same.
+            forward / right / up / yaw / pitch / roll moves are ALWAYS relative to the picture camera, in
+            either. For a splat with absolute keys you must say which; it is refused otherwise, because the
+            same numbers are two different places (that is how a camera ends up under the floor).
+        atlas_world: For a splat: the Atlas world it was trained from, so the picture camera's pose is read
+            from that world (by default from the job.json next to the .ply).
+        check: Test the camera path against the scene's geometry before rendering (inside the scene, above
+            the floor, not buried in a wall, sees a meaningful part of it). A path that fails is refused
+            with the measured numbers instead of rendering garbage; check=False renders it anyway.
         orbit: Instead of moves, circle a subject the way an operator rigs it - for "circle around him",
             "orbit 180 degrees while pulling back". A pivot stands on the subject and turns about the
             vertical axis; the camera is its child and moves straight back / up while it keeps the
@@ -652,7 +869,20 @@ def render_camera_move(
             from absolute position/look_at moves: those cut across the circle and jump.
 
     Returns:
-        JSON: status, path (the rendered clip), frames, fps, scene_file, keys (the camera path).
+        JSON: status, path (the rendered clip), frames, fps, scene_file, `keys` (the camera path as
+        resolved ABSOLUTE scene coordinates: position, rotation, forward), `picture_camera` (where the
+        source picture's camera stands in the scene), `frame`, `scene_bounds` (the geometry's box, floor
+        and top, in the same coordinates) and `check` (what the sanity test found) - read them to see where
+        the camera really goes. After a render, `measured` holds numbers computed from the clip's pixels
+        (camera moving or static and which way, empty / black / frozen / soft frames); they beat any
+        description of the clip. Errors: `camera_outside_scene` carries the numbers and a hint.
+
+        Worked example, a fly-through of a splat of a room (picture camera at y = 1.01): relative, so it
+        cannot leave the room by mistake -
+        moves=[{"t":0}, {"t":4.5, "forward":2.0, "right":0.4, "up":-0.3}]
+        or absolute, in the splat's own coordinates -
+        frame="world", moves=[{"t":0,"position":[-0.1,0.71,-0.4],"look_at":[-0.2,0.71,-2.4]},
+        {"t":4.5,"position":[0.45,0.79,-2.3],"look_at":[1.2,0.79,-4.15]}].
     """
     t0 = time.time()
     try:
@@ -663,11 +893,39 @@ def render_camera_move(
                 return _error(f"no world '{world}'")
         render_cfg = {"format": "mp4", "quality": "high", "shading": shading, "background": background,
                       "color": color, "aa": 2, "fps": fps}
-        scene, summary = build_scene(world=world_scene, model=_resolve_model(model), moves=moves or [],
+        model_path = _resolve_model(model)
+        picture_pose, splat = None, False
+        if model_path and not world_scene:
+            from agenty_core.tools.camera_check import is_splat_path
+            splat = os.path.isfile(model_path) and is_splat_path(model_path)
+            if splat:
+                picture_pose = _splat_picture_pose(model_path, atlas_world)
+        scene, summary = build_scene(world=world_scene, model=model_path, moves=moves or [],
                                      seconds=seconds, fps=fps, fov=fov or None, resolution=(width, height),
                                      ease=ease, keep_world=keep_world, model_scale=model_scale,
                                      render=render_cfg, ground=ground, ground_color=ground_color,
-                                     orbit=orbit)
+                                     orbit=orbit, picture_pose=picture_pose, frame=frame, splat=splat)
+        summary["frame"] = (frame or "picture") if (picture_pose or frame) else "same for this scene (picture frame = scene frame)"
+        if check:
+            try:
+                gy = (summary.get("ground") or {}).get("ground_y")
+                sane = sanity_check(scene, summary, (width, height), gy, picture_pose, frame, moves or [])
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("camera sanity check failed")
+                sane = {"skipped": f"the check itself failed: {exc}"}
+            if sane.get("bounds"):
+                summary["scene_bounds"] = sane["bounds"]
+            summary["check"] = ({"passed": not sane.get("problems"), "warnings": sane.get("warnings", []),
+                                 "samples": sane.get("samples", [])[:5]} if "problems" in sane else sane)
+            if sane.get("problems"):
+                return json.dumps({
+                    "status": "error", "error_kind": "camera_outside_scene",
+                    "error": "NOT rendered - the camera path does not fit the scene: " + "; ".join(sane["problems"][:3]),
+                    "hint": sane.get("hint", ""), "problems": sane["problems"], "warnings": sane.get("warnings", []),
+                    "scene_bounds": sane.get("bounds"), "picture_camera": summary.get("picture_camera"),
+                    "frame": summary["frame"], "keys": summary.get("keys") or summary.get("orbit"),
+                    "measured": sane.get("samples", [])[:6],
+                    "override": "check=False renders it anyway"})
         body = {"scene": scene, "name": name, "focus": True, "add_node": bool(add_to_canvas)}
         if render:
             body["render"] = {**render_cfg, "camera": CAMERA_ID, "useCameraRes": True}
@@ -695,8 +953,10 @@ def render_camera_move(
             if state.get("state") in ("done", "error"):
                 break
         if state.get("state") == "done":
-            return json.dumps({**out, "rendered": True, "path": state.get("path"), "where": state.get("where"),
-                               "message": state.get("message"), "seconds_taken": round(time.time() - t0, 1)})
+            res = {**out, "rendered": True, "path": state.get("path"), "where": state.get("where"),
+                   "message": state.get("message"), "seconds_taken": round(time.time() - t0, 1)}
+            res.update(_measure_render(state.get("path"), expect_motion=_expects_motion(moves, orbit)))
+            return json.dumps(res)
         if state.get("state") == "error":
             return _error(state.get("message") or "the viewer could not render the shot")
         return _error("timed out waiting for the viewer to render (is the bEpic viewer open in a browser "
