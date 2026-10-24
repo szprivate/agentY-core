@@ -731,8 +731,15 @@ def _save_pending(wd: Path, op: dict, job: dict) -> None:
 
 
 def _find_pending(op_id: str, output_dir: str = "") -> tuple[Optional[Path], Optional[dict]]:
-    for f in _root_dir(output_dir).glob(f"*/pending/{op_id}.json"):
-        return f.parent.parent, json.loads(f.read_text(encoding="utf-8"))
+    roots = [_root_dir(output_dir)]
+    try:                                       # a splats2Mesh job of a Marble world is recorded in the Marble folder
+        from agenty_core.tools.worldlabs_marble import _root_dir as marble_root
+        roots.append(marble_root(output_dir))
+    except Exception:  # noqa: BLE001
+        pass
+    for root in roots:
+        for f in root.glob(f"*/pending/{op_id}.json"):
+            return f.parent.parent, json.loads(f.read_text(encoding="utf-8"))
     return None, None
 
 
@@ -753,6 +760,7 @@ def _finish(job: dict, op: dict, output_dir: str = "") -> str:
         _sidecar(glb, "Atlas splat mesh (splats2Mesh)", {"source_splat": job.get("source"), "operation": op_id})
         _publish(glb)
         _pending_path(wd, op_id).unlink(missing_ok=True)
+        _note_marble_mesh(wd, glb)
         return json.dumps({"status": "ok", "glb": str(glb), "operation_id": op_id, "usage": usage or None,
                            "anchor_positions": (resp.get("anchorPositions") or [])[:16],
                            "next": "render_camera_move(name, model=<glb>, moves=[...]); the GLB keeps the splat's own "
@@ -786,6 +794,18 @@ def _finish(job: dict, op: dict, output_dir: str = "") -> str:
     _save_world(wd, world)
     _pending_path(wd, op_id).unlink(missing_ok=True)
     return _summary(wd, world, op_id, usage)
+
+
+def _note_marble_mesh(wd: Path, glb: Path) -> None:
+    """If the mesh was made from a Marble world, list it in that world's world.json."""
+    try:
+        f = wd / "world.json"
+        w = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        if w.get("provider") == "worldlabs-marble":
+            w.setdefault("files", {})["mesh"] = glb.name
+            f.write_text(json.dumps(w, indent=1), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _run(job: dict, op: dict, timeout_s: float) -> str:
@@ -1031,12 +1051,17 @@ def _rebuild(name, mesh_detail, max_jump, conf_min, max_depth, output_dir):
 @tool
 def atlas_splat_to_mesh(splat_path: str, name: str = "", texture_mode: str = "image_texture",
                         target_faces: int = 0, timeout_s: int = 900, output_dir: str = "") -> str:
-    """Turn a Gaussian-splat scene (.spz, e.g. a World Labs Marble export) into a GLB mesh with
-    Atlas's splats2Mesh, so it can be flown through with ``render_camera_move(model=...)``.
+    """Turn a Gaussian-splat scene into a GLB mesh with Atlas's splats2Mesh, so it can be flown through
+    with ``render_camera_move(model=...)``. Billed to the World Labs Atlas credits.
+
+    ``splat_path`` is any of: the NAME of a Marble world made by marble_create_world (its SPZ is used,
+    fetched first if it is not on disk; the mesh lands in that world's folder as mesh.glb), the path of a
+    ``.spz`` (e.g. a Marble export), or the path of a 3DGS ``.ply`` (a trained splat or a Marble PLY; it is
+    converted to SPZ first, axes unchanged).
 
     Args:
-        splat_path: local path of the .spz file (uploaded as a project asset).
-        name: folder name under output/3d_scenes/atlas/ (default: the file's name).
+        splat_path: a Marble world name, or a local .spz / .ply file (uploaded as a project asset).
+        name: folder name under output/3d_scenes/atlas/ (default: the file's name). Ignored for a Marble world.
         texture_mode: "image_texture" (UV atlas, best), "vertex_color" or "none".
         target_faces: decimate to at most this many faces (0 = keep all).
         timeout_s: how long to wait; on timeout the error carries operation_id for atlas_fetch.
@@ -1050,21 +1075,16 @@ def atlas_splat_to_mesh(splat_path: str, name: str = "", texture_mode: str = "im
 
 @_guard
 def _splat_mesh(splat_path, name, texture_mode, target_faces, timeout_s, output_dir):
-    p = Path(os.path.expanduser(str(splat_path).strip().strip('"')))
-    if not p.is_file():
-        raise AtlasError(f"splat file not found: {splat_path}", "args")
-    if p.suffix.lower() != ".spz":
-        raise AtlasError("splats2Mesh takes a .spz splat file", "args")
+    from agenty_core.tools.worldlabs_marble import splat_for_mesh
     if texture_mode not in ("image_texture", "vertex_color", "none"):
         raise AtlasError("texture_mode must be image_texture, vertex_color or none", "args")
-    wd = _world_dir(name or p.stem, output_dir)
-    aid = _upload_file(str(p), "application/octet-stream")
+    spz, wd, stem, source = splat_for_mesh(splat_path, name, output_dir)
+    aid = _upload_file(str(spz), "application/octet-stream")
     body = {"splatAsset": {"assetId": aid}, "textureMode": texture_mode}
     if target_faces and int(target_faces) > 0:
         body["targetFaces"] = int(target_faces)
     op = _submit(_TASK_S2M, body)
-    job = {"kind": "splat_mesh", "task": _TASK_S2M, "world_dir": str(wd), "stem": _slug(name or p.stem) or "mesh",
-           "source": str(p)}
+    job = {"kind": "splat_mesh", "task": _TASK_S2M, "world_dir": str(wd), "stem": stem or "mesh", "source": source}
     return _run(job, op, timeout_s)
 
 
