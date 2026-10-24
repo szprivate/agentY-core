@@ -471,6 +471,26 @@ def _outputs(job: dict, job_id: str) -> list:
     return list(dict.fromkeys(files))
 
 
+def cancel_job(job_id: str) -> dict:
+    """Stop a job started by ``submit``: suspend it (kept in Monitor for inspection, nothing deleted).
+
+    Used when the person who asked stops the turn; the plugin interrupts ComfyUI on the worker when it sees the
+    cancel. Never raises for "already finished".
+    """
+    _require_configured()
+    job_id = (job_id or "").strip()
+    if not job_id:
+        raise FarmError("job_id is required", "args")
+    try:
+        if _use_ws():
+            _ws("PUT", "/api/jobs", json={"Command": "suspend", "JobID": job_id})
+        else:
+            _dc(["-SuspendJob", job_id])
+    except FarmError as exc:
+        return {"job_id": job_id, "suspended": False, "note": str(exc)[:300]}
+    return {"job_id": job_id, "suspended": True}
+
+
 def job_status(job_id: str, wait_s: float = 0) -> dict:
     _require_configured()
     job_id = (job_id or "").strip()
