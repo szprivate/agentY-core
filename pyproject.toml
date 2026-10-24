@@ -44,6 +44,10 @@ dependencies = [
 # without it the tool answers with a missing_dependency error.
 reverse-search = ["playwright>=1.40"]
 
+[tool.setuptools.package-data]
+# The motion-graphics renderer is a Node project shipped inside the package (node_modules are installed on first use).
+"agenty_core.motion_graphics" = ["renderer/**/*", "examples/**/*"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agenty_core*"]
