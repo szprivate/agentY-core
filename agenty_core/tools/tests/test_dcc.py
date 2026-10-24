@@ -249,6 +249,87 @@ class Drivers(unittest.TestCase):
         self.assertIn("raise ValueError", err)
 
 
+class Params(unittest.TestCase):
+    def _common(self):
+        g = {}
+        exec(compile((Path(dcc.__file__).with_name("dcc_drivers") / "_common.py").read_text(encoding="utf-8"), "c", "exec"), g)
+        return g
+
+    def test_script_sees_params_as_global_env_and_file_then_all_is_restored(self):
+        import os
+        g = self._common()
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.py"
+            p.write_text("import os, json\n"
+                         "print(json.dumps([DCC_PARAMS, json.loads(os.environ['DCC_PARAMS']),"
+                         " json.loads(__import__('pathlib').Path(os.environ['DCC_PARAMS_FILE']).read_text()), os.environ['DCC_PARAMS_FILE']]))\n",
+                         encoding="utf-8")
+            os.environ["DCC_PARAMS"] = "old"
+            try:
+                ok, out, err, tb = g["exec_build_script"](str(p), "blockout", {"cam": "A", "steps": [1, 2]})
+                self.assertEqual(os.environ["DCC_PARAMS"], "old")
+            finally:
+                os.environ.pop("DCC_PARAMS", None)
+            self.assertTrue(ok, err)
+            self.assertTrue(ok, repr((err, out)))
+            a, b, c, f = json.loads(out)
+            self.assertEqual(a, {"cam": "A", "steps": [1, 2]})
+            self.assertEqual(a, b)
+            self.assertEqual(a, c)
+            self.assertFalse(os.path.exists(f))                # temp file cleaned
+            self.assertNotIn("DCC_PARAMS_FILE", os.environ)
+            self.assertFalse(Path(f).parent == Path(d))         # outside the script folder
+
+    def test_no_params_gives_an_empty_dict(self):
+        g = self._common()
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.py"
+            p.write_text("print(DCC_PARAMS)\n", encoding="utf-8")
+            ok, out, err, tb = g["exec_build_script"](str(p))
+        self.assertEqual(out.strip(), "{}")
+
+    def test_dcc_build_passes_params_in_the_job_and_result_but_not_the_hash(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write("pass\n")
+        seen = {}
+        def fake_run(app, mode, job, timeout=0):
+            seen["job"] = job
+            return {"ok": True}
+        try:
+            before = dcc.script_hashes(f.name)
+            with mock.patch("agenty_core.tools.dcc.run_job", side_effect=fake_run):
+                r = json.loads(dcc.dcc_build(f.name, params={"camera": "cam2"}))
+                r0 = json.loads(dcc.dcc_build(f.name))
+                bad = json.loads(dcc.dcc_build(f.name, params={"x": object()}))
+                bad2 = json.loads(dcc.dcc_build(f.name, params=[1]))
+            self.assertEqual(before, dcc.script_hashes(f.name))
+        finally:
+            Path(f.name).unlink()
+        self.assertEqual(r["params"], {"camera": "cam2"})
+        self.assertNotIn("params", r0)
+        self.assertFalse(bad["ok"])
+        self.assertFalse(bad2["ok"])
+
+    def test_live_wrapper_carries_params_to_the_driver(self):
+        code = dcc._live_wrapper("blender", {"action": "build", "params": {"a": 1}, "live": True})
+        compile(code, "live", "exec")
+        self.assertIn("DCC_PARAMS", dcc.driver_source("blender"))
+        self.assertIn('"params": {"a": 1}', code)
+
+    def test_batch_subprocess_gets_the_env_var(self):
+        captured = {}
+        def fake_subprocess_run(cmd, **kw):
+            captured["env"] = kw["env"]
+            job = json.load(open(cmd[-1], encoding="utf-8"))
+            Path(job["result_path"]).write_text(json.dumps({"ok": True}), encoding="utf-8")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("agenty_core.tools.dcc.find_app", return_value="x.exe"),                 mock.patch("agenty_core.tools.dcc.subprocess.run", side_effect=fake_subprocess_run):
+            dcc._run_batch("houdini", {"action": "build", "params": {"k": 2}}, 5)
+            self.assertEqual(json.loads(captured["env"]["DCC_PARAMS"]), {"k": 2})
+            dcc._run_batch("houdini", {"action": "build"}, 5)
+        self.assertNotIn("DCC_PARAMS", captured["env"] if "DCC_PARAMS" not in __import__("os").environ else {})
+
+
 class FindApp(unittest.TestCase):
     def test_env_var_wins(self):
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:

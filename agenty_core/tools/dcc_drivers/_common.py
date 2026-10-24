@@ -6,16 +6,46 @@ import os
 import traceback
 
 
-def exec_build_script(path, stage=""):
+def exec_build_script(path, stage="", params=None):
     """Run the whole build script file. Returns (ok, stdout, error, traceback_text).
     ``stage`` (blockout / detail / look) is handed to the script as the global ``DCC_STAGE`` and the environment
-    variable ``DCC_STAGE``, so a script can build only what the stage allows."""
+    variable ``DCC_STAGE``, so a script can build only what the stage allows.
+    ``params`` (a JSON-able dict or None) is handed over the same way: the global ``DCC_PARAMS`` (a dict, {} when none),
+    the env var ``DCC_PARAMS`` (JSON text) and ``DCC_PARAMS_FILE`` (a temp .json outside the script folder). The env
+    vars are restored and the temp file removed when the script ends, so nothing leaks into a later call."""
     buf = io.StringIO()
+    import tempfile
+    params = params if isinstance(params, dict) else {}
+    ptext = json.dumps(params)
+    pfile = ""
+    saved_env = {k: os.environ.get(k) for k in ("DCC_PARAMS", "DCC_PARAMS_FILE")}
+    try:
+        fd, pfile = tempfile.mkstemp(prefix="agenty_dcc_params_", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as pf:
+            pf.write(ptext)
+        os.environ["DCC_PARAMS"] = ptext
+        os.environ["DCC_PARAMS_FILE"] = pfile
+        return _exec_script(path, stage, params, buf)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if pfile:
+            try:
+                os.remove(pfile)
+            except OSError:
+                pass
+
+
+def _exec_script(path, stage, params, buf):
     try:
         with open(path, encoding="utf-8") as f:
             src = f.read()
         code = compile(src, path, "exec")
-        g = {"__name__": "__main__", "__file__": path, "DCC_STAGE": stage or "look"}
+        g = {"__name__": "__main__", "__file__": path, "DCC_STAGE": stage or "look",
+             "DCC_PARAMS": params}
         os.environ["DCC_STAGE"] = stage or "look"
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             exec(code, g)

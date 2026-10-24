@@ -167,7 +167,7 @@ def build(job):
             cmds.file(job["scene_in"], open=True, force=True)
         else:
             cmds.file(new=True, force=True)
-    ok, out, err, tb = exec_build_script(job["script_path"], job.get("stage", ""))
+    ok, out, err, tb = exec_build_script(job["script_path"], job.get("stage", ""), job.get("params"))
     res = {"ok": ok, "stdout": out, "error": err, "traceback": tb}
     res["objects"] = _objects_summary()
     if ok and job.get("save_to"):

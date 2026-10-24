@@ -490,6 +490,10 @@ def _run_batch(app: str, job: dict, timeout: float) -> dict:
         jf = work / "job.json"
         jf.write_text(json.dumps(job), encoding="utf-8")
         env = dict(os.environ)
+        if job.get("params"):
+            # Also in the process environment, for anything the app reads before the driver runs. The driver sets
+            # (and restores) its own copy plus DCC_PARAMS_FILE around the script.
+            env["DCC_PARAMS"] = json.dumps(job["params"])
         if app == "blender":
             env.pop("OCIO", None)          # a studio OCIO config breaks Blender's views
             cmd = [exe, "--factory-startup", "-b", "--python-exit-code", "1", "--python", str(driver), "--", str(jf)]
@@ -553,7 +557,7 @@ def default_scene_path(script_path: str, app: str) -> str:
 @tool
 def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_to: str = "", render_to: str = "",
               render_engine: str = "", resolution: str = "", stage: str = "blockout",
-              force_reason: str = "", timeout_minutes: int = 0, frames: str = "") -> str:
+              force_reason: str = "", timeout_minutes: int = 0, frames: str = "", params: Optional[dict] = None) -> str:
     """Run a whole build script file in a 3D app (Blender, Maya or Houdini), then optionally save and render a still.
 
     This is the ONLY way a model should be rebuilt: keep one script, change its constants, call this again. The
@@ -594,6 +598,15 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
             renders a frame sequence: a Houdini RBD sim or a Karma sequence does not fit the default. The script's
             stdout only comes back when the run ends, so such a script should also write its own progress log file.
 
+        params: optional JSON-serialisable dict of per-run settings for THIS call (which camera, which steps, sim
+            parameters). Do not write a side JSON file next to the script for this: it can leak into a later call.
+            The script reads it with
+            ``params = globals().get('DCC_PARAMS') or json.loads(os.environ.get('DCC_PARAMS', '{}'))``
+            (the global is a dict, {} when none were given; the env var DCC_PARAMS is the same as JSON text and
+            DCC_PARAMS_FILE is the path of a temp .json copy for big params). Works in all three apps, live and
+            batch; env vars are restored and the temp file deleted when the run ends. Params do not change the
+            gate's script hash and are echoed in the result as ``params``.
+
     The script learns the stage: the global ``DCC_STAGE`` (also the environment variable of the same name) is
     "blockout", "detail" or "look" while it runs. Build only the block-out above the ``# --- DETAIL ---`` line when
     it is "blockout"; the detail code below the line when it is "detail" or "look"; materials / lights / look
@@ -624,6 +637,18 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
     gate = gate_decision(str(sp.resolve()), stage, force_reason)
     if not gate["allowed"]:
         return _err(gate["error"], gate=gate["gate"], stage=stage)
+    if params is not None:
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except ValueError:
+                return _err("params must be a JSON object")
+        if not isinstance(params, dict):
+            return _err("params must be a JSON object (dict)")
+        try:
+            json.dumps(params)
+        except (TypeError, ValueError) as e:
+            return _err(f"params must be JSON-serialisable: {e}")
     if resolution and not re.fullmatch(r"\s*\d+\s*[xX]\s*\d+\s*", resolution):
         return _err("resolution must look like 1280x720")
     if mode == "batch" and not save_to:
@@ -632,7 +657,7 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
            "save_to": str(Path(save_to).expanduser().resolve()) if save_to else "",
            "render_to": str(Path(render_to).expanduser().resolve()) if render_to else "",
            "render_engine": render_engine, "resolution": resolution.strip(), "stage": stage,
-           "frames": frames.strip()}
+           "frames": frames.strip(), "params": params or {}}
     if mode == "batch":
         job["scene_in"] = job["save_to"]
     t0 = time.time()
@@ -646,6 +671,8 @@ def dcc_build(script_path: str, app: str = "blender", mode: str = "live", save_t
            "error": res.get("error", ""), "traceback": res.get("traceback", ""),
            "objects": res.get("objects"), "saved": res.get("saved", ""), "render": res.get("render"),
            "seconds": round(time.time() - t0, 1)}
+    if params:
+        out["params"] = params
     return json.dumps(out)
 
 
