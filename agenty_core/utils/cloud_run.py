@@ -12,9 +12,11 @@ Same three hooks as :mod:`agenty_core.utils.farm_run`, so the executors treat a 
 
 Cost: before every cloud run the balance is read, the run is refused when it is below ``execution.min_balance_usd``
 (default $0.50), and a run at or above the confirmation level needs the user's go-ahead (the same ``confirm_cost``
-as for partner nodes, :mod:`agenty_core.partner_credits`). Comfy Cloud has no price quote for GPU time, so an
-open-weight run is counted at the flat ``execution.cloud_gpu_run_usd`` (default $0.10, a rough placeholder) on top of
-the partner nodes' own price badges; the REAL spend is measured from the balance afterwards and reported.
+as for partner nodes, :mod:`agenty_core.partner_credits`). Comfy Cloud bills GPU time by the second (standard
+workflows on an RTX 6000 Pro: about 0.27 credits/s = $0.077/min) but quotes no run in advance, so the estimate is that
+rate (``execution.cloud_gpu_usd_per_second``) times a runtime range: ``cloud_gpu_min_seconds`` to
+``cloud_gpu_max_seconds_image`` / ``_video`` by what the workflow saves. It goes on top of the partner nodes' own
+price badges; the REAL spend is measured from the balance afterwards and reported.
 """
 
 from __future__ import annotations
@@ -34,7 +36,11 @@ from agenty_core.utils import comfy_cloud, execution_mode, farm_run
 logger = logging.getLogger("agenty_core.cloud_run")
 
 PREFIX = "cloud:"
-DEFAULT_GPU_RUN_USD = 0.10
+DEFAULT_GPU_USD_PER_SECOND = 0.077 / 60      # ~0.27 credits/s, standard GPU (RTX 6000 Pro)
+DEFAULT_GPU_MIN_SECONDS = 20
+DEFAULT_GPU_MAX_SECONDS_IMAGE = 120
+DEFAULT_GPU_MAX_SECONDS_VIDEO = 600
+_VIDEO_HINT = re.compile(r"video|vhs_|wan|ltx|hunyuanvideo|animatediff|framepack", re.I)
 DEFAULT_MIN_BALANCE_USD = 0.50
 _LOADER_KEYS = ("image", "video", "audio", "file", "mask")
 _jobs: dict = {}
@@ -56,17 +62,34 @@ def _setting(name: str, default: float) -> float:
 
 
 # ── the cost gate ────────────────────────────────────────────────────────────
+def is_video_workflow(workflow: dict) -> bool:
+    """A workflow that makes video (it runs much longer on the GPU than an image one)."""
+    return any(isinstance(n, dict) and _VIDEO_HINT.search(str(n.get("class_type", "")))
+               for n in (workflow or {}).values())
+
+
+def gpu_time_usd(workflow: dict) -> tuple:
+    """``(min, max)`` USD of Comfy Cloud GPU time for an open-weight run: the per-second rate times the expected
+    runtime range (longer for video)."""
+    rate = _setting("cloud_gpu_usd_per_second", DEFAULT_GPU_USD_PER_SECOND)
+    lo_s = _setting("cloud_gpu_min_seconds", DEFAULT_GPU_MIN_SECONDS)
+    hi_s = (_setting("cloud_gpu_max_seconds_video", DEFAULT_GPU_MAX_SECONDS_VIDEO) if is_video_workflow(workflow)
+            else _setting("cloud_gpu_max_seconds_image", DEFAULT_GPU_MAX_SECONDS_IMAGE))
+    return round(rate * lo_s, 4), round(rate * max(lo_s, hi_s), 4)
+
+
 def gate(workflow: dict, workflow_path: str = "", *, open_weight: bool = True, confirm: bool = False) -> dict:
     """Refuse (``CostGateError``) a cloud run the balance cannot cover or the user has not confirmed. Returns the
     estimate (``paid`` True: the run costs credits)."""
     client = comfy_cloud.get_client()
     est = pc.estimate_workflow(workflow, info_for=client.node_info)
-    gpu = _setting("cloud_gpu_run_usd", DEFAULT_GPU_RUN_USD) if open_weight else 0.0
-    if gpu > 0:
+    lo, hi = gpu_time_usd(workflow) if open_weight else (0.0, 0.0)
+    if hi > 0:
         est["nodes"].append({"node_id": "-", "class_type": "Comfy Cloud GPU time", "known": True,
-                             "min_usd": gpu, "max_usd": gpu, "approximate": True, "reason": ""})
-        est["min_usd"] = round(est["min_usd"] + gpu, 4)
-        est["max_usd"] = round(est["max_usd"] + gpu, 4)
+                             "min_usd": lo, "max_usd": hi, "approximate": True,
+                             "reason": "billed per second of GPU time; range from the expected runtime"})
+        est["min_usd"] = round(est["min_usd"] + lo, 4)
+        est["max_usd"] = round(est["max_usd"] + hi, 4)
         est["paid"] = True
     if not est["paid"]:
         return est

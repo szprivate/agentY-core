@@ -250,11 +250,19 @@ class CostGate(unittest.TestCase):
         self.balance(20)
         est = cloud_run.gate(OPEN)
         self.assertTrue(est["paid"])
-        self.assertAlmostEqual(est["max_usd"], 0.10)
+        # image workflow: 20-120 s at ~$0.077/min
+        self.assertAlmostEqual(est["min_usd"], round(0.077 / 60 * 20, 4))
+        self.assertAlmostEqual(est["max_usd"], round(0.077 / 60 * 120, 4))
+
+    def test_a_video_workflow_is_estimated_longer(self):
+        video = {"1": {"class_type": "WanImageToVideo", "inputs": {}}}
+        lo, hi = cloud_run.gpu_time_usd(video)
+        self.assertAlmostEqual(hi, round(0.077 / 60 * 600, 4))
+        self.assertGreater(hi, cloud_run.gpu_time_usd(OPEN)[1])
 
     def test_above_the_threshold_needs_the_users_yes(self):
         self.balance(20)
-        em.set_settings_provider(lambda: {"cloud_gpu_run_usd": 2.5})
+        em.set_settings_provider(lambda: {"cloud_gpu_usd_per_second": 0.05})
         with self.assertRaises(pc.CostGateError) as cm:
             cloud_run.gate(OPEN)
         self.assertEqual(cm.exception.error_kind, "confirm_cost")
