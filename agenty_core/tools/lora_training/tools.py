@@ -230,6 +230,11 @@ def train_lora(dataset: str, model: str = "", backend: str = "auto", preset: str
         JSON: status started (job, run_dir, warnings) | dry_run | or {"error", "error_kind": not_approved | preflight |
         confirm_cost | args}.
     """
+    if str(backend or "auto").lower() != "fal":
+        from agenty_core.utils import execution_mode
+        lim = execution_mode.local_only_refusal("train_lora_local")
+        if lim:                       # cloud mode: the local trainers need this machine's GPU (fal does not)
+            return json.dumps(lim)
     return _train(dataset, model, backend, preset, steps, rank, learning_rate, name, free_vram, allow_download,
                   confirm_cost, output_dir, dry_run, options)
 

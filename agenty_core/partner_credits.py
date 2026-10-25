@@ -467,6 +467,12 @@ def _gate(est: dict, confirm: bool, workflow_path: str) -> dict:
     return est
 
 
+def gate_estimate(est: dict, *, confirm: bool = False, workflow_path: str = "") -> dict:
+    """The balance / confirmation checks of :func:`preflight` for an estimate made elsewhere (Comfy Cloud runs
+    add their GPU time to it). Raises :class:`CostGateError` the same way."""
+    return _gate(est, confirm, workflow_path)
+
+
 def preflight_many(paths: list[str], *, confirm: bool = False) -> dict:
     """:func:`preflight` for several workflow files that run together: the gate
     judges their SUM (ten cheap variants are one expensive decision)."""

@@ -638,6 +638,10 @@ def train_splat(source: str, name: str = "", steps: int = 30000, max_splats: int
         a held-out view, also shown in chat), splats, viewer tab - or status "running" with step / eta_s -
         or {"error", "error_kind"} (args, dependency: Brush could not be installed, execution, busy).
     """
+    from agenty_core.utils import execution_mode
+    refusal = execution_mode.local_only_refusal("train_splat")
+    if refusal:                       # cloud mode: Brush needs this machine's GPU
+        return json.dumps(refusal)
     return _train(source, name, steps, max_splats, sh_degree, wait_s, free_vram, open_in_viewer, output_dir)
 
 
