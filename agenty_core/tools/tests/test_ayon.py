@@ -248,7 +248,7 @@ class NotLaunched(unittest.TestCase):
             for out in (ayon.ayon_context(), ayon.ayon_load("x.png", "imageMain"), ayon.ayon_mark_publish("12"),
                         ayon.ayon_publish(), ayon.ayon_open_tool("loader")):
                 self.assertEqual(json.loads(out)["status"], "not_launched_through_ayon")
-        self.assertFalse(json.loads(ayon.ayon_context())["launched_through_ayon"])
+            self.assertFalse(json.loads(ayon.ayon_context())["launched_through_ayon"])
 
 
 class Context(ToolBase):
