@@ -403,6 +403,11 @@ def confirmed(flag: bool = True):
         _confirm_all.reset(tok)
 
 
+def confirm_given() -> bool:
+    """True inside a ``confirmed()`` block: the user's go-ahead was given for this call."""
+    return bool(_confirm_all.get())
+
+
 def _norm(path: str) -> str:
     try:
         return str(Path(path).resolve()).lower()
