@@ -184,11 +184,11 @@ def lora_dataset_review(dataset: str, action: str = "open", note: str = "", user
 
 @_guard
 def _train(dataset, model, backend, preset, steps, rank, learning_rate, name, free_vram, allow_download, confirm_cost,
-           output_dir, dry_run, extra):
+           output_dir, dry_run, extra, new_run=False):
     ov = dict(extra or {})
     ov.update(steps=steps, rank=rank, learning_rate=learning_rate)
     out = J.start(dataset, model=model, backend=backend, preset_overrides=ov, name=name, free_vram=free_vram,
-                  allow_download=allow_download, confirm_cost=confirm_cost, output_dir=output_dir, dry_run=dry_run)
+                  allow_download=allow_download, confirm_cost=confirm_cost, output_dir=output_dir, dry_run=dry_run, new_run=new_run)
     if out.get("status") == "started":
         out["next"] = ("Training runs in the background (a detached process: it survives a restart). Tell the user it "
                        "started and where to watch it (the viewer's Dataset panel, Training tab); you get a notification at "
@@ -199,7 +199,8 @@ def _train(dataset, model, backend, preset, steps, rank, learning_rate, name, fr
 @tool
 def train_lora(dataset: str, model: str = "", backend: str = "auto", preset: str = "", steps: int = 0, rank: int = 0,
                learning_rate: float = 0.0, name: str = "", free_vram: bool = True, allow_download: bool = False,
-               confirm_cost: bool = False, dry_run: bool = False, output_dir: str = "", options: Optional[dict] = None) -> str:
+               confirm_cost: bool = False, dry_run: bool = False, output_dir: str = "", options: Optional[dict] = None,
+               new_run: bool = False) -> str:
     """Start training a LoRA on an APPROVED dataset, in the background. Returns a job id at once.
 
     Refuses until the user approved the dataset (``lora_dataset_review``). Runs the pre-flight first: free GPU memory
@@ -222,13 +223,15 @@ def train_lora(dataset: str, model: str = "", backend: str = "auto", preset: str
         allow_download: the user agreed to download the base model (ai-toolkit fetches it from Hugging Face).
         confirm_cost: the user agreed to the hosted price.
         dry_run: run the checks and return the plan, start nothing.
+        new_run: start anyway although a run on this dataset is running (``already_running``) or a finished one with the same
+            dataset, model and steps exists (``already_trained``). Only when the user asked for another run.
         output_dir: save runs under this folder instead of ComfyUI's output.
         options: more overrides: batch_size, optimizer, seed, save_every, sample_every, frames, fps, resolutions, low_vram,
             sample_prompts (list).
 
     Returns:
         JSON: status started (job, run_dir, warnings) | dry_run | or {"error", "error_kind": not_approved | preflight |
-        confirm_cost | args}.
+        confirm_cost | already_running | already_trained | args}.
     """
     if str(backend or "auto").lower() != "fal":
         from agenty_core.utils import execution_mode
@@ -236,7 +239,7 @@ def train_lora(dataset: str, model: str = "", backend: str = "auto", preset: str
         if lim:                       # cloud mode: the local trainers need this machine's GPU (fal does not)
             return json.dumps(lim)
     return _train(dataset, model, backend, preset, steps, rank, learning_rate, name, free_vram, allow_download,
-                  confirm_cost, output_dir, dry_run, options)
+                  confirm_cost, output_dir, dry_run, options, new_run)
 
 
 @_guard

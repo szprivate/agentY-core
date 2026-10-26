@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -61,12 +62,64 @@ def disk_check(path, need_gb: float, what: str) -> Optional[str]:
     return None
 
 
-def _local_model_files(pattern: str) -> list[dict]:
+def _yaml_roots() -> list[tuple[str, Path]]:
+    """(category, folder) from ComfyUI's ``extra_model_paths.yaml`` read off disk: the fallback when ComfyUI does
+    not answer ``/internal/folder_paths`` (the run itself finds files through the same extra paths)."""
     try:
-        from agenty_core.tools.model_research import _local_files
-        return _local_files(pattern, limit=5)
+        import yaml
+        from agenty_core.tools.huggingface import _models_base_dir
+        comfy = _models_base_dir().parent
+        f = comfy / "extra_model_paths.yaml"
+        if not f.is_file():
+            return []
+        doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("extra_model_paths.yaml not read: %s", exc)
+        return []
+    out: list[tuple[str, Path]] = []
+    for sect in doc.values() if isinstance(doc, dict) else []:
+        if not isinstance(sect, dict):
+            continue
+        base = str(sect.get("base_path") or "")
+        for cat, val in sect.items():
+            if cat in ("base_path", "is_default") or not isinstance(val, str):
+                continue
+            for line in val.splitlines():
+                line = line.strip()
+                if line:
+                    out.append((str(cat).lower(), Path(os.path.join(base, line)) if base else Path(line)))
+    return out
+
+
+def _local_model_files(pattern: str, authority: Optional[dict] = None) -> list[dict]:
+    """Model files ComfyUI can load that match ``pattern``, by the same lookup the run uses (the running ComfyUI's
+    folder list, extra model paths included). ``authority`` (optional dict) gets ``complete``: False when ComfyUI's
+    folder list could not be read, so an empty answer means "do not know", not "not there"."""
+    try:
+        from agenty_core.tools import model_research as MR
+        complete = bool(MR._folder_paths())
+        if not complete:
+            time.sleep(1.0)                              # ComfyUI may be busy, not down: one more try
+            complete = bool(MR._folder_paths())
+        hits = MR._local_files(pattern, limit=5)
+        if not hits and not complete:                    # read the extra paths off disk instead
+            index = []
+            for cat, root in _yaml_roots():
+                if root.is_dir():
+                    for dp, _d, files in os.walk(root):
+                        for f in files:
+                            if f.lower().endswith(MR.MODEL_EXTENSIONS):
+                                full = os.path.join(dp, f)
+                                index.append((cat, os.path.relpath(full, root).replace("\\", "/"), full.replace("\\", "/")))
+            hits = MR._local_files(pattern, limit=5, index=index)
+            complete = bool(hits) or bool(index)
+        if authority is not None:
+            authority["complete"] = complete or bool(hits)
+        return hits
     except Exception as exc:  # noqa: BLE001
         logger.info("local model lookup failed: %s", exc)
+        if authority is not None:
+            authority["complete"] = False
         return []
 
 
@@ -93,7 +146,8 @@ def base_model(preset: dict, backend: str) -> dict:
     if backend == "ai-toolkit":
         lf = cfg.get("local_comfy_file")
         if lf:
-            hits = _local_model_files(lf.rsplit("/", 1)[-1])
+            auth: dict = {}
+            hits = _local_model_files(lf.rsplit("/", 1)[-1], auth)
             if hits:
                 return {"present": True, "where": hits[0]["path"], "download_gb": 0, "missing": [], "local_file": hits[0]["path"]}
         local = os.environ.get("AITOOLKIT_MODEL_" + preset["key"].upper())
@@ -102,6 +156,10 @@ def base_model(preset: dict, backend: str) -> dict:
         repo = cfg.get("name_or_path", "")
         if repo and hf_cached(repo):
             return {"present": True, "where": f"huggingface cache ({repo})", "download_gb": 0, "missing": []}
+        if lf and not auth.get("complete", True):
+            return {"present": False, "unverified": True, "where": repo, "download_gb": cfg.get("hf_gb", 0), "missing": [repo],
+                    "note": (f"could not read ComfyUI's model folders (ComfyUI not reachable, no extra_model_paths.yaml found), "
+                             f"so it is not known whether {lf.rsplit('/', 1)[-1]} is already on this machine")}
         return {"present": False, "where": repo, "download_gb": cfg.get("hf_gb", 0), "missing": [repo],
                 "note": f"ai-toolkit downloads {repo} (~{cfg.get('hf_gb', '?')} GB) into {hf_home()} on first use"}
     # musubi: explicit files out of the ComfyUI model folders
@@ -143,7 +201,12 @@ def check(preset: dict, backend: str, output_dir: Path, allow_download: bool = F
             dl = disk_check(hf_home(), float(bm.get("download_gb", 0)), "the base model download")
             if dl:
                 problems.append(dl)
-            if not allow_download:
+            if bm.get("unverified"):
+                if not allow_download:
+                    problems.append(f"cannot tell whether the base model is on this machine: {bm['note']}. Start ComfyUI and "
+                                    "try again (no download is claimed or started on a guess), or call again with allow_download=True "
+                                    "if the user accepts a download of up to ~" f"{bm.get('download_gb', '?')} GB")
+            elif not allow_download:
                 problems.append(f"the base model is not on this machine: {bm.get('note') or bm['missing']}. "
                                 "Tell the user the size and, if they agree, call again with allow_download=True")
         else:

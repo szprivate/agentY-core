@@ -116,7 +116,7 @@ def spawn_runner(run_dir: Path) -> tuple[int, float]:
 
 def start(dataset: str, model: str = "", backend: str = "auto", preset_overrides: Optional[dict] = None,
           name: str = "", free_vram: bool = True, allow_download: bool = False, confirm_cost: bool = False,
-          output_dir: str = "", dry_run: bool = False, **overrides) -> dict:
+          output_dir: str = "", dry_run: bool = False, new_run: bool = False, **overrides) -> dict:
     ds = F.resolve_dataset(dataset, output_dir)
     manifest = F.load_manifest(ds)
     ok, why = F.is_approved(ds)
@@ -145,6 +145,10 @@ def start(dataset: str, model: str = "", backend: str = "auto", preset_overrides
         "frames": ov.get("frames") or preset.get("frames"), "fps": ov.get("fps") or preset.get("fps"),
         "low_vram": ov.get("low_vram"), "trigger_word": manifest.get("trigger_word", ""),
     }
+    job["manifest_sha"] = F.manifest_sha(manifest)
+    dup = find_duplicate(manifest["name"], job, output_dir)
+    if dup and not dry_run and not new_run:
+        raise LoraError(dup["message"], dup["kind"], job=dup["job"], dataset=str(ds))
     base = F.slug(name) or F.slug(manifest["name"])
     job["name"] = _next_job_name(base, output_dir) if not dry_run else f"{base}_dry"
     run = F.runs_root(output_dir) / job["name"]
@@ -165,6 +169,7 @@ def start(dataset: str, model: str = "", backend: str = "auto", preset_overrides
         _cost_gate(est, preset, confirm_cost)
     if dry_run:
         return {"status": "dry_run", "job": job, "preflight": report, "estimate_usd": est,
+                "duplicate": (dup["message"] if dup else None),
                 "stages": [] if be == "fal" else [s["name"] for s in _stages(job, preset, cfg, be, manifest, ds, run, report, plan_only=True)]}
     run.mkdir(parents=True, exist_ok=True)
     (run / "samples").mkdir(exist_ok=True)
@@ -200,6 +205,47 @@ def start(dataset: str, model: str = "", backend: str = "auto", preset_overrides
     return {"status": "started", "job": job["name"], "run_dir": str(run), "backend": be, "steps": steps,
             "items": trainer["count"], "warnings": report["warnings"], "estimate_usd": est,
             "base_model": report["base_model"].get("where"), "sample_prompts": job["sample_prompts"]}
+
+
+def _version_of(name: str) -> str:
+    import re
+    m = re.search(r"_v(\d+)$", str(name))
+    return f"v{m.group(1)}" if m else str(name)
+
+
+def find_duplicate(dataset_name: str, job: dict, output_dir: str = "") -> Optional[dict]:
+    """A run that makes starting ``job`` a repeat: one still running on the same dataset (kind ``already_running``), or a
+    finished one with the same dataset content, model and steps (kind ``already_trained``). None when there is none."""
+    root = F.runs_root(output_dir)
+    if not root.is_dir():
+        return None
+    running, finished = None, None
+    for d in sorted(root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        j = F.read_json(d / "job.json")
+        pr = F.read_json(d / "progress.json")
+        if not j or not pr or j.get("dataset_name") != dataset_name:
+            continue
+        st = pr.get("status")
+        if st in ("starting", "running") and _pid_alive(j.get("runner_pid"), j.get("runner_started", 0)):
+            running = running or d.name
+        elif st == "done" and not finished:
+            same = (j.get("model") == job.get("model") and int(j.get("steps") or 0) == int(job.get("steps") or 0)
+                    and j.get("manifest_sha", job.get("manifest_sha")) == job.get("manifest_sha"))
+            if same:
+                finished = d.name
+    if running:
+        return {"kind": "already_running", "job": running,
+                "message": (f"Not started: a training run on this dataset is already running ({running}, "
+                            f"{_version_of(running)}). Two runs would fight for the GPU and the same samples. Follow it with "
+                            "lora_training_status, or stop it first with lora_training_stop. Only when the user explicitly "
+                            "wants a second run alongside, call again with new_run=True.")}
+    if finished:
+        return {"kind": "already_trained", "job": finished,
+                "message": (f"Not started: a finished run {_version_of(finished)} ({finished}) already trained this dataset with the "
+                            f"same model and {job.get('steps')} steps; the LoRA is registered. Ask the user whether they want "
+                            "another run (then change something - steps, rank, captions - or call again with new_run=True) "
+                            "instead of repeating it by accident.")}
+    return None
 
 
 def _stages(job, preset, cfg, be, manifest, ds, run, report, ctx=None, plan_only=False):
@@ -241,13 +287,27 @@ def load(job: str, output_dir: str = "") -> tuple[Path, dict]:
     return run, j
 
 
+def _settle_dead(run: Path, j: dict, pr: dict) -> dict:
+    """A run that says running while its runner process is gone has failed: say so (and record it once)."""
+    if pr.get("status") in ("starting", "running") and not _pid_alive(j.get("runner_pid"), j.get("runner_started", 0)):
+        pr["status"], pr["message"] = "failed", "the runner process is gone (host or machine restarted?); see train.log"
+        F.write_json(run / "progress.json", pr)
+        F.event(run, "failed", pr["message"])
+    return pr
+
+
 def runs(output_dir: str = "") -> list[dict]:
+    root = F.runs_root(output_dir)
+    if not root.is_dir():
+        return []
     out = []
-    for d in sorted(F.runs_root(output_dir).iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+    for d in sorted(root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
         pr = F.read_json(d / "progress.json")
         if pr:
-            out.append({"job": d.name, "status": pr.get("status"), "step": pr.get("step"), "total": pr.get("total"),
-                        "model": pr.get("model"), "dataset": pr.get("dataset")})
+            j = F.read_json(d / "job.json") or {}
+            pr = _settle_dead(d, j, pr) if j.get("runner_pid") else pr
+            out.append({"job": d.name, "version": _version_of(d.name), "status": pr.get("status"), "step": pr.get("step"),
+                        "total": pr.get("total"), "model": pr.get("model"), "dataset": pr.get("dataset")})
     return out
 
 

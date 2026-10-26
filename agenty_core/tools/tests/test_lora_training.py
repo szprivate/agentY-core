@@ -360,6 +360,44 @@ class PreflightTests(Base):
             r = PF.check(p, "ai-toolkit", self.root, allow_download=True)
             self.assertTrue(r["ok"])
 
+    def _sd15_report(self, folder_paths, allow_download=False, yaml_roots=()):
+        from agenty_core.tools import model_research as MR
+        with mock.patch.object(PF, "gpu_memory", return_value={"name": "X", "total_gb": 24.0, "free_gb": 20.0, "used_gb": 4.0}),                 mock.patch.object(PF, "hf_cached", return_value=False),                 mock.patch.object(PF, "disk_check", return_value=None),                 mock.patch.object(PF, "_yaml_roots", return_value=list(yaml_roots)),                 mock.patch.object(PF.time, "sleep", lambda s: None),                 mock.patch.object(MR, "_folder_paths", return_value=folder_paths),                 mock.patch.object(B.AIToolkit, "locate", return_value={"root": "x", "installed": True}):
+            return PF.check(P.get_preset("sd15"), "ai-toolkit", self.root, allow_download=allow_download)
+
+    def test_base_model_found_through_extra_model_paths(self):
+        extra = self.root / "L" / "checkpoints"
+        (extra / "SD15").mkdir(parents=True)
+        f = extra / "SD15" / "realisticVisionV60B1_v60B1VAE.safetensors"
+        f.write_bytes(b"x")
+        r = self._sd15_report({"checkpoints": [str(self.root / "default" / "checkpoints"), str(extra)]})
+        self.assertTrue(r["ok"], r["problems"])
+        self.assertTrue(r["base_model"]["present"])
+        self.assertTrue(r["base_model"]["where"].endswith("realisticVisionV60B1_v60B1VAE.safetensors"))
+        self.assertFalse(any("download" in w for w in r["warnings"]))
+
+    def test_unreadable_model_folders_never_claim_a_download(self):
+        r = self._sd15_report({})                                    # ComfyUI not answering, no yaml
+        self.assertFalse(r["ok"])
+        txt = " ".join(r["problems"])
+        self.assertIn("cannot tell", txt)
+        self.assertNotIn("is not on this machine", txt)
+        self.assertTrue(r["base_model"]["unverified"])
+        self.assertTrue(self._sd15_report({}, allow_download=True)["ok"])       # the user accepted a possible download
+
+    def test_extra_paths_read_off_disk_when_comfyui_is_silent(self):
+        extra = self.root / "L2" / "checkpoints"
+        (extra / "SD15").mkdir(parents=True)
+        (extra / "SD15" / "realisticVisionV60B1_v60B1VAE.safetensors").write_bytes(b"x")
+        r = self._sd15_report({}, yaml_roots=[("checkpoints", extra)])
+        self.assertTrue(r["ok"], r["problems"])
+        self.assertTrue(r["base_model"]["present"])
+
+    def test_really_missing_base_model_still_asks_for_consent(self):
+        r = self._sd15_report({"checkpoints": [str(self.root / "nowhere")]})
+        self.assertFalse(r["ok"])
+        self.assertIn("is not on this machine", " ".join(r["problems"]))
+
     def test_no_gpu_blocks_local_not_fal(self):
         with mock.patch.object(PF, "gpu_memory", return_value=None), mock.patch.object(PF, "disk_check", return_value=None):
             self.assertFalse(PF.check(P.get_preset("flux2_dev"), "ai-toolkit", self.root, allow_download=True)["ok"])
@@ -520,8 +558,57 @@ class JobTests(Base):
     def test_versioned_job_names(self):
         self.approved()
         a = json.loads(L.train_lora("rex", steps=10, output_dir=self.out))["job"]
-        b = json.loads(L.train_lora("rex", steps=10, output_dir=self.out))["job"]
+        b = json.loads(L.train_lora("rex", steps=10, output_dir=self.out, new_run=True))["job"]
         self.assertEqual((a, b), ("rex_v1", "rex_v2"))
+
+    def test_second_start_while_running_is_refused(self):
+        self.approved()
+        a = json.loads(L.train_lora("rex", steps=10, output_dir=self.out))
+        self.assertEqual(a["status"], "started")                       # returns at once with a job id (the runner is detached)
+        b = json.loads(L.train_lora("rex", steps=10, output_dir=self.out))
+        self.assertEqual(b["error_kind"], "already_running")
+        self.assertEqual(b["job"], "rex_v1")
+        self.assertIn("already running", b["error"])
+        self.assertEqual([p.name for p in F.runs_root(self.out).iterdir()], ["rex_v1"])      # nothing was created
+        self.assertEqual(json.loads(L.train_lora("rex", steps=10, output_dir=self.out, dry_run=True))["status"], "dry_run")
+        self.assertEqual(json.loads(L.train_lora("rex", steps=10, output_dir=self.out, new_run=True))["job"], "rex_v2")
+        st = json.loads(L.lora_training_status("", output_dir=self.out))
+        self.assertEqual({r["job"]: r["version"] for r in st["runs"]}, {"rex_v1": "v1", "rex_v2": "v2"})
+
+    def test_repeat_after_a_finished_run_says_so(self):
+        ds = self.approved()
+        r = json.loads(L.train_lora("rex", steps=20, output_dir=self.out, options={"save_every": 5, "sample_every": 5}))
+        self.assertEqual(R.run_local(Path(r["run_dir"]), F.read_json(Path(r["run_dir"]) / "job.json")), 0)
+        again = json.loads(L.train_lora("rex", steps=20, output_dir=self.out))
+        self.assertEqual(again["error_kind"], "already_trained")
+        self.assertIn("v1", again["error"])
+        self.assertIn("finished run", again["error"])
+        dry = json.loads(L.train_lora("rex", steps=20, output_dir=self.out, dry_run=True))
+        self.assertIn("finished run", dry["duplicate"])
+        # a different setting is a deliberate new run
+        self.assertEqual(json.loads(L.train_lora("rex", steps=30, output_dir=self.out))["job"], "rex_v2")
+        # so is the same one with new_run
+        self.assertEqual(json.loads(L.train_lora("rex", steps=20, output_dir=self.out, new_run=True))["job"], "rex_v3")
+
+    def test_changed_dataset_or_failed_run_is_not_a_repeat(self):
+        ds = self.approved()
+        r = json.loads(L.train_lora("rex", steps=20, output_dir=self.out))
+        run = Path(r["run_dir"])
+        pr = F.read_json(run / "progress.json")
+        pr["status"] = "failed"
+        F.write_json(run / "progress.json", pr)
+        self.assertEqual(json.loads(L.train_lora("rex", steps=20, output_dir=self.out))["job"], "rex_v2")    # failed: retry freely
+        run2 = F.runs_root(self.out) / "rex_v2"
+        pr = F.read_json(run2 / "progress.json")
+        pr["status"] = "done"
+        F.write_json(run2 / "progress.json", pr)
+        self.assertEqual(json.loads(L.train_lora("rex", steps=20, output_dir=self.out))["error_kind"], "already_trained")
+        m = F.load_manifest(ds)
+        m["items"][0]["caption"] = "a different caption entirely"
+        F.save_manifest(ds, m)
+        D.request_review(ds)
+        F.approve(ds, by="viewer")
+        self.assertEqual(json.loads(L.train_lora("rex", steps=20, output_dir=self.out))["job"], "rex_v3")
 
     def test_overview_lists_presets(self):
         o = json.loads(L.lora_training_status("", output_dir=self.out))
