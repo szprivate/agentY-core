@@ -533,6 +533,8 @@ def _save_workflow(workflow: dict, name: str = "") -> str:
     wd.mkdir(parents=True, exist_ok=True)
     stem = name or uuid.uuid4().hex[:8]
     path = wd / f"{stem}.json"
+    if isinstance(workflow, dict) and _is_graph_format(workflow):
+        _normalize_graph_links(workflow)     # a hand-written UI file must load with its wires
     path.write_text(json.dumps(workflow, indent=2), encoding="utf-8")
     return str(path.resolve())
 
@@ -1101,9 +1103,67 @@ def _flatten_subgraphs(workflow: dict) -> dict:
     return flat
 
 
+def _normalize_graph_links(graph: dict) -> dict:
+    """Make a hand-written UI-format graph load the way the frontend reads it.
+
+    At ``version`` 0.4 the frontend reads every top-level link as the array
+    ``[id, from_node, from_slot, to_node, to_slot, type]`` (``LLink.createFromArray``).
+    A graph that carries them as objects (``{id, origin_id, ...}``, the 1.0 shape)
+    under version 0.4 therefore loads with no links at all, and so did our own
+    converter, which skipped anything that was not a list. Turns object links into
+    arrays, rebuilds ``inputs[].link`` / ``outputs[].links`` from them, and fixes
+    ``last_node_id`` / ``last_link_id`` and a workflow ``id`` that is not a UUID.
+    Mutates and returns *graph*; ``definitions.subgraphs`` is left alone.
+    """
+    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+        return graph
+    raw = graph.get("links")
+    links: list = []
+    for lk in raw if isinstance(raw, list) else []:
+        if isinstance(lk, dict) and {"id", "origin_id", "origin_slot", "target_id",
+                                     "target_slot"} <= set(lk):
+            links.append([int(lk["id"]), lk["origin_id"], int(lk["origin_slot"]),
+                          lk["target_id"], int(lk["target_slot"]), lk.get("type", "*")])
+        elif isinstance(lk, (list, tuple)) and len(lk) >= 5:
+            links.append(list(lk) + ["*"] * (6 - len(lk)))
+    if raw is not None or links:
+        graph["links"] = links
+    nodes = {n["id"]: n for n in graph["nodes"] if isinstance(n, dict) and "id" in n}
+    for n in nodes.values():
+        for o in n.get("outputs") or []:
+            if isinstance(o, dict) and links:
+                o["links"] = None
+    for lk in links:
+        src, dst = nodes.get(lk[1]), nodes.get(lk[3])
+        if src is not None:
+            outs = src.get("outputs") or []
+            if 0 <= lk[2] < len(outs) and isinstance(outs[lk[2]], dict):
+                outs[lk[2]].setdefault("links", None)
+                outs[lk[2]]["links"] = (outs[lk[2]]["links"] or []) + [lk[0]]
+        if dst is not None:
+            ins = dst.get("inputs") or []
+            if 0 <= lk[4] < len(ins) and isinstance(ins[lk[4]], dict):
+                ins[lk[4]]["link"] = lk[0]
+    if links:
+        graph["last_link_id"] = max(int(graph.get("last_link_id") or 0), max(l[0] for l in links))
+    if nodes:
+        ids = [i for i in nodes if isinstance(i, int)]
+        if ids:
+            graph["last_node_id"] = max(int(graph.get("last_node_id") or 0), max(ids))
+    gid = graph.get("id")
+    if gid is not None:
+        try:
+            uuid.UUID(str(gid))
+        except ValueError:
+            graph["id"] = str(uuid.uuid4())
+    graph.setdefault("version", 0.4)
+    return graph
+
+
 def _convert_graph_to_api(workflow: dict) -> dict:
     """Convert a ComfyUI graph-format workflow dict to API format."""
     workflow = _flatten_subgraphs(workflow)
+    _normalize_graph_links(workflow)
     # Build link lookup: link_id → [str(src_node_id), src_slot]
     link_table: dict[int, list] = {}
     for link in workflow.get("links", []):
@@ -4192,6 +4252,7 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
         return json.dumps({"status": "error", "error": f"Cannot load workflow: {e}"})
 
     graph = wf if _is_graph_format(wf) else _api_to_graph(wf)
+    _normalize_graph_links(graph)
     if not graph.get("nodes"):
         return json.dumps({"status": "error",
                            "error": "workflow has no nodes to display"})
