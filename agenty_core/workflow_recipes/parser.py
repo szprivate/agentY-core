@@ -28,6 +28,7 @@ Determinism: nodes/edges are emitted in a stable, sorted order.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections import defaultdict
@@ -35,6 +36,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .model import Edge, Node, WorkflowGraph
+
+_logger = logging.getLogger(__name__)
 
 # A type whose name looks like a UUID is a subgraph reference, not a real class.
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", re.IGNORECASE)
@@ -518,13 +521,33 @@ def enrich(graph: WorkflowGraph, object_info: Dict[str, Any]) -> WorkflowGraph:
 _SKIP_BASENAMES = {"index.json", "index.schema.json"}
 
 
+def _is_catalog_file(base: str) -> bool:
+    """index.json, translated indexes (index.ar.json, index.zh-TW.json),
+    index.mcp.json, index_logo.json ... - catalogs, never workflows."""
+    low = base.lower()
+    return low in _SKIP_BASENAMES or (low.startswith("index") and low.endswith(".json"))
+
+
 def parse_file(
-    path: str, source: str, object_info: Optional[Dict[str, Any]] = None, log=print
+    path: str, source: str, object_info: Optional[Dict[str, Any]] = None, log=print,
+    skipped: Optional[List[str]] = None,
 ) -> Optional[WorkflowGraph]:
-    """Parse a single workflow file. Returns None (logged) on any failure."""
+    """Parse a single workflow file. Returns None on any failure.
+
+    Catalog files (index*.json) are skipped silently. Any other skip goes to the
+    debug log; with `skipped` given it is also collected there (the caller prints
+    one summary line), without it `log` gets the line as before."""
     base = os.path.basename(path)
-    if base in _SKIP_BASENAMES:
+    if _is_catalog_file(base):
         return None
+
+    def log(msg, _log=log):  # noqa: F811 - route skips, keep other callers unchanged
+        _logger.debug(msg)
+        if skipped is None:
+            _log(msg)
+        else:
+            skipped.append(msg)
+
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -616,6 +639,7 @@ class Corpus:
         (source, name) for deterministic ordering."""
         descriptions = descriptions or {}
         graphs: List[WorkflowGraph] = []
+        skipped: List[str] = []
         for source, folder in folders.items():
             if not os.path.isdir(folder):
                 log(f"[warn] input folder not found: {folder}")
@@ -629,7 +653,7 @@ class Corpus:
                     if fn.lower().endswith(".json"):
                         paths.append(os.path.join(root, fn))
             for path in sorted(paths):
-                graph = parse_file(path, source, object_info, log=log)
+                graph = parse_file(path, source, object_info, log=log, skipped=skipped)
                 if graph is not None:
                     meta = descriptions.get(graph.name)
                     if meta:
@@ -639,5 +663,7 @@ class Corpus:
                         graph.media_type = meta.get("media_type")
                     graphs.append(graph)
         graphs.sort(key=lambda g: (g.source, g.name))
+        if skipped:
+            log(f"[corpus] {len(skipped)} file(s) were not workflows and were skipped (see debug log)")
         log(f"[corpus] parsed {len(graphs)} workflows")
         return graphs

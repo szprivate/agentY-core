@@ -192,6 +192,31 @@ class TestRobustness(unittest.TestCase):
                 json.dump({"templates": []}, f)
             self.assertIsNone(P.parse_file(idx, "official", {}))
 
+    def test_catalog_files_skipped_silently(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("index.ar.json", "index.mcp.json", "index_logo.json", "index.zh-TW.json"):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump({"hello": 1}, f)
+                logs = []
+                self.assertIsNone(P.parse_file(p, "official", {}, log=logs.append))
+                self.assertEqual(logs, [])
+
+    def test_other_skips_collected_not_printed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "odd.json")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"hello": 1}, f)
+            logs, skipped = [], []
+            self.assertIsNone(P.parse_file(p, "official", {}, log=logs.append, skipped=skipped))
+            self.assertEqual(logs, [])
+            self.assertEqual(len(skipped), 1)
+            # folder walk prints one summary line only
+            logs = []
+            P.Corpus._parse_folders({"official": d}, {}, {}, log=logs.append)
+            self.assertEqual(sum("[skip]" in m for m in logs), 0)
+            self.assertEqual(sum("not workflows" in m for m in logs), 1)
+
     def test_unresolved_classes_flagged(self):
         wf = {"nodes": [{"id": 1, "type": "TotallyCustomNode", "widgets_values": []}], "links": []}
         g = P.enrich(P.parse_ui(wf, "c", "c.json", "custom"), OBJECT_INFO)
