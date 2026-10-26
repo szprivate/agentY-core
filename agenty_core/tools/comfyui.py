@@ -527,6 +527,135 @@ def _conversation_tag() -> str:
     return re.sub(r"[^A-Za-z0-9]", "", str(tid or ""))[-8:]
 
 
+# Node types that exist only in the frontend: the server has no class for them.
+_FRONTEND_ONLY_TYPES: frozenset[str] = frozenset({
+    "Note", "MarkdownNote", "Reroute", "PrimitiveNode", "GroupNode",
+})
+
+
+_UPLOAD_UI_VALUES: frozenset[str] = frozenset({"image", "video", "audio", "upload"})
+
+
+def _opts_hint(options: list, limit: int = 8) -> str:
+    shown = ", ".join(repr(o) for o in options[:limit])
+    return shown + (f", ... ({len(options)} in all)" if len(options) > limit else "")
+
+
+def _plain_widget_spec(spec) -> bool:
+    typ = spec[0] if isinstance(spec, (list, tuple)) and spec else spec
+    return isinstance(typ, list) or typ in ("INT", "FLOAT", "STRING", "BOOLEAN", "COMBO")
+
+
+def _check_value(label: str, spec, val, kinds: bool = True) -> str | None:
+    """A problem sentence when *val* cannot be what widget *spec* accepts, else None."""
+    typ = spec[0] if isinstance(spec, (list, tuple)) and spec else spec
+    meta = spec[1] if isinstance(spec, (list, tuple)) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+    options = _widget_options(spec)
+    if options and not meta.get("remote"):
+        if val in options or str(val) in [str(o) for o in options]:
+            return None
+        return (f"{label} {val!r} is not one of the options (not installed / not valid): "
+                f"installed options include {_opts_hint(options)}")
+    if not kinds:
+        return None
+    if typ in ("INT", "FLOAT"):
+        if isinstance(val, str) and val.strip().lstrip("-").replace(".", "", 1).isdigit():
+            return None
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return f"{label} {val!r} is not a number (a shifted or misplaced widget value?)"
+    elif typ == "BOOLEAN":
+        if not isinstance(val, bool):
+            return f"{label} {val!r} is not true/false (a shifted or misplaced widget value?)"
+    elif typ == "STRING":
+        if val is not None and not isinstance(val, str):
+            return f"{label} {val!r} is not text (a shifted or misplaced widget value?)"
+    return None
+
+
+def check_workflow_against_schema(workflow: dict) -> list[str] | None:
+    """Problems that would draw red nodes or fail validation, as readable sentences.
+
+    Checks, against the running ComfyUI's ``/object_info``: every node class
+    exists; every combo widget (which includes every model-file loader field:
+    checkpoint, unet, vae, lora, clip, controlnet, ic-lora...) holds one of its
+    options; numbers, booleans and strings are of their kind; and, for a
+    UI-format graph, that ``widgets_values`` line up with the schema's widget
+    order (``control_after_generate`` accounted for) - a shifted list shows up as
+    a value of the wrong kind or as values left over.
+
+    Returns ``[]`` when clean and ``None`` when ``/object_info`` cannot be read
+    (nothing was checked).
+    """
+    try:
+        oi = _get_object_info()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(oi, dict) or not oi:
+        return None
+    problems: list[str] = []
+    if not isinstance(workflow, dict):
+        return problems
+    if _is_graph_format(workflow):
+        sub_types = {str(d.get("id")) for d in ((workflow.get("definitions") or {}).get("subgraphs") or [])
+                     if isinstance(d, dict)}
+        for node in workflow["nodes"]:
+            if not isinstance(node, dict):
+                continue
+            nid, typ = node.get("id"), str(node.get("type"))
+            if typ in _FRONTEND_ONLY_TYPES or typ in sub_types:
+                continue
+            info = oi.get(typ)
+            if info is None:
+                problems.append(f"node {nid} {typ}: no such class (not installed or misspelt)")
+                continue
+            schema = info.get("input") or {}
+            linked = {i.get("name") for i in node.get("inputs") or []
+                      if isinstance(i, dict) and i.get("link") is not None and not i.get("widget")}
+            slots = _schema_widget_slots(schema, linked)
+            wv = node.get("widgets_values")
+            if not isinstance(wv, list):
+                continue            # keyed or absent widget values: no order to check
+            mapped, leftover = _map_widget_values(slots, wv, linked)
+            specs = dict(slots)
+            # Order and kind are only judged on nodes whose widgets are all the
+            # plain kinds. Frontend-only widgets (3D viewers, crop boxes, upload
+            # buttons, dynamic combos) save values the schema does not list, and a
+            # guess there would reject sound graphs: those get the option check only.
+            plain = all(_plain_widget_spec(sp) for _n, sp in slots)
+            for name, val in mapped.items():
+                if name in specs:
+                    msg = _check_value(f"{typ}.{name}", specs[name], val, kinds=plain)
+                    if msg:
+                        problems.append(f"node {nid} {msg}")
+            # The upload button of LoadImage / LoadVideo / LoadAudio saves its own
+            # label ("image", "upload") as a trailing value: UI state, not an input.
+            leftover = [] if not plain else [v for v in leftover if not (v is None or v is False or v == "" or (isinstance(v, str) and v in _UPLOAD_UI_VALUES))]
+            if leftover:
+                problems.append(f"node {nid} {typ}: {len(leftover)} widget value(s) left over after the "
+                                f"schema's {len(slots)} widgets ({leftover[:3]!r}): wrong order or count")
+    else:
+        for nid, node in workflow.items():
+            if not isinstance(node, dict) or not node.get("class_type"):
+                continue
+            typ = node["class_type"]
+            if typ in _FRONTEND_ONLY_TYPES:
+                continue
+            info = oi.get(typ)
+            if info is None:
+                problems.append(f"node {nid} {typ}: no such class (not installed or misspelt)")
+                continue
+            schema = info.get("input") or {}
+            specs = {**(schema.get("optional") or {}), **(schema.get("required") or {})}
+            for name, val in (node.get("inputs") or {}).items():
+                if name not in specs or (isinstance(val, list) and len(val) == 2):
+                    continue
+                if _is_widget_spec(specs[name]):
+                    msg = _check_value(f"{typ}.{name}", specs[name], val)
+                    if msg:
+                        problems.append(f"node {nid} {msg}")
+    return problems
+
+
 def _save_workflow(workflow: dict, name: str = "") -> str:
     """Save *workflow* dict to a JSON file and return the absolute path."""
     wd = _workflows_dir()
@@ -4220,7 +4349,7 @@ def set_canvas_node_params(node_id: str, params: dict) -> str:
 
 @tool
 def open_workflow_in_canvas(workflow_path: str, name: str = "",
-                            push_to_canvas: bool = True) -> str:
+                            push_to_canvas: bool = True, force: bool = False) -> str:
     """Load a workflow the agent built or ran into the ComfyUI canvas so the user
     can visually inspect it.
 
@@ -4243,6 +4372,9 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
             request to keep the new one separate is met either way. Pass False
             only to file it under ``agent/`` in the Workflows sidebar without
             showing it: when the user asked not to see it.
+        force: The workflow is checked against the running ComfyUI first (node
+            classes, model-file and combo values, widget order); with problems
+            nothing is opened and they are listed. ``force=True`` opens it anyway.
 
     Returns JSON: ``{status, saved_as, node_count, url, hint}``.
     """
@@ -4250,6 +4382,20 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
         wf = _load_workflow(workflow_path)
     except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
         return json.dumps({"status": "error", "error": f"Cannot load workflow: {e}"})
+
+    # Check the file as written: a UI graph's widget order is lost once converted.
+    problems = None
+    try:
+        _raw = str(workflow_path).strip()
+        _rp = Path(_raw)
+        _src = json.loads(_rp.read_text(encoding="utf-8")) if _rp.suffix == ".json" and _rp.exists()             else json.loads(_raw)
+        problems = check_workflow_against_schema(_src)
+    except Exception:  # noqa: BLE001
+        problems = check_workflow_against_schema(wf)
+    if problems and not force:
+        return json.dumps({"status": "problems", "opened_on_canvas": False, "problems": problems,
+                           "hint": "Nothing was opened. Fix these (check_model / find_local_models for "
+                                   "model files) or pass force=true to open it anyway."})
 
     graph = wf if _is_graph_format(wf) else _api_to_graph(wf)
     _normalize_graph_links(graph)
@@ -4299,6 +4445,8 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
         "saved_as": f"agent/{stem}",
         "opened_on_canvas": opened,
         "node_count": len(graph["nodes"]),
+        **({"problems": problems, "warning": "Opened anyway (force=true); these will show as errors."}
+           if problems else {}),
         "url": "http://127.0.0.1:8188",
         **({"no_canvas": True} if _detached else {}),
         "hint": ("Opened on the ComfyUI canvas." if opened else
@@ -4312,20 +4460,50 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
 
 
 @tool
-def save_workflow(workflow_json: str, name: str = "") -> str:
+def save_workflow(workflow_json: str, name: str = "", force: bool = False) -> str:
     """Save a complete workflow JSON to a file and return the file path.
 
     Only use for building entirely new workflows from scratch.
     For editing existing workflows, use patch_workflow() instead.
 
+    The workflow is checked against the running ComfyUI before it is saved:
+    every node class must exist, every model-file / combo value must be one of
+    the installed options, and in a UI (graph) file the widget values must be in
+    the schema's order. If anything is wrong NOTHING is saved and the result
+    lists each problem (``status: "problems"``) - fix them and call again.
+    Never invent a model file name: look it up with check_model or
+    find_local_models first. ``force=True`` saves anyway and still lists the
+    problems; if ComfyUI cannot be reached it saves with a warning that nothing
+    was checked.
+
     Args:
-        workflow_json: The complete workflow JSON string in ComfyUI API format.
+        workflow_json: The complete workflow JSON string, ComfyUI API format (or
+            UI/graph format).
         name: Optional name for the file (default: auto-generated).
+        force: Save even though problems were found (they are listed in the result).
     """
     try:
         workflow = json.loads(workflow_json) if isinstance(workflow_json, str) else workflow_json
+        if isinstance(workflow, dict) and _is_graph_format(workflow):
+            _normalize_graph_links(workflow)
+        problems = check_workflow_against_schema(workflow)
+        if problems and not force:
+            return json.dumps({"status": "problems", "saved": False, "problems": problems,
+                               "hint": "Nothing was saved. Fix these (use check_model / find_local_models "
+                                       "for model files, get_node_schema for widget order) and call "
+                                       "save_workflow again, or pass force=true to save anyway."})
         path = _save_workflow(workflow, name=name)
-        return json.dumps({"workflow_path": path, "node_count": len([k for k in workflow if isinstance(workflow.get(k), dict)])})
+        if _is_graph_format(workflow):
+            count = len(workflow["nodes"])
+        else:
+            count = len([k for k in workflow if isinstance(workflow.get(k), dict)])
+        out: dict = {"workflow_path": path, "node_count": count}
+        if problems:
+            out["problems"] = problems
+            out["warning"] = "Saved anyway (force=true); these will show as errors."
+        elif problems is None:
+            out["warning"] = "ComfyUI /object_info is not reachable: nothing was checked."
+        return json.dumps(out)
     except json.JSONDecodeError as e:
         return json.dumps({"error": f"Invalid JSON: {e}"})
     except Exception as e:
