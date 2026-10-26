@@ -3,7 +3,7 @@
 Three tools: ``submit_to_deadline`` (an API-format workflow becomes one Deadline job of the ``ComfyUI`` plugin,
 one task per run), ``deadline_job_status`` (state, progress, errors, output files) and ``deadline_farm_info``
 (pools, groups, workers, and the dedicated ComfyUI pool). The plugin itself lives in the agentY repo under
-``deadline/plugins/ComfyUI`` and is installed into the Deadline repository by the user (see docs/deadline.md).
+``deadline/plugins/ComfyUI`` and is installed into the Deadline repository by the user (see docs/setup/deadline.md).
 
 ComfyUI is installed on only some farm machines, so jobs ALWAYS go to one dedicated pool (default ``comfyui``,
 ``DEADLINE_COMFYUI_POOL``) holding just those machines. A job is refused when that pool does not exist or has no
@@ -93,7 +93,7 @@ def _require_configured() -> None:
     if not _ws_url() and not _dc_exe():
         raise FarmError(
             "Deadline not configured: neither DEADLINE_WEBSERVICE_URL nor a deadlinecommand executable "
-            "(DEADLINE_PATH = the Deadline bin folder) was found. Set one of them in .env (see docs/deadline.md).",
+            "(DEADLINE_PATH = the Deadline bin folder) was found. Set one of them in .env (see docs/setup/deadline.md).",
             "config")
 
 
@@ -221,7 +221,7 @@ def _pool_status(pool: str) -> dict:
 
 
 def _setup_hint(pool: str) -> str:
-    return (f"Create the pool and assign the machines that have ComfyUI installed (docs/deadline.md): "
+    return (f"Create the pool and assign the machines that have ComfyUI installed (docs/setup/deadline.md): "
             f"Monitor > Tools > Manage Pools (add '{pool}'), then Super User mode > Manage Workers > assign the pool; or "
             f"`deadlinecommand -AddPool {pool}` and `deadlinecommand -SetPoolsForSlave <worker,worker> {pool}`. "
             f"A different pool name is set with DEADLINE_COMFYUI_POOL.")

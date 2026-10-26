@@ -11,7 +11,7 @@ partner nodes, which bill Comfy credits. One tool, two kinds:
 Endpoints follow ``DASHSCOPE_BASE_URL`` (the same variable the LLM layer reads, so
 a workspace host such as ``ws-….maas.aliyuncs.com`` keeps working); without it the
 Singapore/international host is used. Request shapes are in
-``docs/dashscope_generation.md`` of the agentY repo.
+``docs/integrations/dashscope_generation.md`` of the agentY repo.
 """
 
 from __future__ import annotations

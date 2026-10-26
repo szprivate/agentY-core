@@ -1,7 +1,7 @@
 """Ayon pipeline actions for a ComfyUI session that was launched THROUGH Ayon.
 
 The studio's Ayon ComfyUI addon (a fork of ynput/ayon-comfyui) is not touched: everything here uses
-what it already exposes. Read ``docs/ayon.md`` in agentY for the full picture; the short version:
+what it already exposes. Read ``docs/dev/ayon.md`` in agentY for the full picture; the short version:
 
 * ComfyUI is shown inside an <iframe> on a small static page the Ayon host serves (default
   ``http://127.0.0.1:5454``). A script on that page connects to the Ayon host's WSRPC server
