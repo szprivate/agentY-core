@@ -205,5 +205,26 @@ class RunTests(Base):
         self.assertEqual(out["status"], "dry_run")
 
 
+class SwitchTest(unittest.TestCase):
+    def tearDown(self):
+        m.set_enabled_provider(None)
+
+    def test_off_by_default(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(m.ENABLE_ENV, None)
+            self.assertFalse(m.camera_move_enabled())
+
+    def test_provider_and_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(m.ENABLE_ENV, None)
+            m.set_enabled_provider(lambda: True)
+            self.assertTrue(m.camera_move_enabled())
+        with mock.patch.dict(os.environ, {m.ENABLE_ENV: "0"}):
+            self.assertFalse(m.camera_move_enabled())
+        m.set_enabled_provider(None)
+        with mock.patch.dict(os.environ, {m.ENABLE_ENV: "1"}):
+            self.assertTrue(m.camera_move_enabled())
+
+
 if __name__ == "__main__":
     unittest.main()

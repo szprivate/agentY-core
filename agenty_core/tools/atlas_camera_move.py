@@ -44,6 +44,31 @@ from agenty_core.tools.worldlabs_atlas import AtlasError
 
 logger = logging.getLogger("agenty_core.atlas_camera_move")
 
+# EXPERIMENTAL and off by default: the paid camera move has not had a real run yet. Hosts decide whether to
+# offer the tool (and its viewer button / route) with ``camera_move_enabled()``; the tool function itself is
+# unchanged, so a host that has the switch on (or a test) simply calls it.
+ENABLE_ENV = "AGENTY_ATLAS_CAMERA_MOVE"
+_enabled_provider: Optional[Callable[[], bool]] = None
+
+
+def set_enabled_provider(fn: Optional[Callable[[], bool]]) -> None:
+    """A host (agentY: ``[atlas] camera_move_enabled``) says whether the switch is on."""
+    global _enabled_provider
+    _enabled_provider = fn
+
+
+def camera_move_enabled() -> bool:
+    """The experimental switch: the env var ``AGENTY_ATLAS_CAMERA_MOVE`` (1/0) wins, else the host's setting, else off."""
+    raw = os.environ.get(ENABLE_ENV, "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    if _enabled_provider is not None:
+        try:
+            return bool(_enabled_provider())
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
 # quality -> (seconds between painted keyframes, cameras per Atlas task)
 QUALITY = {"draft": (1.0, 8), "standard": (0.5, 4), "high": (0.25, 4)}
 MAX_PER_TASK = 8
