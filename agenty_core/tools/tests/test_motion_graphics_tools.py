@@ -12,6 +12,8 @@ from unittest import mock
 from agenty_core.motion_graphics import render, schema
 from agenty_core.tools import motion_graphics as mg
 
+mg.AUTO_OPEN = False          # these tests must never push anything into a viewer that happens to be running
+
 EXAMPLES = os.path.join(os.path.dirname(schema.__file__), "examples")
 LOWER = os.path.join(EXAMPLES, "lower_third.mgscene.json")
 
@@ -46,6 +48,42 @@ class ValidateTool(unittest.TestCase):
         p = os.path.join(d, "bad.mgscene.json")
         open(p, "w").write("{not json")
         self.assertIn("not valid JSON", json.loads(mg.mg_scene_validate(p))["errors"][0]["message"])
+
+
+class AutoOpen(unittest.TestCase):
+    """A scene the agent writes opens in the viewer's Motion editor by itself - once."""
+
+    def setUp(self):
+        mg.AUTO_OPEN = True
+        mg._opened.clear()
+        self.addCleanup(setattr, mg, "AUTO_OPEN", False)
+
+    def test_first_valid_check_pushes_the_scene_once(self):
+        from agenty_core.tools import show_in_viewer as siv
+        with mock.patch.object(siv, "open_in_viewer", return_value={"ok": True, "motion": [LOWER]}) as push:
+            first = json.loads(mg.mg_scene_validate(LOWER))
+            json.loads(mg.mg_scene_validate(LOWER))
+        push.assert_called_once_with([os.path.abspath(LOWER)], focus=True)
+        self.assertTrue(first["opened_in_viewer"])
+
+    def test_an_invalid_scene_is_not_pushed_and_a_missing_viewer_is_retried(self):
+        from agenty_core.tools import show_in_viewer as siv
+        d = tempfile.mkdtemp()
+        bad = write(d, {"mgscene": 1, "comp": {"width": 1280, "height": 720, "fps": 30, "duration": 30}, "layers": [{"type": "text"}]})
+        with mock.patch.object(siv, "open_in_viewer") as push:
+            mg.mg_scene_validate(bad)
+        push.assert_not_called()
+        with mock.patch.object(siv, "open_in_viewer", return_value={"error": "could not reach the viewer"}) as push:
+            mg.mg_scene_validate(LOWER)
+            mg.mg_scene_validate(LOWER)
+        self.assertEqual(push.call_count, 2)
+
+    def test_off_means_off(self):
+        from agenty_core.tools import show_in_viewer as siv
+        mg.AUTO_OPEN = False
+        with mock.patch.object(siv, "open_in_viewer") as push:
+            mg.mg_scene_validate(LOWER)
+        push.assert_not_called()
 
 
 class RenderTools(unittest.TestCase):

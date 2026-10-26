@@ -27,6 +27,34 @@ from agenty_core.utils.progress_signal import push as _push_progress
 logger = logging.getLogger("agenty_core.motion_graphics")
 
 
+# A scene the agent writes opens in the viewer's Motion editor by itself, the first time it is checked or rendered
+# (once per scene per process, so later edits do not yank the user's tab around). Hosts and tests that must not
+# touch a viewer set this to False.
+AUTO_OPEN = True
+_opened: set = set()
+
+
+def _auto_open(path: str) -> Optional[dict]:
+    """Show the scene in the bEpic viewer (POST /bepic/push -> its Motion tab). Never raises, never repeats."""
+    if not AUTO_OPEN:
+        return None
+    key = os.path.normcase(os.path.abspath(path))
+    if key in _opened:
+        return None
+    _opened.add(key)
+    try:
+        from agenty_core.tools.show_in_viewer import open_in_viewer
+        res = open_in_viewer([path], focus=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("mg: scene not opened in the viewer: %s", exc)
+        return None
+    if isinstance(res, dict) and res.get("error"):
+        _opened.discard(key)            # the viewer was not there (yet): try again on the next call
+        logger.info("mg: scene not opened in the viewer: %s", res["error"])
+        return None
+    return res
+
+
 def _log(msg: str) -> None:
     if msg:
         logger.info("mg: %s", msg)
@@ -77,6 +105,10 @@ def mg_scene_validate(scene_path: str) -> str:
     if isinstance(scene, dict):
         res["summary"] = _summary(scene)
     res["path"] = path
+    if res.get("ok"):
+        opened = _auto_open(path)
+        if opened and opened.get("motion"):
+            res["opened_in_viewer"] = True
     return json.dumps(res)
 
 
@@ -160,6 +192,7 @@ def mg_render(scene_path: str, out_path: str = "", format: str = "mp4", frame_st
         res = _render.render_scene(scene_path, out_path, format=format, frame_range=rng, scale=float(scale or 1.0),
                                    crf=int(crf), log=_log, poster=bool(poster))
         res.pop("event", None)
+        _auto_open(os.path.abspath(scene_path))
         return json.dumps(res)
     except (_render.RenderError, ValueError) as exc:
         return json.dumps({"error": str(exc)})
