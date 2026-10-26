@@ -393,6 +393,22 @@ class PreflightTests(Base):
         self.assertTrue(r["ok"], r["problems"])
         self.assertTrue(r["base_model"]["present"])
 
+    def test_musubi_unreadable_folders_do_not_claim_missing_files(self):
+        from agenty_core.tools import model_research as MR
+        p = P.get_preset("wan22_t2v_14b")
+        be = "musubi"
+        def run(fp):
+            with mock.patch.object(PF, "gpu_memory", return_value={"name": "X", "total_gb": 80.0, "free_gb": 70.0, "used_gb": 1.0}),                     mock.patch.object(PF, "disk_check", return_value=None),                     mock.patch.object(PF, "_yaml_roots", return_value=[]),                     mock.patch.object(PF.time, "sleep", lambda s: None),                     mock.patch.object(MR, "_folder_paths", return_value=fp),                     mock.patch.object(B.Musubi, "locate", return_value={"root": "x", "installed": True}):
+                return PF.check(p, be, self.root)
+        r = run({})
+        txt = " ".join(r["problems"])
+        self.assertIn("cannot tell", txt)
+        self.assertNotIn("are missing", txt)
+        self.assertTrue(r["base_model"]["unverified"])
+        r = run({"checkpoints": [str(self.root / "nowhere")]})
+        self.assertIn("are missing", " ".join(r["problems"]))
+        self.assertFalse(r["base_model"].get("unverified"))
+
     def test_really_missing_base_model_still_asks_for_consent(self):
         r = self._sd15_report({"checkpoints": [str(self.root / "nowhere")]})
         self.assertFalse(r["ok"])

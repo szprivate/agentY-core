@@ -163,14 +163,21 @@ def base_model(preset: dict, backend: str) -> dict:
         return {"present": False, "where": repo, "download_gb": cfg.get("hf_gb", 0), "missing": [repo],
                 "note": f"ai-toolkit downloads {repo} (~{cfg.get('hf_gb', '?')} GB) into {hf_home()} on first use"}
     # musubi: explicit files out of the ComfyUI model folders
-    found, missing = {}, []
+    found, missing, unverified = {}, [], False
     for role, pattern in (cfg.get("files") or {}).items():
-        hits = _local_model_files(pattern)
+        auth: dict = {}
+        hits = _local_model_files(pattern, auth)
         if hits:
             found[role] = hits[0]["path"]
         else:
             missing.append(f"{role} (a file matching '{pattern}')")
-    return {"present": not missing, "where": found, "download_gb": 0, "missing": missing, "files": found}
+            unverified = unverified or not auth.get("complete", True)
+    out = {"present": not missing, "where": found, "download_gb": 0, "missing": missing, "files": found}
+    if missing and unverified:
+        out["unverified"] = True
+        out["note"] = ("could not read ComfyUI's model folders (ComfyUI not reachable, no extra_model_paths.yaml found), "
+                       "so it is not known whether these files are already on this machine")
+    return out
 
 
 def check(preset: dict, backend: str, output_dir: Path, allow_download: bool = False, vram_override: float = 0.0) -> dict:
@@ -209,6 +216,9 @@ def check(preset: dict, backend: str, output_dir: Path, allow_download: bool = F
             elif not allow_download:
                 problems.append(f"the base model is not on this machine: {bm.get('note') or bm['missing']}. "
                                 "Tell the user the size and, if they agree, call again with allow_download=True")
+        elif bm.get("unverified"):
+            problems.append("cannot tell whether the base model files are on this machine: " + "; ".join(bm["missing"]) +
+                            f". {bm['note']}. Start ComfyUI and try again; download nothing on a guess")
         else:
             problems.append("base model files are missing: " + "; ".join(bm["missing"]) +
                             ". Download them with download_hf_model (see the musubi-tuner docs/<model>.md for the repositories)")
