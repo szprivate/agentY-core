@@ -4085,8 +4085,12 @@ def get_canvas_selection() -> str:
     workflow}``. ``mode`` is 0 normally, 2 muted, 4 bypassed — a muted or
     bypassed node takes no part in the next run.
     """
+    from agenty_core.utils import canvas_scope as _cs
+    if _cs.detached():
+        return json.dumps({"status": "error", "error": _cs.NO_CANVAS})
     try:
-        r = get_client().get("/agent/canvas_selection")
+        _cid = _cs.client_id()
+        r = get_client().get("/agent/canvas_selection" + (f"?client_id={_cid}" if _cid else ""))
     except Exception as e:  # noqa: BLE001
         return json.dumps({"status": "error", "error": _canvas_bridge_error(e)})
     if not isinstance(r, dict):
@@ -4127,9 +4131,12 @@ def set_canvas_node_params(node_id: str, params: dict) -> str:
     if not isinstance(params, dict) or not params:
         return json.dumps({"status": "error",
                            "error": "params must be a non-empty {widget: value} mapping."})
+    from agenty_core.utils import canvas_scope as _cs
+    if _cs.detached():
+        return json.dumps({"status": "error", "error": _cs.NO_CANVAS})
     try:
         r = get_client().post("/agent/set_node_params",
-                              json_data={"node_id": str(node_id), "params": params})
+                              json_data=_cs.aim({"node_id": str(node_id), "params": params}))
     except Exception as e:  # noqa: BLE001
         return json.dumps({"status": "error", "error": _canvas_bridge_error(e)})
     if not isinstance(r, dict):
@@ -4209,9 +4216,19 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
     # only delivery. Harmless 404 when the extension
     # isn't installed/loaded — the sidebar copy is always available as fallback.
     opened = False
+    from agenty_core.utils import canvas_scope as _cs
+    if push_to_canvas and _cs.detached():
+        # A turn with no ComfyUI page of its own: the file is saved under agent/ and
+        # nothing is pushed, because the push reaches every open page - the user's
+        # own tab included - and replaces the graph they have in it.
+        push_to_canvas = False
+        _detached = True
+    else:
+        _detached = False
     if push_to_canvas:
         try:
-            _r = get_client().post("/agent/load_workflow", json_data={"workflow": graph})
+            _r = get_client().post("/agent/load_workflow",
+                                   json_data=_cs.aim({"workflow": graph}))
             opened = isinstance(_r, dict) and bool(_r.get("ok"))
         except Exception:  # noqa: BLE001
             pass
@@ -4222,7 +4239,11 @@ def open_workflow_in_canvas(workflow_path: str, name: str = "",
         "opened_on_canvas": opened,
         "node_count": len(graph["nodes"]),
         "url": "http://127.0.0.1:8188",
+        **({"no_canvas": True} if _detached else {}),
         "hint": ("Opened on the ComfyUI canvas." if opened else
+                 f"Saved agent/{stem}. No canvas is attached to this turn, so it was not "
+                 "pushed onto anyone's open canvas: it is in the Workflows sidebar under "
+                 f"agent/{stem} for the user to open." if _detached else
                  f"Saved — open the Workflows sidebar and select agent/{stem}"
                  + ("." if not push_to_canvas else
                     " (install/restart to enable auto-open on the canvas).")),
