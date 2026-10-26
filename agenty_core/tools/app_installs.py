@@ -11,9 +11,11 @@ Windows uninstall registry (read-only), the usual install folders. Every hit bec
 ``{app, version, path, root, source}``; the list is sorted newest first. ``pick`` takes the newest one
 that meets a minimum version and reports the others, so a machine with Blender 3.5 and 5.2 is not a coin toss.
 
-Nothing here starts an app, writes anything or needs the network. A version is read from the folder name
-or the registry; only when neither says (a portable copy in a folder called ``blender``) is the app asked
-for ``--version``, and only for Blender.
+Nothing here starts an app, writes anything or needs the network. A version is read from the folder name,
+the registry, the macOS bundle's ``Contents/Info.plist`` or the Windows exe's file version, and only when
+none of those says (a portable copy in a folder called ``blender``) is the app asked for ``--version`` (Blender
+only). That last call can fail on a Mac where the app was never opened (Gatekeeper), so it is the fallback, and a
+version that stays unknown is "unknown", never "too old": ``pick`` still offers the install.
 """
 
 from __future__ import annotations
@@ -35,7 +37,11 @@ _APPS: dict[str, dict] = {
         "env": ["BLENDER_PATH"], "path": ["blender"],
         "globs": ["C:/Program Files/Blender Foundation/Blender */blender.exe",
                   "C:/Program Files/Blender Foundation/Blender/blender.exe",
-                  "/Applications/Blender.app/Contents/MacOS/Blender", "/usr/bin/blender", "/snap/bin/blender"],
+                  "/Applications/Blender.app/Contents/MacOS/Blender",
+                  "/Applications/Blender */Blender.app/Contents/MacOS/Blender",
+                  "/Applications/Blender*.app/Contents/MacOS/Blender",
+                  "~/Applications/Blender*.app/Contents/MacOS/Blender",
+                  "/usr/bin/blender", "/snap/bin/blender"],
         "registry": r"^Blender( |$)", "name": r"[Bb]lender[ -]?(\d+(?:\.\d+){0,2})"},
     "houdini": {
         "env": ["HYTHON_PATH"], "path": ["houdini", "hython"],
@@ -106,6 +112,73 @@ def _version_from_name(app: str, text: str) -> str:
     if app == "nuke" and len(parts) == 2:        # Nuke15.0v4 -> 15.0.4
         return f"{parts[0]}.{parts[1]}"
     return parts[0] if parts else ""
+
+
+def _app_bundle(path: str) -> str:
+    """The ``X.app`` folder a macOS executable lives in, or ''."""
+    cur = os.path.abspath(path)
+    while True:
+        parent = os.path.dirname(cur)
+        if cur.endswith(".app") and os.path.isdir(cur):
+            return cur
+        if parent == cur:
+            return ""
+        cur = parent
+
+
+def plist_version(plist_path: str) -> str:
+    """``CFBundleShortVersionString`` (else ``CFBundleVersion``) of an Info.plist, '' when unreadable.
+
+    Reads the file, never runs the app: this works on a Blender that was downloaded and never opened.
+    """
+    import plistlib
+    try:
+        with open(plist_path, "rb") as fh:
+            data = plistlib.load(fh)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return ""
+    for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+        v = str(data.get(key) or "").strip()
+        if re.search(r"\d", v):
+            return v
+    return ""
+
+
+def _exe_file_version(path: str) -> str:
+    """The version resource of a Windows ``.exe`` ('5.1.0.0' -> '5.1.0'), '' elsewhere or when absent."""
+    if not sys.platform.startswith("win") or not path.lower().endswith(".exe"):
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        ver = ctypes.WinDLL("version.dll")
+        size = ver.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(path, 0, size, buf):
+            return ""
+        ptr, length = ctypes.c_void_p(), wintypes.UINT()
+        if not ver.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)) or length.value < 52:
+            return ""
+        info = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint32 * 13)).contents
+        ms, ls = info[4], info[5]
+        parts = [ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF]
+        while len(parts) > 2 and parts[-1] == 0:
+            parts.pop()
+        return ".".join(str(p) for p in parts)
+    except (OSError, AttributeError, ValueError):
+        return ""
+
+
+def version_without_running(app: str, path: str) -> str:
+    """The version of the program at *path* from its own files: bundle plist (macOS), file version (Windows)."""
+    bundle = _app_bundle(path)
+    if bundle:
+        v = plist_version(os.path.join(bundle, "Contents", "Info.plist"))
+        if v:
+            return v
+    return _exe_file_version(path)
 
 
 def _blender_asks(path: str) -> str:
@@ -188,8 +261,10 @@ def find_installs(app: str, *, env: Optional[dict] = None, extra_globs: Iterable
 
     def versioned(path: str, registry_version: str = "") -> str:
         v = _version_from_name(app, path) or registry_version
+        if not v and os.path.isfile(path):
+            v = version_without_running(app, path)       # reads files; the app is not started
         if not v and app == "blender" and os.path.isfile(path):
-            v = _blender_asks(path)
+            v = _blender_asks(path)                         # last resort; may fail on a never-opened Mac app
         return v
 
     for var in spec["env"]:
@@ -213,7 +288,7 @@ def find_installs(app: str, *, env: Optional[dict] = None, extra_globs: Iterable
             if hit:
                 add(_record(app, hit, "path", versioned(hit)))
         for pat in spec["globs"]:
-            for p in glob.glob(pat):
+            for p in glob.glob(os.path.expanduser(pat)):
                 if os.path.isfile(p):
                     add(_record(app, p, "folder", versioned(p)))
         for reg in _registry_installs(app):
@@ -242,13 +317,22 @@ def find_installs(app: str, *, env: Optional[dict] = None, extra_globs: Iterable
 
 
 def pick(installs: list[dict], min_version: str = "") -> tuple[Optional[dict], list[dict], str]:
-    """``(chosen, others, why)``. The newest install that meets *min_version*; with none that does,
-    ``chosen`` is None and ``why`` says what was found instead."""
+    """``(chosen, others, why)``. The newest install that meets *min_version*.
+
+    An install whose version could not be read is *unknown*, not too old: it is chosen when no install
+    is known to meet the minimum ("version unknown, will try"). ``chosen`` is None only when nothing is
+    installed or every version that could be read is below the minimum; ``why`` says what was found.
+    """
     need = version_tuple(min_version)
-    ok = [r for r in installs if not need or (version_tuple(r["version"]) >= need if r["version"] else False)]
+    ok = [r for r in installs if not need or (r["version"] and version_tuple(r["version"]) >= need)]
     if not ok:
+        unknown = [r for r in installs if not r["version"]]
+        if unknown:
+            chosen = unknown[0]
+            why = f"version unknown (not readable without starting it), will try; {min_version} or newer is needed"
+            return chosen, [r for r in installs if r is not chosen], why
         if installs:
-            have = ", ".join(f"{r['version'] or '?'} ({r['path']})" for r in installs)
+            have = ", ".join(f"{r['version']} ({r['path']})" for r in installs)
             return None, installs, f"found {have}, but version {min_version} or newer is needed"
         return None, [], "not installed"
     chosen = ok[0]
