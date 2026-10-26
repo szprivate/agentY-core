@@ -629,7 +629,9 @@ def check_workflow_against_schema(workflow: dict) -> list[str] | None:
                         problems.append(f"node {nid} {msg}")
             # The upload button of LoadImage / LoadVideo / LoadAudio saves its own
             # label ("image", "upload") as a trailing value: UI state, not an input.
-            leftover = [] if not plain else [v for v in leftover if not (v is None or v is False or v == "" or (isinstance(v, str) and v in _UPLOAD_UI_VALUES))]
+            # A node with no widgets at all (GetImageSize, PreviewAny) saves its
+            # on-node display text as a value: output, not input.
+            leftover = [] if (not plain or not slots) else [v for v in leftover if not (v is None or v is False or v == "" or (isinstance(v, str) and v in _UPLOAD_UI_VALUES))]
             if leftover:
                 problems.append(f"node {nid} {typ}: {len(leftover)} widget value(s) left over after the "
                                 f"schema's {len(slots)} widgets ({leftover[:3]!r}): wrong order or count")

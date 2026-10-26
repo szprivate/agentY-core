@@ -52,6 +52,14 @@ class Guard(unittest.TestCase):
         pr = C.check_workflow_against_schema(ui([ksampler([20, 7.0, "euler", "simple", 1.0])]))
         self.assertTrue(any("sampler_name" in p or "left over" in p or "scheduler" in p for p in pr), pr)
 
+    def test_display_text_on_widgetless_node_is_not_a_value(self):
+        oi = dict(OI, GetImageSize={"input": {"required": {"image": ["IMAGE", {}]}}, "output": ["INT"]})
+        node = {"id": 7, "type": "GetImageSize", "inputs": [{"name": "image", "type": "IMAGE", "link": 1}],
+                "widgets_values": ["width: 1365, height: 768
+ batch size: 1"]}
+        with mock.patch.object(C, "_get_object_info", return_value=oi):
+            self.assertEqual(C.check_workflow_against_schema(ui([node])), [])
+
     def test_api_format(self):
         api = {"1": {"class_type": "UNETLoader", "inputs": {"unet_name": "bad.safetensors", "weight_dtype": "fp8"}},
                "2": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "seed": 1, "steps": 20, "cfg": 7,
