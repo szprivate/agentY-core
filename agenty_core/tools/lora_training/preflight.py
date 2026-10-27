@@ -28,7 +28,7 @@ def gpu_memory() -> Optional[dict]:
         return None
     try:
         r = subprocess.run([exe, "--query-gpu=name,memory.total,memory.free,memory.used", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         name, total, free, used = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")]
         return {"name": name, "total_gb": round(float(total) / 1024, 1), "free_gb": round(float(free) / 1024, 1),
                 "used_gb": round(float(used) / 1024, 1)}

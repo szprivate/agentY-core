@@ -84,7 +84,7 @@ def _pid_alive(pid: int) -> bool:
     if os.name == "nt":
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         return str(pid) in (out.stdout or "")
     try:
@@ -305,7 +305,7 @@ def stop_batch_job(job_id: str) -> str:
         try:
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             else:
                 os.kill(pid, 15)
             terminated = True

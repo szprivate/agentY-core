@@ -183,7 +183,7 @@ def version_without_running(app: str, path: str) -> str:
 
 def _blender_asks(path: str) -> str:
     try:
-        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30,
+        out = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
                              stdin=subprocess.DEVNULL).stdout
     except (OSError, subprocess.SubprocessError):
         return ""

@@ -167,7 +167,7 @@ def _probe_duration(exe: str, path: Path) -> float | None:
     """
     try:
         proc = subprocess.run([exe, "-hide_banner", "-i", str(path)],
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except Exception:  # noqa: BLE001
         return None
     m = _DURATION_RE.search(proc.stderr or "")
@@ -204,7 +204,7 @@ def _cut_one(exe: str, source: str, dest: Path, start: float, duration: float,
                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
     cmd.append(str(dest))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_FFMPEG_TIMEOUT)
     except subprocess.TimeoutExpired:
         return False, f"ffmpeg timed out after {_FFMPEG_TIMEOUT}s", None
     except Exception as exc:  # noqa: BLE001

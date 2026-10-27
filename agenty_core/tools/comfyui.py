@@ -3470,7 +3470,7 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
         try:
             subprocess.run(
                 ["git", "clone", "--depth", "1", source, str(dest)],
-                check=True, capture_output=True, text=True, timeout=300,
+                check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
             )
             result["cloned"] = True
         except subprocess.CalledProcessError as e:
@@ -3490,7 +3490,7 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
             try:
                 subprocess.run(
                     [str(py), "-m", "pip", "install", "-r", str(req)],
-                    check=True, capture_output=True, text=True, timeout=600,
+                    check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
                 )
                 result["pip"] = "installed"
             except subprocess.CalledProcessError as e:

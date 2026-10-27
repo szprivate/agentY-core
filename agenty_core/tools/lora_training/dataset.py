@@ -187,7 +187,7 @@ def ffmpeg_exe() -> str:
 
 def probe_video(path: str) -> dict:
     """{duration, fps, width, height, has_audio} read off ``ffmpeg -i`` (no ffprobe needed)."""
-    p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", path], capture_output=True, text=True, errors="replace")
+    p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     t = p.stderr
     dur = 0.0
     m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", t)
@@ -213,7 +213,7 @@ def cut_clip(src: str, dst: str, start: float, frames: int, fps: float, size: tu
            "-frames:v", str(frames), "-vf", ",".join(vf), "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"]
     cmd += ["-c:a", "aac", "-t", f"{frames / fps:.3f}"] if audio else ["-an"]
     cmd.append(dst)
-    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode == 0 and os.path.exists(dst)
 
 

@@ -89,7 +89,7 @@ def _run_command(command: str, timeout: int) -> str:
             argv,
             shell=False,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             cwd=str(sandbox.working_directory()),
         )

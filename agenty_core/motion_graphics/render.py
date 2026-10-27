@@ -102,7 +102,7 @@ def ensure_installed(log: Callable[[str], None] = lambda _m: None) -> Path:
         log("installing the motion-graphics renderer (npm, one time, a few minutes)")
         cmd = [npm, "ci" if (home / "package-lock.json").is_file() else "install", "--no-audit", "--no-fund"]
         try:
-            done = subprocess.run(cmd, cwd=str(home), capture_output=True, text=True, timeout=1800)
+            done = subprocess.run(cmd, cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
         except subprocess.TimeoutExpired:
             raise RenderError("npm install of the renderer timed out after 30 minutes (network?)") from None
         if done.returncode != 0 or not is_installed(home):

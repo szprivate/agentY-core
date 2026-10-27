@@ -494,7 +494,7 @@ def _probe_video(p: Path) -> dict:
     probe = shutil.which("ffprobe")
     if probe:
         r = subprocess.run([probe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(p)],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         data = json.loads(r.stdout or "{}")
         out: dict = {"container": (data.get("format") or {}).get("format_name"),
                      "duration_s": _f((data.get("format") or {}).get("duration")),
@@ -761,7 +761,7 @@ def video_frames(path: str, count: int = 6, frames: list | None = None,
                     target = out_dir / f"{src_frame.stem}.png"
                     pre = ["-apply_trc", "iec61966_2_1"] if src_frame.suffix.lower() == ".exr" else []
                     subprocess.run([ffmpeg, "-v", "error", "-y", *pre, "-i", str(src_frame), str(target)],
-                                   capture_output=True, text=True, timeout=120)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
                     if target.is_file():
                         shown.append(target)
                 if not shown:
@@ -805,7 +805,7 @@ def video_frames(path: str, count: int = 6, frames: list | None = None,
             for at in (t + 0.5 / fps, t, t - 0.5 / fps):
                 r = subprocess.run([ffmpeg, "-v", "error", "-y", "-ss", f"{max(0.0, at):.4f}",
                                     "-i", str(p), "-frames:v", "1", str(target)],
-                                   capture_output=True, text=True, timeout=120)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
                 if r.returncode == 0 and target.is_file():
                     made.append(target)
                     labels.append(label)
