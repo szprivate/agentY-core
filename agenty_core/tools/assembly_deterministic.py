@@ -66,6 +66,12 @@ LINK_ONLY_TYPES: frozenset[str] = frozenset({
 # Model-file extensions — used to tell a model combo (downloadable) apart from an
 # ordinary enum combo (sampler_name, scheduler, …) when a value can't be snapped.
 _MODEL_EXTS = (".safetensors", ".ckpt", ".pth", ".pt", ".gguf", ".bin", ".onnx", ".sft")
+# Media files a loader node picks from ComfyUI's input folder. Unlike a model or an
+# enum, one of these is the user's own file: a different file of the same family
+# is simply the wrong picture/clip, so it is never substituted.
+_MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".exr",
+               ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mxf",
+               ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
 
 # LoadImage-family classes whose primary widget names an input image file.
 _LOADIMAGE_CLASSES = ("LoadImage", "LoadImageMask", "LoadImageOutput")
@@ -246,6 +252,13 @@ def _is_model_combo(cval, copts) -> bool:
     """True if a combo names model files (downloadable) rather than an enum."""
     def _isf(x):
         return isinstance(x, str) and x.lower().endswith(_MODEL_EXTS)
+    return _isf(cval) or (bool(copts) and _isf(copts[0]))
+
+
+def _is_media_file_combo(cval, copts) -> bool:
+    """True if a combo lists/names input-folder media files (image, video, audio)."""
+    def _isf(x):
+        return isinstance(x, str) and x.lower().endswith(_MEDIA_EXTS)
     return _isf(cval) or (bool(copts) and _isf(copts[0]))
 
 
@@ -694,7 +707,8 @@ def flatten_dynamic_combos(node: dict, required: dict, optional: dict | None = N
 def harden_node_inputs(node: dict, required: dict, missing_models: list | None = None,
                        optional: dict | None = None,
                        stripped: list | None = None,
-                       reshaped: list | None = None) -> list[str]:
+                       reshaped: list | None = None,
+                       unresolved_files: list | None = None) -> list[str]:
     """Make one node's inputs valid where it can be done mechanically:
 
     * inject a widget/combo default for a missing required *widget* input
@@ -704,6 +718,10 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
     * for a model combo with no same-family match, append the value to
       *missing_models* (if given) so the caller can download it — instead of
       snapping to an unrelated model file (which would render garbage), and
+    * leave an input-folder media file (image/video/audio loader) that is not
+      listed exactly as written: it is never swapped for another file (that ran
+      the wrong clip without a word); it is described into *unresolved_files*
+      (if given) as ``"input 'file': 'x.mp4'"`` so the caller can warn to upload it,
     * delete a scalar left in a link-only socket, describing each into
       *stripped* (if given). See :func:`strip_link_only_scalars`.
 
@@ -774,6 +792,15 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
                 node.setdefault("inputs", {})[cinp] = sval
                 continue
             is_model = _is_model_combo(sval, copts)
+            if not is_model and _is_media_file_combo(sval, copts):
+                # Only the same file under another folder stands in; anything
+                # else is a file that is not in the input folder (yet).
+                same = next((o for o in copts if _same_file(o, sval)), None)
+                if same is not None:
+                    node.setdefault("inputs", {})[cinp] = same
+                elif unresolved_files is not None:
+                    unresolved_files.append(f"input '{cinp}': {sval!r}")
+                continue
             # A LoRA is one trained effect: the nearest-named other LoRA
             # ("…-sdr-to-hdr" for a gated "…-layout-to-render") is a different
             # effect that renders without complaint. Only the same file, found

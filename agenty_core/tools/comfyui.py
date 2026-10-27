@@ -4817,6 +4817,10 @@ def update_workflow(
     # is corrected and re-saved below, so "valid" stays a statement about what
     # the executor will actually submit.
     reshaped_inputs: list[str] = []
+    # Media files named by a loader that ComfyUI's input folder does not list (yet).
+    # Kept as written, never swapped for another file; reported as a warning.
+    unresolved_files: list[str] = []
+    _file_warnings: list[str] = []
     # What the graph looked like before hardening, so the re-save below can tell
     # whether the pass actually changed it.
     _snapshot_before = json.dumps(workflow, sort_keys=True, default=str)
@@ -4846,10 +4850,14 @@ def update_workflow(
         # is a genuinely-missing connection input (needs real wiring).
         _reshaped_here: list[str] = []
         _models_before = len(missing_models)
+        _files_before = len(unresolved_files)
         for _missing in _harden_node_inputs(node, required, missing_models, optional,
-                                            stripped_inputs, _reshaped_here):
+                                            stripped_inputs, _reshaped_here,
+                                            unresolved_files):
             local_errors.append(f"Node {nid} ({cls}): missing required input '{_missing}'.")
         reshaped_inputs.extend(f"Node {nid} ({cls}): {n}" for n in _reshaped_here)
+        for _f in unresolved_files[_files_before:]:
+            _file_warnings.append(_unresolved_file_warning(nid, cls, _f))
         # Collected and then dropped, this let a graph naming a file nobody has
         # read `valid: true` whenever ComfyUI was too busy to check it itself.
         for _model in missing_models[_models_before:]:
@@ -4919,9 +4927,17 @@ def update_workflow(
         "local_errors": local_errors,
         "reshaped_inputs": reshaped_inputs,
         "server_errors": server_errors,
-        **({"dead_nodes": _dead, "warnings": _dead_lines} if _dead else {}),
+        **({"dead_nodes": _dead} if _dead else {}),
+        **({"warnings": _dead_lines + _file_warnings} if (_dead or _file_warnings) else {}),
         **({"note": _note} if _note else {}),
     })
+
+
+def _unresolved_file_warning(nid, cls: str, what: str) -> str:
+    """Warning for a loader naming a media file ComfyUI's input folder does not list."""
+    return (f"Node {nid} ({cls}) {what} is not in ComfyUI's input folder (yet). Kept "
+            "as written, NOT replaced by another file. Upload it (upload_image) "
+            "before running, or the run fails / uses the wrong file.")
 
 
 # ---------------------------------------------------------------------------
@@ -5389,6 +5405,7 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         applied.append(_w)
 
     node_ids = set(workflow.keys())
+    file_warnings: list[str] = []
 
     for nid, node in workflow.items():
         cls = node.get("class_type", "")
@@ -5407,10 +5424,12 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         # link-only sockets (collecting them into stripped_inputs); what remains
         # is a genuinely-missing connection input (needs real wiring).
         _swaps: list[str] = []
+        _unres: list[str] = []
         for _missing in _harden_node_inputs(node, required, missing_models, optional,
-                                            stripped_inputs, _swaps):
+                                            stripped_inputs, _swaps, _unres):
             local_errors.append(f"Node {nid} ({cls}): missing required input '{_missing}'.")
         applied.extend(f"Node {nid} ({cls}): {w}" for w in _swaps)
+        file_warnings.extend(_unresolved_file_warning(nid, cls, f) for f in _unres)
         for _key in _undeclared_wires(node, required, optional, node_info):
             local_errors.append(_undeclared_wire_error(nid, cls, _key, node, required, optional))
         for inp_name, inp_val in node_inputs.items():
@@ -5446,6 +5465,7 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         "local_errors": local_errors,
         "server_errors": server_errors,
         "missing_models": missing_models,
+        **({"warnings": file_warnings} if file_warnings else {}),
     })
 
 
