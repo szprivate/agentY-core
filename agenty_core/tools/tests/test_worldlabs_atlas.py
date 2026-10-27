@@ -332,6 +332,43 @@ class MeshTests(unittest.TestCase):
             self.assertTrue(np.allclose(w._read_exr(p), a))
 
 
+class ExrPreflightTests(Base):
+    """A billed job must not finish into an unreadable result: the EXR reader is checked before the submit."""
+
+    def no_readers(self):
+        real = __import__
+        def fake(name, *a, **k):
+            if name in ("OpenEXR", "cv2"):
+                raise ImportError(name)
+            return real(name, *a, **k)
+        p = mock.patch("builtins.__import__", fake)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_create_and_expand_stop_before_the_billed_call(self):
+        routes = {("POST", "/tasks:atlasTextToImage"): done_op("op_t", {"frames": [frame(0)]}),
+                  ("POST", "/tasks:atlasGenerate"): done_op("op_g", {"frames": []})}
+        self.assertEqual(self.run_tool(w.atlas_create_world, routes, name="p", prompt="x")["status"], "ok")
+        self.calls.clear()
+        self.no_readers()
+        for fn, kw in [(w.atlas_create_world, {"name": "q", "prompt": "x"}),
+                       (w.atlas_expand_world, {"name": "p", "moves": [{"forward": 1}]})]:
+            out = self.run_tool(fn, routes, **kw)
+            self.assertEqual(out["error_kind"], "dependency", out)
+        self.assertFalse([c for c in self.calls if "/tasks:" in c[1]], self.calls)
+
+    def test_other_depth_tasks_share_the_check_but_splat_to_mesh_skips_it(self):
+        self.no_readers()
+        with mock.patch.object(w, "_request", side_effect=AssertionError("billed")):
+            for task in (w._TASK_I2P, w._TASK_T2I, w._TASK_GEN):
+                with self.assertRaises(w.AtlasError) as cm:
+                    w._submit(task, {})
+                self.assertEqual(cm.exception.kind, "dependency")
+        with mock.patch.object(w, "_request", return_value={"id": "op"}) as req:
+            self.assertEqual(w._submit(w._TASK_S2M, {}), {"id": "op"})
+            req.assert_called_once()
+
+
 class OtherTests(Base):
     def test_rebuild_is_offline_and_changes_detail(self):
         out = self.run_tool(w.atlas_create_world, {

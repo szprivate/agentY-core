@@ -255,6 +255,8 @@ def _cancel(op_id: str) -> dict:
 
 
 def _submit(task: str, body: dict) -> dict:
+    if task != _TASK_S2M:  # every other task returns depth EXRs that must be read once the job is done
+        _require_exr_reader()  # before the billed call, not after it
     return _request("POST", f"/tasks:{task}", json_body=body, idem=f"agenty-{uuid.uuid4().hex}")
 
 
@@ -408,6 +410,22 @@ def _upload_file(path: str, content_type: str) -> str:
 # -- depth --------------------------------------------------------------------
 
 
+_EXR_MISSING = ("cannot read the depth EXR: install the OpenEXR package "
+                "(pip install OpenEXR) into agentY's environment.")
+
+
+def _require_exr_reader() -> None:
+    """Raise the ``dependency`` AtlasError up front when neither the OpenEXR wheel nor OpenCV can be imported
+    (the two readers ``_read_exr`` tries), so a billed job never finishes into an unreadable result."""
+    for mod in ("OpenEXR", "cv2"):
+        try:
+            __import__(mod)
+            return
+        except ImportError:
+            continue
+    raise AtlasError(_EXR_MISSING, "dependency")
+
+
 def _read_exr(path: Path):
     """float32 [H, W] (first channel) of an EXR. Needs the ``OpenEXR`` wheel, or an OpenCV built with
     EXR support; row 0 is the top row in both."""
@@ -428,8 +446,7 @@ def _read_exr(path: Path):
             return (a[..., 0] if a.ndim == 3 else a).astype("float32")
     except ImportError:
         pass
-    raise AtlasError("cannot read the depth EXR: install the OpenEXR package "
-                     "(pip install OpenEXR) into agentY's environment.", "dependency")
+    raise AtlasError(_EXR_MISSING, "dependency")
 
 
 def _read_png_gray(path: Path):
