@@ -40,6 +40,7 @@ from agenty_core.tools.assembly_deterministic import (
     is_autogrow_spec as _is_autogrow_group,
     normalize_autogrow_keys as _normalize_autogrow_keys,
     undeclared_wires as _undeclared_wires,
+    is_v3_schema as _is_v3_schema,
     rebind_placeholder_images as _rebind_placeholder_images,
     strip_annotation_nodes as _strip_annotation_nodes,
     strip_reroute_nodes as _strip_reroute_nodes,
@@ -4579,6 +4580,10 @@ def patch_workflow(workflow_path: str, patches: str) -> str:
             if "inputs" not in node:
                 node["inputs"] = {}
             value = patch["value"]
+            _bad = _undeclared_input_error(nid, node, inp_name, _safe_object_info())
+            if _bad:
+                errors.append(f"Patch {i}: {_bad}")
+                continue
             # A LoadImage reference must carry the 'agent/' input subfolder that
             # upload_image stages files into; a bare filename makes ComfyUI look
             # in the input root and reject it as "Invalid image file".
@@ -4683,6 +4688,16 @@ def update_workflow(
     applied: list[str] = []
     node_errors: list[str] = []
     cleaned_links: int = 0
+    _oi_cache: dict = {}
+
+    def _oi_for_edit() -> dict:
+        """/object_info once per call; {} (nothing judged) when it cannot be read."""
+        if "v" not in _oi_cache:
+            try:
+                _oi_cache["v"] = _get_object_info() or {}
+            except Exception:  # noqa: BLE001
+                _oi_cache["v"] = {}
+        return _oi_cache["v"]
 
     # ── Remove nodes ──────────────────────────────────────────────────────────
     for nid in (str(x) for x in remove_list):
@@ -4716,6 +4731,11 @@ def update_workflow(
         raw_inputs = spec.get("inputs", {})
         node_inputs = json.loads(raw_inputs) if isinstance(raw_inputs, str) else raw_inputs
         new_node: dict = {"class_type": cls, "inputs": node_inputs}
+        _bad_keys = [e for e in (_undeclared_input_error(nid, new_node, k, _oi_for_edit())
+                                 for k in list(node_inputs)) if e]
+        if _bad_keys:
+            node_errors.extend(f"add: {e}" for e in _bad_keys)
+            continue
         if spec.get("meta_title"):
             new_node["_meta"] = {"title": spec["meta_title"]}
         workflow[nid] = new_node
@@ -4754,6 +4774,10 @@ def update_workflow(
             if "inputs" not in node:
                 node["inputs"] = {}
             value = patch["value"]
+            _bad = _undeclared_input_error(nid, node, inp_name, _oi_for_edit())
+            if _bad:
+                node_errors.append(f"patch {i}: {_bad}")
+                continue
             # A LoadImage reference must carry the 'agent/' input subfolder that
             # upload_image stages files into; a bare filename makes ComfyUI look
             # in the input root and reject it as "Invalid image file".
@@ -5470,6 +5494,55 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
 
 
 @tool
+def _safe_object_info() -> dict:
+    """/object_info, or {} (nothing judged) when ComfyUI cannot be asked."""
+    try:
+        return _get_object_info() or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _undeclared_input_error(nid, node: dict, key: str, all_nodes: dict) -> str | None:
+    """Why *key* may not be written on *node*, or None when it is a real input.
+
+    update_workflow used to write any name it was given: a wire patched onto
+    ``VAEEncode.image`` (whose inputs are ``pixels`` and ``vae``) came back "ok",
+    sat in the file unused, and the rewiring the agent meant never happened. The
+    schema decides: required, optional, hidden, an autogrow slot as
+    ``<group>.<slot>``, a dynamic combo's sub-input. A numbered key beside a
+    declared one (``input2`` next to ``input1``) is let through: V1 nodes such as
+    switches and batchers grow their inputs through ``**kwargs``. Unknown classes
+    and an unreadable /object_info are not judged.
+    """
+    import difflib
+    import re
+
+    cls = node.get("class_type", "")
+    node_info = (all_nodes or {}).get(cls)
+    if not isinstance(node_info, dict):
+        return None
+    spec = node_info.get("input") or {}
+    required, optional = spec.get("required") or {}, spec.get("optional") or {}
+    keys, open_prefixes = _declared_input_keys(node, required, optional)
+    keys = set(keys) | set((spec.get("hidden") or {}))
+    if key in keys or key.startswith(tuple(open_prefixes)):
+        return None
+
+    def _stem(k: str) -> str:
+        return re.sub(r"[_.]?\d+$", "", k)
+    if (not _is_v3_schema(node_info) and re.search(r"\d$", key)
+            and _stem(key) in {_stem(k) for k in keys}):
+        return None
+    expanded = _expand_input_specs(required, optional, node.get("inputs") or {})
+    shown = _describe_input_names(expanded, 60)
+    msg = f"Node {nid} ({cls}): '{key}' is not an input of {cls}; nothing was written. "
+    close = difflib.get_close_matches(key, list(expanded), n=3, cutoff=0.5)
+    if close:
+        msg += "Did you mean " + " or ".join(f"'{c}'" for c in close) + "? "
+    msg += f"Inputs it takes: {', '.join(shown) or '(none)'}."
+    return msg
+
+
 def _undeclared_wire_error(nid, cls: str, key: str, node: dict, required: dict,
                            optional: dict | None) -> str:
     """The error for a wire under a key *cls* does not declare, naming what it takes."""
