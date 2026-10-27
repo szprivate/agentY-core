@@ -226,6 +226,44 @@ class CreateTests(Base):
         out = self.call(m.marble_create_world, routes_for_create(), name="same", images=["https://x/a.jpg"])
         self.assertEqual(out["error_kind"], "args")
 
+    def _failed_routes(self):
+        return routes_for_create({("GET", "/operations/op_1"): {"operation_id": "op_1", "done": True,
+                                                                 "error": {"code": 13, "message": "An error has happened, please retry it."}}})
+
+    def test_failed_world_does_not_block_a_retry(self):
+        out = self.call(m.marble_create_world, self._failed_routes(), name="again", images=["https://x/a.jpg"])
+        self.assertEqual(out["error_kind"], "execution")
+        self.assertIn("same name is fine", out["error"])
+        self.assertNotIn("refund", out["error"].lower())
+        out = self.call(m.marble_create_world, routes_for_create(), name="again", images=["https://x/a.jpg"],
+                        open_in_viewer=False)
+        self.assertEqual(out["status"], "ok")
+        wj = json.loads((Path(self.out) / "again" / "world.json").read_text())
+        self.assertEqual(wj["status"], "ready")
+        self.assertEqual(wj["failed_attempts"][0]["operation_id"], "op_1")
+
+    def test_pending_world_with_failed_operation_is_reusable(self):
+        self.call(m.marble_create_world, routes_for_create(), name="p", images=["https://x/a.jpg"], open_in_viewer=False)
+        wf = Path(self.out) / "p" / "world.json"
+        wj = json.loads(wf.read_text())
+        wj.update(status="pending", world_id=None)
+        wf.write_text(json.dumps(wj))
+        out = self.call(m.marble_create_world, routes_for_create({("GET", "/operations/op_1"): {
+            "operation_id": "op_1", "done": True, "error": {"message": "boom"}}}), name="p", images=["https://x/a.jpg"])
+        self.assertEqual(out["error_kind"], "execution")       # it got past the name check and ran again
+        self.assertEqual(len(self.posts("/worlds:generate")), 2)
+
+    def test_running_world_stays_protected(self):
+        self.call(m.marble_create_world, routes_for_create(), name="r", images=["https://x/a.jpg"], open_in_viewer=False)
+        wf = Path(self.out) / "r" / "world.json"
+        wj = json.loads(wf.read_text())
+        wj["status"] = "pending"
+        wf.write_text(json.dumps(wj))
+        out = self.call(m.marble_create_world, routes_for_create({("GET", "/operations/op_1"): {
+            "operation_id": "op_1", "done": False}}), name="r", images=["https://x/a.jpg"])
+        self.assertEqual(out["error_kind"], "args")
+        self.assertEqual(len(self.posts("/worlds:generate")), 1)
+
     def test_ply_format_uses_the_free_export(self):
         ply = Path(self.out) / "src.ply"
         props, a = synthetic(n=10, k=0)

@@ -135,7 +135,9 @@ def _op_error(op: dict) -> AtlasError:
     err = op.get("error") or {}
     msg = err.get("message") or "the world generation failed"
     kind = "content_refusal" if re.search(r"polic|moderat|safety|prohibit", msg, re.I) else "execution"
-    return AtlasError(f"World Labs could not make the world ({msg}).", kind, operation_id=op.get("operation_id"))
+    return AtlasError(f"World Labs could not make the world ({msg}). Nothing usable was kept: calling "
+                      "marble_create_world again with the same name is fine (it replaces the failed attempt).",
+                      kind, operation_id=op.get("operation_id"))
 
 
 def _poll(op: dict, timeout_s: float) -> dict:
@@ -202,6 +204,35 @@ def _load(wd: Path) -> dict:
         have = sorted(p.parent.name for p in wd.parent.glob("*/world.json"))
         raise AtlasError(f"no Marble world '{wd.name}' (looked in {wd.parent}); have: {', '.join(have) or 'none'}.", "args")
     return json.loads(f.read_text(encoding="utf-8"))
+
+
+def _failed_attempt(wd: Path) -> list:
+    """A world folder that may be created over again: the record of the earlier failed attempts ([] when the
+    folder is new). Raises for a world that is finished or still running - those stay protected. A record
+    counts as failed when it says so, when its operation is (per World Labs) done with an error, or when it
+    never got an operation / world id at all."""
+    f = wd / "world.json"
+    if not f.exists():
+        return []
+    try:
+        old = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = {}
+    taken = AtlasError(f"a Marble world named '{wd.name}' already exists; pick another name or use "
+                       "marble_export to fetch more of it", "args")
+    status = old.get("status")
+    if status == "ready" or (status not in ("failed", "pending", None) and old.get("world_id")):
+        raise taken
+    if status != "failed":
+        if old.get("operation_id"):
+            op = _request("GET", f"/operations/{old['operation_id']}")
+            if not (op.get("done") and op.get("error")):
+                raise taken                      # still running, or it finished: marble_export collects it
+            old["status"], old["error"] = "failed", (op.get("error") or {}).get("message")
+        elif old.get("world_id"):
+            raise taken
+    keep = {k: old.get(k) for k in ("operation_id", "created", "model", "error") if old.get(k)}
+    return list(old.get("failed_attempts") or []) + [keep]
 
 
 def _save(wd: Path, world: dict) -> None:
@@ -503,9 +534,7 @@ def _create(name, images, atlas_world, prompt, model, azimuths, reconstruct_imag
     if not wl._slug(name):
         raise AtlasError("give the world a name", "args")
     wd = _world_dir(name, output_dir)
-    if (wd / "world.json").exists():
-        raise AtlasError(f"a Marble world named '{wl._slug(name)}' already exists; pick another name or use "
-                         "marble_export to fetch more of it", "args")
+    previous = _failed_attempt(wd)
     imgs = [str(p).strip() for p in (images or []) if str(p).strip()]
     az = [None] * len(imgs)
     source = {"type": "images"}
@@ -572,14 +601,17 @@ def _create(name, images, atlas_world, prompt, model, azimuths, reconstruct_imag
              "world_id": (op.get("metadata") or {}).get("world_id"), "input": source, "prompt": prompt,
              "estimate": est, "request": {"resolution": res, "format": fmt, "collider_mesh": bool(collider_mesh),
                                            "open_in_viewer": bool(open_in_viewer)}}
+    if previous:
+        world["failed_attempts"] = previous
     _save(wd, world)
     try:
         op = _poll(op, timeout_s)
     except AtlasTimeout as exc:
         exc.extra.setdefault("name", world["name"])
         raise
-    except AtlasError:
+    except AtlasError as exc:
         world["status"] = "failed"
+        world["error"] = str(exc)[:300]
         _save(wd, world)
         raise
     return _finish(wd, world, op, res, fmt, bool(collider_mesh), bool(open_in_viewer))
