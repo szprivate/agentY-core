@@ -7,6 +7,8 @@ The ComfyUI API key is read directly from the .env file.
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 import requests
@@ -137,6 +139,45 @@ def parse_argv_dir_flag(argv: list, flag: str) -> str | None:
     return None
 
 
+# A ComfyUI that is not there must cost one short wait, not 120 s per call. The
+# read timeout stays long (a busy server can be slow to answer), but the CONNECT
+# timeout is short, and after a failed connect the client answers "down" at once
+# for a few seconds instead of every caller paying for its own attempt.
+_CONNECT_TIMEOUT = 3.05
+_READ_TIMEOUT = 120
+_TIMEOUT = (_CONNECT_TIMEOUT, _READ_TIMEOUT)
+_DOWN_FOR = 5.0
+_down_until: dict[str, float] = {}
+_down_lock = threading.Lock()
+
+
+def _refuse_if_down(base_url: str) -> None:
+    with _down_lock:
+        until = _down_until.get(base_url, 0.0)
+    if until > time.monotonic():
+        raise requests.ConnectionError(f"ComfyUI at {base_url} is not reachable (retrying shortly)")
+
+
+def _send(base_url: str, method, url: str, **kw):
+    """``method(url, **kw)`` with a short connect timeout and a fail-fast window."""
+    _refuse_if_down(base_url)
+    try:
+        resp = method(url, **kw)
+    except (requests.ConnectionError, requests.ConnectTimeout):
+        with _down_lock:
+            _down_until[base_url] = time.monotonic() + _DOWN_FOR
+        raise
+    with _down_lock:
+        _down_until.pop(base_url, None)
+    return resp
+
+
+def forget_down() -> None:
+    """Drop the fail-fast memory (a ComfyUI was just started, or a test needs a clean slate)."""
+    with _down_lock:
+        _down_until.clear()
+
+
 class ComfyUIClient:
     """HTTP client for the ComfyUI REST API."""
 
@@ -172,8 +213,9 @@ class ComfyUIClient:
     ) -> requests.Response | dict | list | str:
         """Send a GET request. Returns parsed JSON unless raw=True."""
         url = f"{self.base_url}{path}"
-        resp = requests.get(
-            url, headers=self._headers(), params=params, stream=stream, timeout=120
+        resp = _send(
+            self.base_url, requests.get, url,
+            headers=self._headers(), params=params, stream=stream, timeout=_TIMEOUT,
         )
         raise_for_status(resp)
         if raw or stream:
@@ -196,8 +238,9 @@ class ComfyUIClient:
         if files:
             # Let requests set content-type with boundary for multipart
             headers.pop("Accept", None)
-        resp = requests.post(
-            url, headers=headers, json=json_data, data=data, files=files, timeout=120
+        resp = _send(
+            self.base_url, requests.post, url,
+            headers=headers, json=json_data, data=data, files=files, timeout=_TIMEOUT,
         )
         raise_for_status(resp)
         try:
@@ -214,7 +257,8 @@ class ComfyUIClient:
         minutes on an unreachable ComfyUI would stall shutdown.
         """
         url = f"{self.base_url}{path}"
-        resp = requests.patch(url, headers=self._headers(), json=json_data, timeout=timeout)
+        resp = _send(self.base_url, requests.patch, url, headers=self._headers(),
+                     json=json_data, timeout=(min(_CONNECT_TIMEOUT, timeout), timeout))
         raise_for_status(resp)
         try:
             return resp.json()
@@ -224,7 +268,8 @@ class ComfyUIClient:
     def delete(self, path: str) -> dict | str:
         """Send a DELETE request."""
         url = f"{self.base_url}{path}"
-        resp = requests.delete(url, headers=self._headers(), timeout=120)
+        resp = _send(self.base_url, requests.delete, url, headers=self._headers(),
+                     timeout=_TIMEOUT)
         raise_for_status(resp)
         try:
             return resp.json()
