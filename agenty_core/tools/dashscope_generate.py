@@ -8,9 +8,10 @@ partner nodes, which bill Comfy credits. One tool, two kinds:
 * ``video`` — always an async task: create it (``X-DashScope-Async: enable``), poll
   ``/tasks/{id}`` until it is done, download the MP4 (its URL lives 24 hours).
 
-Endpoints follow ``DASHSCOPE_BASE_URL`` (the same variable the LLM layer reads, so
-a workspace host such as ``ws-….maas.aliyuncs.com`` keeps working); without it the
-Singapore/international host is used. Request shapes are in
+The native API needs a pay-as-you-go key: ``DASHSCOPE_PAYG_API_KEY`` +
+``DASHSCOPE_PAYG_BASE_URL`` when set, else ``DASHSCOPE_API_KEY`` + ``DASHSCOPE_BASE_URL`` (a
+workspace host such as ``ws-….maas.aliyuncs.com`` keeps working). Token Plan / Coding Plan
+keys have no native API; the error says so. Hosts live in ``agenty_core.dashscope_endpoints``. Request shapes are in
 ``docs/integrations/dashscope_generation.md`` of the agentY repo.
 """
 
@@ -29,9 +30,9 @@ from typing import Optional
 import requests
 
 from agenty_core._compat import tool
+from agenty_core.dashscope_endpoints import DEFAULT_BASE_URL, native_url, payg_credentials
 from agenty_core.paths import project_root
 
-_INTL_ROOT = "https://dashscope-intl.aliyuncs.com/api/v1"
 _VIDEO_PATH = "/services/aigc/video-generation/video-synthesis"
 _IMAGE_SYNC_PATH = "/services/aigc/multimodal-generation/generation"
 _IMAGE_ASYNC_PATH = "/services/aigc/text2image/image-synthesis"
@@ -70,14 +71,20 @@ def _err(message: str, kind: str, **extra) -> str:
 
 
 def _api_root() -> str:
-    """``<host>/api/v1`` for whichever host ``DASHSCOPE_BASE_URL`` points at."""
-    base = (os.environ.get("DASHSCOPE_BASE_URL") or "").strip().rstrip("/")
-    m = re.match(r"(https?://[^/]+)", base)
-    return f"{m.group(1)}/api/v1" if m else _INTL_ROOT
+    """``<host>/api/v1`` of the pay-as-you-go endpoint in use (``DASHSCOPE_PAYG_BASE_URL``, else
+    ``DASHSCOPE_BASE_URL``, else the default region)."""
+    _key, base, _err_text = payg_credentials()
+    return native_url(base) or native_url(DEFAULT_BASE_URL)
 
 
 def _api_key() -> str:
-    return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("ALIBABA_API_KEY") or ""
+    """The pay-as-you-go key (``DASHSCOPE_PAYG_API_KEY``, else the main key unless that is a plan key)."""
+    return payg_credentials()[0]
+
+
+def _missing_key_error() -> str:
+    err = payg_credentials()[2]
+    return _err(err or "DASHSCOPE_API_KEY is not set (add it to .env).", "auth")
 
 
 def _classify(status: int, code: str, message: str) -> tuple[str, str]:
@@ -85,8 +92,13 @@ def _classify(status: int, code: str, message: str) -> tuple[str, str]:
     text = f"{code} {message}"
     if _REFUSAL.search(text):
         return "content_refusal", f"DashScope refused the content ({code or status}): {message}"
+    if code.startswith("AccessDenied") or status == 403:
+        return "auth", (f"DashScope refused this key for the model ({code or status}): {message}. "
+                        "Token Plan / Coding Plan keys cannot use image/video generation; set a "
+                        "pay-as-you-go key in DASHSCOPE_PAYG_API_KEY (and DASHSCOPE_PAYG_BASE_URL).")
     if status == 401 or code == "InvalidApiKey":
-        return "auth", f"DashScope rejected the API key ({code or status}): {message}"
+        return "auth", (f"DashScope rejected the API key ({code or status}): {message}. The key, plan and "
+                        "region must match the endpoint (DASHSCOPE_BASE_URL / DASHSCOPE_PAYG_BASE_URL).")
     if _BALANCE.search(text) or status == 402:
         return "balance", f"DashScope account balance or quota problem ({code or status}): {message}"
     if "Model not exist" in message or "model not found" in message.lower():
@@ -300,7 +312,7 @@ def dashscope_generate(kind: str, model: str, prompt: str = "", image_paths: Opt
     if kind not in ("image", "video"):
         return _err("kind must be 'image' or 'video'", "args")
     if not _api_key():
-        return _err("DASHSCOPE_API_KEY is not set (add it to .env).", "auth")
+        return _missing_key_error()
     families = _VIDEO_PREFIXES if kind == "video" else _IMAGE_SYNC_PREFIXES + _IMAGE_ASYNC_PREFIXES
     if not model.startswith(families):
         return _err(f"unknown {kind} model {model!r}; expected a name starting with {', '.join(families)}.",
@@ -408,7 +420,7 @@ def dashscope_fetch(task_id: str, kind: str = "video", model: str = "dashscope",
         an ``error_kind: "timeout"`` error again.
     """
     if not _api_key():
-        return _err("DASHSCOPE_API_KEY is not set (add it to .env).", "auth")
+        return _missing_key_error()
     try:
         return _finish_task(task_id.strip(), kind, model, 30, output_dir, {"provider": "dashscope", "model": model})
     except requests.RequestException as exc:

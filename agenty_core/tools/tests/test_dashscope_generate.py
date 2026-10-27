@@ -31,7 +31,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = mock.patch.dict(os.environ, {"DASHSCOPE_API_KEY": "sk-test", "DASHSCOPE_BASE_URL": ""})
+        env = mock.patch.dict(os.environ, {"DASHSCOPE_API_KEY": "sk-test", "DASHSCOPE_BASE_URL": "",
+                                              "DASHSCOPE_PAYG_API_KEY": "", "DASHSCOPE_PAYG_BASE_URL": ""})
         env.start()
         self.addCleanup(env.stop)
         s = mock.patch.object(d, "_sleep", lambda s: None)
@@ -85,6 +86,19 @@ class VideoTests(Base):
     def test_base_url_host_is_used(self):
         with mock.patch.dict(os.environ, {"DASHSCOPE_BASE_URL": "https://ws-1.maas.aliyuncs.com/compatible-mode/v1"}):
             self.assertEqual(d._api_root(), "https://ws-1.maas.aliyuncs.com/api/v1")
+
+    def test_payg_key_and_url_preferred(self):
+        env = {"DASHSCOPE_API_KEY": "sk-sp-plan", "DASHSCOPE_BASE_URL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+               "DASHSCOPE_PAYG_API_KEY": "sk-pay", "DASHSCOPE_PAYG_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(d._api_key(), "sk-pay")
+            self.assertEqual(d._api_root(), "https://dashscope.aliyuncs.com/api/v1")
+
+    def test_plan_key_alone_is_refused_with_the_fix(self):
+        with mock.patch.dict(os.environ, {"DASHSCOPE_API_KEY": "sk-sp-plan"}):
+            out = json.loads(d.dashscope_generate("video", "wan2.2-i2v-flash", "x"))
+        self.assertEqual(out["error_kind"], "auth")
+        self.assertIn("DASHSCOPE_PAYG_API_KEY", out["error"])
 
     def test_unknown_model_local(self):
         out = json.loads(d.dashscope_generate("video", "sora-2", "x"))
