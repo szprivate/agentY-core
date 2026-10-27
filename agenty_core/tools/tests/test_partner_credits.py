@@ -83,24 +83,24 @@ class PriceEstimate(Base):
         self.assertAlmostEqual(e1080["min_usd"], 2.9392, places=3)
         self.assertLess(est["min_usd"], est["max_usd"])
 
-    def test_known_reference_video_length_tightens_the_worst_case(self):
+    def test_known_reference_video_length_does_not_tighten_the_worst_case(self):
+        # The provider bills the reference clip on its own resolution/fps, so its
+        # length alone must not shrink the upper bound (real bill: $2.67 for a
+        # 720p, 4 s, audio-off Seedance 2.5 run with a 3.0 s reference clip).
         calls = []
         orig = pc._video_seconds
-        pc._video_seconds = lambda name: calls.append(name) or 6.0
+        pc._video_seconds = lambda name: calls.append(name) or 3.0
         try:
-            est = pc.estimate_workflow(seedance("720p", 6, video=True))
+            wf = seedance("720p", 4, video=True, task="reference")
+            est = pc.estimate_workflow(wf)
             self.assertEqual(calls, ["clip.mp4"])
-            self.assertAlmostEqual(est["min_usd"], 1.1943, places=3)
-            self.assertAlmostEqual(est["max_usd"], 2.3804, places=3)     # 6 s out + 6 s in, not +30 s
-            self.assertEqual(est["nodes"][0]["refined_by_video_s"], 6.0)
-            # nothing known about the clip: the 30 s worst case stays
+            self.assertAlmostEqual(est["min_usd"], 0.7989, places=3)
+            self.assertGreaterEqual(est["max_usd"], 2.67)
+            self.assertAlmostEqual(est["max_usd"], 6.7298, places=3)    # 4 s out + the 30 s worst case
+            self.assertEqual(est["nodes"][0]["reference_video_s"], 3.0)
+            self.assertNotIn("refined_by_video_s", est["nodes"][0])
             pc._video_seconds = lambda name: None
-            self.assertAlmostEqual(pc.estimate_workflow(seedance("720p", 6, video=True))["max_usd"], 7.1248, places=3)
-            # a clip that comes from another node (no file to read) is unknown too
-            wf = seedance("720p", 6, video=True)
-            wf["5"]["inputs"] = {"images": ["2", 0]}
-            pc._video_seconds = lambda name: 6.0
-            self.assertAlmostEqual(pc.estimate_workflow(wf)["max_usd"], 7.1248, places=3)
+            self.assertGreaterEqual(pc.estimate_workflow(wf)["max_usd"], 2.67)
         finally:
             pc._video_seconds = orig
 
@@ -173,7 +173,7 @@ class Gate(Base):
         self.assertEqual(cm.exception.payload()["error_kind"], "insufficient_credits")
 
     def test_top_of_range_above_balance_asks_instead_of_refusing(self):
-        # known 6 s clip: $1.19 - $2.39; balance $2.11 sits inside the range
+        # 6 s clip, worst case still +30 s: $1.19 - $7.12; balance $2.11 sits inside the range
         orig = pc._video_seconds
         pc._video_seconds = lambda name: 6.0
         self.balance["effective_balance_cents"] = 211
@@ -182,7 +182,7 @@ class Gate(Base):
                 pc.preflight(seedance("720p", 6, video=True))
             self.assertEqual(cm.exception.error_kind, "confirm_cost")
             self.assertIn("may not be covered", str(cm.exception))
-            self.assertIn("$1.19-$2.38", str(cm.exception))
+            self.assertIn("$1.19-$7.12", str(cm.exception))
             self.assertIn("$2.11", str(cm.exception))
             pc.preflight(seedance("720p", 6, video=True), confirm=True)
             # under the confirmation level but possibly short: still asks

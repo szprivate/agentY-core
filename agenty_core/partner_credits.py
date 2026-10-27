@@ -192,9 +192,11 @@ def _read_price(res: Any) -> tuple[float, float] | None:
 
 # Several video-capable formulas price the worst case for a connected reference
 # video as a fixed extra 30 s on top of the output length (Seedance 2.5:
-# ``$hi := $costFor(out + ($hasVideo ? 30 : 0))``). When the real length of the
-# connected clip(s) is known it replaces the 30; the formula is otherwise untouched.
-_REF_VIDEO_WORST_CASE = "($hasVideo ? 30 : 0)"
+# ``$hi := $costFor(out + ($hasVideo ? 30 : 0))``). That 30 s is NOT tightened to
+# the clip's measured length: the provider bills the reference video on its own
+# pixels x fps x seconds, so a 3 s clip at a higher resolution than the output
+# cost $2.67 against a 3 s-based estimate of $0.80-1.39 (720p, 4 s, audio off).
+# The measured length is only reported (``reference_video_s``) for information.
 
 _VIDEO_KEYS = ("file", "video", "filename", "path")
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mxf")
@@ -253,7 +255,8 @@ def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None,
                   ref_video_s: float | None = None) -> dict | None:
     """Price one node. None = not a paid node. Otherwise
     ``{"min_usd","max_usd","known","approximate","reason"}``. *ref_video_s* is the
-    known length of connected reference video (tightens the worst case)."""
+    known length of connected reference video (reported only; never tightens
+    the worst case, see _REF_VIDEO_WORST_CASE note)."""
     info = info if info is not None else _node_info(class_type)
     badge = (info or {}).get("price_badge")
     if not isinstance(badge, dict) or not badge.get("expr"):
@@ -264,9 +267,8 @@ def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None,
         return out
     try:
         expr = badge["expr"]
-        if ref_video_s is not None and _REF_VIDEO_WORST_CASE in expr:
-            expr = expr.replace(_REF_VIDEO_WORST_CASE, f"($hasVideo ? {float(ref_video_s)!r} : 0)")
-            out["refined_by_video_s"] = ref_video_s
+        if ref_video_s is not None:
+            out["reference_video_s"] = ref_video_s
         res = _evaluate(expr, _context_for(node_inputs, badge, info))
     except Exception as exc:  # noqa: BLE001
         out["reason"] = f"price expression failed ({type(exc).__name__})"
