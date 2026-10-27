@@ -266,6 +266,48 @@ class JobTests(unittest.TestCase):
                 with self.assertRaises(st.SplatError):
                     st.brush_exe()
 
+    def test_brush_found_in_sibling_agenty_checkout(self):
+        # agentY-mcp's project root has no tools/brush: it must reuse the agentY checkout's, not download
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "agentY-mcp"
+            rel = Path("tools") / "brush" / st.BRUSH_VERSION
+            (Path(d) / "agentY" / rel).mkdir(parents=True)
+            exe = Path(d) / "agentY" / rel / st._BRUSH_ASSETS[st._platform_key()][1]
+            exe.write_bytes(b"")
+            root.mkdir()
+            with mock.patch.dict(os.environ, {"BRUSH_PATH": "", "AGENTY_HOME": ""}),                     mock.patch.object(st, "project_root", return_value=root),                     mock.patch("requests.get", side_effect=AssertionError("must not download")):
+                self.assertEqual(st.brush_exe(), exe)
+
+    def test_stalled_download_is_bounded(self):
+        class Slow:
+            def raise_for_status(self): pass
+            def close(self): pass
+            def iter_content(self, n):
+                while True:
+                    yield b"x"
+        with tempfile.TemporaryDirectory() as d,                 mock.patch.dict(os.environ, {"BRUSH_PATH": "", "AGENTY_HOME": ""}),                 mock.patch.object(st, "project_root", return_value=Path(d) / "mcp"),                 mock.patch.object(st, "_DOWNLOAD_BUDGET_S", 0.2),                 mock.patch("requests.get", return_value=Slow()):
+            with self.assertRaises(st.SplatError) as cm:
+                st.brush_exe()
+            self.assertEqual(cm.exception.kind, "dependency")
+
+    def test_missing_brush_fails_before_the_export_and_child_gets_no_stdin(self):
+        with tempfile.TemporaryDirectory() as d:
+            wd = Path(d) / "room"
+            write_world(wd)
+            with mock.patch.object(st, "brush_exe", side_effect=st.SplatError("no brush", "dependency")):
+                out = json.loads(st.train_splat(str(wd), name="x", output_dir=d + "/s"))
+            self.assertEqual(out["error_kind"], "dependency")
+            self.assertFalse((Path(d) / "s" / "x" / "dataset").exists())    # nothing exported first
+            seen = {}
+
+            class Spy(FakeProc):
+                def __init__(self, args, **kw):
+                    seen.update(kw)
+                    super().__init__(args, **kw)
+            with mock.patch.object(st, "brush_exe", return_value=Path(d) / "b.exe"),                     mock.patch.object(st.subprocess, "Popen", Spy),                     mock.patch.object(st, "_free_comfyui_vram", return_value=False):
+                st.start_training(str(wd), "y", output_dir=d + "/s")
+            self.assertIs(seen.get("stdin"), st.subprocess.DEVNULL)
+
 
 class CapturePlanTests(unittest.TestCase):
     def test_ring_goes_all_round_in_growing_yaw(self):

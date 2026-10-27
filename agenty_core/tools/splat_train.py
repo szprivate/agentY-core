@@ -85,6 +85,20 @@ def brush_dir() -> Path:
     return project_root() / "tools" / "brush" / BRUSH_VERSION
 
 
+def _brush_search_dirs() -> list:
+    """Other places a Brush install may live: the agentY app (agentY-mcp's own root has none), AGENTY_HOME, ~/.agenty."""
+    rel = Path("tools") / "brush" / BRUSH_VERSION
+    roots = []
+    if os.environ.get("AGENTY_HOME", "").strip():
+        roots.append(Path(os.environ["AGENTY_HOME"]).expanduser())
+    roots.append(project_root().parent / "agentY")
+    roots.append(Path.home() / ".agenty")
+    return [r / rel for r in roots]
+
+
+_DOWNLOAD_BUDGET_S = 120.0                     # a tool call must never hang on a stalled download
+
+
 def brush_exe(download: bool = True) -> Path:
     """The Brush binary: ``BRUSH_PATH``, else the pinned release under ``<app>/tools/brush`` (fetched once)."""
     env = os.environ.get("BRUSH_PATH", "").strip().strip('"')
@@ -100,6 +114,9 @@ def brush_exe(download: bool = True) -> Path:
     exe = brush_dir() / binary
     if exe.is_file():
         return exe
+    for d in _brush_search_dirs():                # another checkout of the stack may already hold it
+        if (d / binary).is_file():
+            return d / binary
     if not download:
         raise SplatError("Brush is not installed yet", "dependency")
     _download_brush(asset, binary, sha)
@@ -111,11 +128,18 @@ def _download_brush(asset: str, binary: str, sha: Optional[str]) -> None:
     url = _BRUSH_URL.format(v=BRUSH_VERSION, asset=asset)
     logger.info("downloading Brush %s from %s", BRUSH_VERSION, url)
     try:
-        r = requests.get(url, timeout=300)
+        deadline = time.monotonic() + _DOWNLOAD_BUDGET_S
+        r = requests.get(url, timeout=(5, 20), stream=True)
         r.raise_for_status()
-        data = r.content
+        chunks = []
+        for chunk in r.iter_content(1 << 20):
+            chunks.append(chunk)
+            if time.monotonic() > deadline:
+                r.close()
+                raise TimeoutError(f"no complete download within {int(_DOWNLOAD_BUDGET_S)} s")
+        data = b"".join(chunks)
         if not sha:
-            s = requests.get(url + ".sha256", timeout=60)
+            s = requests.get(url + ".sha256", timeout=(5, 20))
             s.raise_for_status()
             sha = s.text.split()[0].strip().lower()
     except Exception as exc:  # noqa: BLE001
@@ -415,6 +439,7 @@ def start_training(source: str, name: str = "", steps: int = 30000, max_splats: 
     if not name:
         raise SplatError("give the splat a name", "args")
     steps = max(500, int(steps))
+    exe = brush_exe()                              # first: a missing Brush fails now, not after the export
     jd = _splat_root(output_dir) / name
     if _job_path(jd).exists():
         old = json.loads(_job_path(jd).read_text(encoding="utf-8"))
@@ -434,7 +459,6 @@ def start_training(source: str, name: str = "", steps: int = 30000, max_splats: 
     else:
         dataset = src
         job.update(cameras=_dataset_cameras(src))
-    exe = brush_exe()
     args = [str(exe), str(dataset), "--total-steps", str(steps), "--max-splats", str(int(max_splats)),
             "--sh-degree", str(int(sh_degree)), "--export-every", str(steps), "--export-path", str(jd / "brush")]
     if job.get("eval_split"):
@@ -446,7 +470,8 @@ def start_training(source: str, name: str = "", steps: int = 30000, max_splats: 
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     with open(jd / "brush.log", "wb") as log:     # the child keeps its own handle
-        proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, cwd=str(jd), creationflags=flags)
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                cwd=str(jd), creationflags=flags)   # never the MCP server's stdio pipe
     _PROCS[name] = proc
     started = time.time()
     try:
