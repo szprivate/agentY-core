@@ -89,7 +89,8 @@ def gate(workflow: dict, workflow_path: str = "", *, open_weight: bool = True, c
                              "min_usd": lo, "max_usd": hi, "approximate": True,
                              "reason": "billed per second of GPU time; range from the expected runtime"})
         est["min_usd"] = round(est["min_usd"] + lo, 4)
-        est["max_usd"] = round(est["max_usd"] + hi, 4)
+        est["known_max_usd"] = round(est.get("known_max_usd", est["max_usd"] or 0.0) + hi, 4)
+        est["max_usd"] = None if est.get("price_unknown") else est["known_max_usd"]
         est["paid"] = True
     if not est["paid"]:
         return est

@@ -603,6 +603,8 @@ def partner_run(node_type: str, inputs: dict | None = None, settings: dict | Non
         if est["paid"]:
             prepared["estimate_usd"] = {"min": est["min_usd"], "max": est["max_usd"],
                                         "unknown_nodes": est["unknown"],
+                                        **({"price_unknown": True, "warning": est["warning"]}
+                                           if est.get("price_unknown") else {}),
                                         "balance": (est.get("balance") or {}).get("effective_usd")}
     except Exception:  # noqa: BLE001 - an estimate must never stop a build
         pass

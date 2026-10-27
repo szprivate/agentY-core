@@ -1170,5 +1170,62 @@
    },
    "expr": "\n                (\n                  $m := widgets.model;\n                  $contains($m, \"fable\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.0143, 0.0715],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"opus 4.8\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.00715, 0.03575],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"sonnet 5\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.00286, 0.0143],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"opus 5.5\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.00572, 0.0286],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"opus 5\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.00715, 0.03575],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"opus\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.005, 0.025],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"sonnet\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.003, 0.015],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : $contains($m, \"haiku\") ? {\n                    \"type\": \"list_usd\",\n                    \"usd\": [0.001, 0.005],\n                    \"format\": { \"approximate\": true, \"separator\": \"-\", \"suffix\": \" per 1K tokens\" }\n                  }\n                  : {\"type\":\"text\", \"text\":\"Token-based\"}\n                )\n                "
   }
+ },
+ "KlingMotionControl": {
+  "price_badge": {
+   "engine": "jsonata",
+   "depends_on": {
+    "widgets": [
+     {
+      "name": "mode",
+      "type": "COMBO"
+     },
+     {
+      "name": "model",
+      "type": "COMBO"
+     }
+    ],
+    "inputs": [],
+    "input_groups": []
+   },
+   "expr": "(\n $prices := {\"kling-v3\": {\"std\": 0.126, \"pro\": 0.168}, \"kling-v2-6\": {\"std\": 0.07, \"pro\": 0.112}};\n $modelPrices := $lookup($prices, widgets.model);\n {\"type\":\"usd\",\"usd\": $lookup($modelPrices, widgets.mode), \"format\":{\"suffix\":\"/second\"}}\n)"
+  },
+  "input": {
+   "required": {
+    "mode": [
+     "COMBO",
+     {
+      "options": [
+       "pro",
+       "std"
+      ]
+     }
+    ],
+    "reference_video": [
+     "VIDEO",
+     {}
+    ],
+    "character_orientation": [
+     "COMBO",
+     {
+      "options": [
+       "video",
+       "image"
+      ]
+     }
+    ]
+   },
+   "optional": {
+    "model": [
+     "COMBO",
+     {
+      "options": [
+       "kling-v3",
+       "kling-v2-6"
+      ]
+     }
+    ]
+   }
+  }
  }
 }

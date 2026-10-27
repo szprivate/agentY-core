@@ -138,14 +138,16 @@ class PriceEstimate(Base):
         wf = {"3": {"class_type": "ClaudeNode", "inputs": {"model": "Sonnet 5"}}}
         est = pc.estimate_workflow(wf)
         self.assertTrue(est["paid"])
-        self.assertEqual(est["max_usd"], 0.0)
+        self.assertIsNone(est["max_usd"])               # unknown, NOT $0
+        self.assertTrue(est["price_unknown"])
+        self.assertIn("NOT $0", est["warning"])
         self.assertEqual(len(est["unknown"]), 1)
         self.assertIn("token", est["unknown"][0]["reason"])
         # widgets the formula needs are absent and have no default: undefined -> unknown
         bad = {"9": {"class_type": "ByteDance2ReferenceNodeV2", "inputs": {}}}
         e2 = pc.estimate_workflow(bad)
         self.assertEqual(len(e2["unknown"]), 1)
-        self.assertEqual(e2["max_usd"], 0.0)
+        self.assertIsNone(e2["max_usd"])
 
     def test_expression_error_is_unknown(self):
         broken = {"price_badge": {"engine": "jsonata", "depends_on": {"widgets": [], "inputs": [], "input_groups": []},
@@ -153,6 +155,81 @@ class PriceEstimate(Base):
         est = pc.estimate_node("X", {}, broken)
         self.assertFalse(est["known"])
         self.assertIn("failed", est["reason"])
+
+
+def kling_motion(model="kling-v3", mode="pro", orientation="video", video=True, file="ref.mp4"):
+    inputs = {"mode": mode, "character_orientation": orientation}
+    if model:
+        inputs["model"] = model
+    wf = {"7": {"class_type": "KlingMotionControl", "inputs": inputs}}
+    if video:
+        inputs["reference_video"] = ["5", 0]
+        wf["5"] = {"class_type": "LoadVideo", "inputs": {"file": file}}
+    return wf
+
+
+class PerSecondPrice(Base):
+    def test_kling_motion_control_is_priced_per_second_of_the_reference_video(self):
+        orig, pc._video_seconds = pc._video_seconds, lambda n: 10.0
+        try:
+            est = pc.estimate_workflow(kling_motion("kling-v3", "pro"))
+            self.assertAlmostEqual(est["max_usd"], 1.68, places=3)      # 10 s x $0.168
+            self.assertEqual(est["unknown"], [])
+            std = pc.estimate_workflow(kling_motion("kling-v2-6", "std"))
+            self.assertAlmostEqual(std["max_usd"], 0.7, places=3)
+        finally:
+            pc._video_seconds = orig
+
+    def test_kling_motion_control_unmeasurable_video_is_a_range(self):
+        orig, pc._video_seconds = pc._video_seconds, lambda n: None
+        try:
+            est = pc.estimate_workflow(kling_motion("kling-v3", "pro"))
+            self.assertAlmostEqual(est["min_usd"], 0.504, places=3)     # 3 s
+            self.assertAlmostEqual(est["max_usd"], 5.04, places=3)      # 30 s
+            img = pc.estimate_workflow(kling_motion("kling-v3", "pro", orientation="image"))
+            self.assertAlmostEqual(img["max_usd"], 1.68, places=3)      # 10 s cap
+        finally:
+            pc._video_seconds = orig
+
+    def test_per_second_price_without_a_length_is_unknown_not_per_run(self):
+        est = pc.estimate_workflow(kling_motion(video=False))
+        self.assertIsNone(est["max_usd"])
+        self.assertIn("per second", est["unknown"][0]["reason"])
+
+
+class UnknownPriceGate(Base):
+    CLAUDE = {"3": {"class_type": "ClaudeNode", "inputs": {"model": "Sonnet 5"}}}
+
+    def test_unknown_price_refuses_until_confirmed(self):
+        with self.assertRaises(pc.CostGateError) as cm:
+            pc.preflight(self.CLAUDE)
+        self.assertEqual(cm.exception.error_kind, "confirm_cost")
+        self.assertIn("UNKNOWN", str(cm.exception))
+        self.assertIn("ClaudeNode", str(cm.exception))
+        self.assertIsNone(cm.exception.payload()["estimate_usd"]["max"])
+        self.assertTrue(cm.exception.payload()["estimate_usd"]["price_unknown"])
+        pc.preflight(self.CLAUDE, confirm=True)          # the user said yes knowing it
+
+    def test_unknown_plus_known_is_not_summed_as_a_total(self):
+        wf = {**seedance("720p"), **self.CLAUDE}
+        est = pc.estimate_workflow(wf)
+        self.assertIsNone(est["max_usd"])
+        self.assertAlmostEqual(est["known_max_usd"], 1.9968, places=3)
+        with self.assertRaises(pc.CostGateError) as cm:
+            pc.preflight(wf)
+        self.assertIn("UNKNOWN", str(cm.exception))
+
+    def test_report_and_many_flag_unknown(self):
+        rep = pc.estimate_report(self.CLAUDE)
+        self.assertIsNone(rep["max_usd"])
+        self.assertTrue(rep["needs_confirmation"])
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "w.json"
+            f.write_text(json.dumps(self.CLAUDE), encoding="utf-8")
+            with self.assertRaises(pc.CostGateError):
+                pc.preflight_many([str(f)])
+            tot = pc.preflight_many([str(f)], confirm=True)
+            self.assertIsNone(tot["max_usd"])
 
 
 class Gate(Base):

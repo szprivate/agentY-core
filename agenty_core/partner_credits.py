@@ -232,9 +232,14 @@ def reference_video_seconds(workflow: dict, node_inputs: dict, badge: dict) -> f
     (a partly known total would understate the worst case)."""
     groups = [g for g in ((badge.get("depends_on") or {}).get("input_groups") or []) if "video" in g]
     total, seen = 0.0, False
-    for g in groups:
+    # Besides the input GROUPS, a plain single input such as Kling's ``reference_video``.
+    for g in groups + ([""] if not groups else []):
         for k, v in (node_inputs or {}).items():
-            if not k.startswith(g + ".") or not _is_link(v):
+            if not _is_link(v):
+                continue
+            if g and not k.startswith(g + "."):
+                continue
+            if not g and not ("." not in k and "video" in k):
                 continue
             src = (workflow or {}).get(str(v[0]))
             secs = None
@@ -278,9 +283,40 @@ def estimate_node(class_type: str, node_inputs: dict, info: dict | None = None,
         out["reason"] = ("priced per token or per use, not per run" if isinstance(res, dict)
                          else "price depends on values that are not set")
         return out
-    out.update(min_usd=round(got[0], 6), max_usd=round(got[1], 6), known=True,
-               approximate=bool(((res.get("format") or {}) if isinstance(res, dict) else {}).get("approximate")))
+    fmt = (res.get("format") or {}) if isinstance(res, dict) else {}
+    approximate = bool(fmt.get("approximate"))
+    if "/second" in str(fmt.get("suffix") or ""):
+        # The badge states a price PER SECOND of output, not per run: multiply by the length.
+        secs = _per_second_length(node_inputs, ref_video_s)
+        if secs is None:
+            out["reason"] = (f"priced per second (${got[0]:g}/s) and the length is not known; "
+                             "set a duration or connect a measurable reference video")
+            return out
+        got = (got[0] * secs[0], got[1] * secs[1])
+        approximate = True
+    out.update(min_usd=round(got[0], 6), max_usd=round(got[1], 6), known=True, approximate=approximate)
     return out
+
+
+def _per_second_length(node_inputs: dict, ref_video_s: float | None) -> tuple[float, float] | None:
+    """(min, max) seconds a per-second price applies to; None when not knowable.
+    A numeric ``duration`` widget wins; else the length of the connected reference
+    video (the motion-control nodes bill the output, which follows it); else, for a
+    reference video not probed, the node's documented range (3-10 s for
+    ``character_orientation=image``, 3-30 s otherwise)."""
+    ni = node_inputs or {}
+    for k in ("duration", "model.duration", "model.duration_seconds"):
+        v = ni.get(k)
+        try:
+            if v is not None and not _is_link(v):
+                return float(v), float(v)
+        except (TypeError, ValueError):
+            pass
+    if ref_video_s:
+        return float(ref_video_s), float(ref_video_s)
+    if "reference_video" in ni and _is_link(ni["reference_video"]):
+        return 3.0, (10.0 if ni.get("character_orientation") == "image" else 30.0)
+    return None
 
 
 def estimate_workflow(workflow: dict, info_for: Callable[[str], Any] | None = None) -> dict:
@@ -315,8 +351,17 @@ def estimate_workflow(workflow: dict, info_for: Callable[[str], Any] | None = No
             hi += est["max_usd"]
         else:
             unknown.append({"node_id": str(nid), "class_type": ct, "reason": est["reason"]})
-    return {"paid": paid, "min_usd": round(lo, 4), "max_usd": round(hi, 4),
-            "nodes": nodes, "unknown": unknown}
+    return {"paid": paid, "min_usd": round(lo, 4),
+            # An unpriced paid node means the true top is unknown: never report it as $0.
+            "max_usd": None if unknown else round(hi, 4),
+            "known_max_usd": round(hi, 4), "nodes": nodes, "unknown": unknown,
+            **({"price_unknown": True, "warning": _unknown_text(unknown)} if unknown else {})}
+
+
+def _unknown_text(unknown: list[dict]) -> str:
+    names = ", ".join(sorted({u["class_type"] for u in unknown}))
+    return (f"PRICE UNKNOWN for {names}: the total cost can NOT be stated and is NOT $0. "
+            "Do not treat it as under budget; tell the user the price is unknown and ask before running.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -385,7 +430,9 @@ class CostGateError(RuntimeError):
 
     def payload(self) -> dict:
         return {"status": "error", "error_kind": self.error_kind, "error": str(self),
-                "estimate_usd": {"min": self.estimate.get("min_usd"), "max": self.estimate.get("max_usd")},
+                "estimate_usd": {"min": self.estimate.get("min_usd"), "max": self.estimate.get("max_usd"),
+                                 **({"price_unknown": True, "unknown_nodes": self.estimate.get("unknown")}
+                                    if self.estimate.get("price_unknown") else {})},
                 "balance_usd": (self.balance or {}).get("effective_usd"),
                 "paid_nodes": [{k: n[k] for k in ("node_id", "class_type", "min_usd", "max_usd")}
                                for n in self.estimate.get("nodes", []) if n.get("known")]}
@@ -427,9 +474,23 @@ def _money(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _top(est: dict) -> float:
+    """The highest KNOWN total (what the numeric checks compare against). With an
+    unpriced node this is only a lower bound of the real top; see price_unknown."""
+    v = est.get("known_max_usd")
+    return float(v if v is not None else (est.get("max_usd") or 0.0))
+
+
 def _range(est: dict) -> str:
-    lo, hi = est["min_usd"], est["max_usd"]
-    return _money(hi) if abs(hi - lo) < 0.005 else f"{_money(lo)}-{_money(hi)}"
+    lo, hi = est["min_usd"], _top(est)
+    r = _money(hi) if abs(hi - lo) < 0.005 else f"{_money(lo)}-{_money(hi)}"
+    if est.get("price_unknown"):
+        return f"{r} for the priced nodes plus an UNKNOWN price for {_unknown_names(est)}"
+    return r
+
+
+def _unknown_names(est: dict) -> str:
+    return ", ".join(sorted({u["class_type"] for u in est.get("unknown") or []}))
 
 
 def preflight(workflow: dict, *, confirm: bool = False, workflow_path: str = "") -> dict:
@@ -449,7 +510,9 @@ def _gate(est: dict, confirm: bool, workflow_path: str) -> dict:
     bal = fetch_balance()
     est["balance"] = bal
     names = ", ".join(sorted({n["class_type"] for n in est["nodes"]}))
-    est["summary"] = (f"{_range(est)} on partner credits ({names})" if est["max_usd"] > 0
+    unknown = bool(est.get("price_unknown"))
+    top = _top(est)
+    est["summary"] = (f"{_range(est)} on partner credits ({names})" if top > 0 or unknown
                       else f"price unknown ({names})")
     if bal is not None and est["min_usd"] > bal["effective_usd"] + 1e-9:
         raise CostGateError(
@@ -458,18 +521,24 @@ def _gate(est: dict, confirm: bool, workflow_path: str) -> dict:
             f"credit balance of {_money(bal['effective_usd'])}. Nothing was submitted; the user has to "
             "top up or pick a cheaper setting (lower resolution, shorter duration).", est, bal)
     ok = (confirm or _confirm_all.get()
-          or _confirmed_paths.get(_norm(workflow_path), -1.0) >= est["max_usd"] - 1e-9)
+          or _confirmed_paths.get(_norm(workflow_path), -1.0) >= top - 1e-9)
     thr = confirm_threshold()
-    short = bool(bal is not None and est["max_usd"] > bal["effective_usd"] + 1e-9)
-    if ((est["max_usd"] >= thr and est["max_usd"] > 0) or short) and not ok:
+    short = bool(bal is not None and top > bal["effective_usd"] + 1e-9)
+    if ((top >= thr and top > 0) or short or unknown) and not ok:
+        if unknown:
+            why = (f"the price of {_unknown_names(est)} is UNKNOWN, so the total can not be checked against any "
+                   "budget (it is not $0)")
+        else:
+            why = (f"at or above the {_money(thr)} confirmation level" if top >= thr
+                   else "under the confirmation level")
         raise CostGateError(
             "confirm_cost",
-            f"Not run: this costs {_range(est)} on partner credits ({names}), "
-            + (f"at or above the {_money(thr)} confirmation level" if est["max_usd"] >= thr
-               else "under the confirmation level")
+            f"Not run: this costs {_range(est)} on partner credits ({names}), {why}"
             + (f"; balance {_money(bal['effective_usd'])}" if bal else "")
             + ("; the top of the range is above the balance, so it may not be covered" if short else "")
-            + ". Tell the user the estimate and ask whether to go ahead; only when they say yes, "
+            + ". Tell the user the estimate"
+            + (" and that part of the price is unknown" if unknown else "")
+            + " and ask whether to go ahead; only when they say yes, "
               "run it again with confirm_cost=True.", est, bal)
     return est
 
@@ -483,7 +552,7 @@ def gate_estimate(est: dict, *, confirm: bool = False, workflow_path: str = "") 
 def preflight_many(paths: list[str], *, confirm: bool = False) -> dict:
     """:func:`preflight` for several workflow files that run together: the gate
     judges their SUM (ten cheap variants are one expensive decision)."""
-    total = {"paid": False, "min_usd": 0.0, "max_usd": 0.0, "nodes": [], "unknown": []}
+    total = {"paid": False, "min_usd": 0.0, "max_usd": 0.0, "known_max_usd": 0.0, "nodes": [], "unknown": []}
     all_confirmed = True
     for path in paths:
         try:
@@ -492,13 +561,16 @@ def preflight_many(paths: list[str], *, confirm: bool = False) -> dict:
             continue
         est = estimate_workflow(wf)
         if est["paid"]:
-            if _confirmed_paths.get(_norm(str(path)), -1.0) < est["max_usd"] - 1e-9:
+            if _confirmed_paths.get(_norm(str(path)), -1.0) < _top(est) - 1e-9:
                 all_confirmed = False
             total["paid"] = True
             total["min_usd"] = round(total["min_usd"] + est["min_usd"], 4)
-            total["max_usd"] = round(total["max_usd"] + est["max_usd"], 4)
+            total["known_max_usd"] = round(total["known_max_usd"] + _top(est), 4)
+            total["max_usd"] = round(total["known_max_usd"], 4)
             total["nodes"] += est["nodes"]
             total["unknown"] += est["unknown"]
+    if total["unknown"]:
+        total.update(max_usd=None, price_unknown=True, warning=_unknown_text(total["unknown"]))
     if total["paid"]:
         _gate(total, confirm or all_confirmed, "")
     return total
@@ -510,7 +582,8 @@ def estimate_report(workflow: dict) -> dict:
     if est["paid"]:
         est["balance"] = fetch_balance()
     est["confirm_above_usd"] = confirm_threshold()
-    est["needs_confirmation"] = bool(est["paid"] and est["max_usd"] >= est["confirm_above_usd"])
+    est["needs_confirmation"] = bool(est["paid"] and (est.get("price_unknown")
+                                                      or _top(est) >= est["confirm_above_usd"]))
     return est
 
 
