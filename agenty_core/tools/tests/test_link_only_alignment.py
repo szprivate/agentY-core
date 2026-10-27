@@ -291,6 +291,13 @@ class RangeAwareScoringTest(unittest.TestCase):
 class WiredWidgetAlignmentTest(unittest.TestCase):
     """End to end on the template that broke twice."""
 
+    def setUp(self):
+        # The conversion reads node schemas from /object_info. Recorded schemas of the classes under test
+        # keep this off the live ComfyUI (down, or a different version): the result must not depend on it.
+        from unittest import mock
+        fixture = {"WanImageToVideo": {"input": WAN_I2V_SCHEMA}, "CreateVideo": {"input": CREATE_VIDEO_SCHEMA}}
+        self.enterContext(mock.patch.object(C, "_get_object_info", lambda: fixture))
+
     def _convert(self, name="video_wan2_2_14B_i2v"):
         import json as _json
         import pathlib

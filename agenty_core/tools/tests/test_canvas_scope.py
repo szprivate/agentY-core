@@ -36,6 +36,9 @@ class CanvasScopeTest(unittest.TestCase):
         self.enterContext(mock.patch.object(comfyui, "get_client", lambda: self.client))
         self.enterContext(mock.patch.object(comfyui, "_load_workflow", lambda p: GRAPH))
         self.enterContext(mock.patch.object(comfyui, "_is_graph_format", lambda w: True))
+        # The schema guard reads /object_info; give it a fixed schema, never a live ComfyUI (or a stale cache).
+        self.enterContext(mock.patch.object(comfyui, "_get_object_info",
+                                            lambda: {"KSampler": {"input": {"required": {}}}}))
         tok = turn_scope.enter(turn_scope.Scope("r", "t"))
         self.addCleanup(turn_scope.leave, tok)
 
