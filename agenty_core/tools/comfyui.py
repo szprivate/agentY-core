@@ -153,7 +153,11 @@ def _server_validate(workflow: dict) -> dict:
         _vpayload: dict = {"prompt": workflow}
         if _vc.api_key:  # API/partner nodes 401 without the key, even to validate
             _vpayload["extra_data"] = {"api_key_comfy_org": _vc.api_key}
-        result = _vc.post("/prompt", json_data=_vpayload)
+        # Not a render: the graph is deleted again at once, so whatever a host does
+        # before a render (agentY stops a local LLM holding the card) is skipped.
+        from agenty_core.utils.comfyui_client import prompt_hooks_suspended
+        with prompt_hooks_suspended():
+            result = _vc.post("/prompt", json_data=_vpayload)
         if isinstance(result, dict):
             if "error" in result:
                 server_errors = {

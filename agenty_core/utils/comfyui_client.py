@@ -5,7 +5,10 @@ Provides a singleton client that handles authentication and base URL configurati
 The ComfyUI API key is read directly from the .env file.
 """
 
+import contextlib
+import contextvars
 import json
+import logging
 import os
 import threading
 import time
@@ -178,6 +181,60 @@ def forget_down() -> None:
         _down_until.clear()
 
 
+# ── Prompt hooks: the one seam every queued graph passes ───────────────────────
+# A graph reaches ComfyUI's queue from many places (the executor, batches, the
+# canvas tap, Atlas renders, the python node, reference measuring...), and all of
+# them go through ``post("/prompt")``. A host that has to act before ComfyUI
+# starts using the graphics card - agentY stops a local LLM server that holds the
+# whole card - registers a hook here instead of patching every caller.
+#
+# ``hook(prompt)`` gets the API-format graph about to be queued. It may block (it
+# runs on the caller's thread, before the POST) and may return a callable, which
+# is called once the POST has returned or failed. A hook that raises is logged
+# and skipped: a render never fails because a hook did.
+_prompt_hooks: list = []
+_hooks_suspended = contextvars.ContextVar("agenty_prompt_hooks_suspended", default=False)
+_hook_log = logging.getLogger("agenty_core.comfyui_client")
+
+
+def add_prompt_hook(hook) -> None:
+    """Call *hook(prompt)* before every graph is queued (idempotent)."""
+    if hook not in _prompt_hooks:
+        _prompt_hooks.append(hook)
+
+
+def remove_prompt_hook(hook) -> None:
+    with contextlib.suppress(ValueError):
+        _prompt_hooks.remove(hook)
+
+
+@contextlib.contextmanager
+def prompt_hooks_suspended():
+    """A ``/prompt`` POST inside this block skips the hooks - for a submit that is
+    not a render (server-side validation queues the graph and deletes it again)."""
+    token = _hooks_suspended.set(True)
+    try:
+        yield
+    finally:
+        _hooks_suspended.reset(token)
+
+
+def _run_prompt_hooks(json_data) -> list:
+    if not _prompt_hooks or _hooks_suspended.get():
+        return []
+    prompt = json_data.get("prompt") if isinstance(json_data, dict) else None
+    afters = []
+    for hook in list(_prompt_hooks):
+        try:
+            after = hook(prompt)
+        except Exception as exc:  # noqa: BLE001 - a hook must never cost the render
+            _hook_log.warning("prompt hook %r failed: %s", hook, exc)
+            continue
+        if callable(after):
+            afters.append(after)
+    return afters
+
+
 class ComfyUIClient:
     """HTTP client for the ComfyUI REST API."""
 
@@ -232,16 +289,26 @@ class ComfyUIClient:
         data: dict | None = None,
         files: dict | None = None,
     ) -> dict | str:
-        """Send a POST request. Returns parsed JSON when possible."""
+        """Send a POST request. Returns parsed JSON when possible.
+
+        A ``/prompt`` POST (a graph queued) runs the prompt hooks first."""
         url = f"{self.base_url}{path}"
         headers = self._headers()
         if files:
             # Let requests set content-type with boundary for multipart
             headers.pop("Accept", None)
-        resp = _send(
-            self.base_url, requests.post, url,
-            headers=headers, json=json_data, data=data, files=files, timeout=_TIMEOUT,
-        )
+        afters = _run_prompt_hooks(json_data) if path.rstrip("/") == "/prompt" else []
+        try:
+            resp = _send(
+                self.base_url, requests.post, url,
+                headers=headers, json=json_data, data=data, files=files, timeout=_TIMEOUT,
+            )
+        finally:
+            for after in afters:
+                try:
+                    after()
+                except Exception as exc:  # noqa: BLE001
+                    _hook_log.warning("prompt hook follow-up failed: %s", exc)
         raise_for_status(resp)
         try:
             return resp.json()
