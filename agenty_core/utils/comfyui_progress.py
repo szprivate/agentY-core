@@ -86,7 +86,7 @@ def _status_is_interrupt(status_info: dict) -> bool:
     return False
 
 
-def _check_history(client, prompt_id: str):
+def _check_history(client, prompt_id: str, health=None):
     """Inline check of /history/{prompt_id}.  Returns terminal dict or None.
 
     A ``completed`` status is only treated as terminal once the prompt's output
@@ -101,7 +101,11 @@ def _check_history(client, prompt_id: str):
         raw = client.get(f"/history/{prompt_id}")
     except Exception as exc:
         logger.debug("history check failed: %s", exc)
+        if health is not None:
+            health.fail()
         return None
+    if health is not None:
+        health.ok()
     if not isinstance(raw, dict) or prompt_id not in raw:
         return None
     entry = raw[prompt_id]
@@ -115,7 +119,7 @@ def _check_history(client, prompt_id: str):
     return None
 
 
-def _prompt_in_queue(client, prompt_id: str):
+def _prompt_in_queue(client, prompt_id: str, health=None, activity=None):
     """Is *prompt_id* currently running or pending in the ComfyUI queue?
 
     Returns True (queued), False (not queued), or None (couldn't check). ComfyUI
@@ -125,17 +129,39 @@ def _prompt_in_queue(client, prompt_id: str):
         q = client.get("/queue")
     except Exception as exc:  # noqa: BLE001
         logger.debug("queue check failed: %s", exc)
+        if health is not None:
+            health.fail()
         return None
     if not isinstance(q, dict):
         return None
-    for key in ("queue_running", "queue_pending"):
-        for entry in (q.get(key) or []):
-            if isinstance(entry, (list, tuple)) and len(entry) > 1 and str(entry[1]) == str(prompt_id):
-                return True
-    return False
+    if health is not None:
+        health.ok()
+    ids = {k: [str(e[1]) for e in (q.get(k) or []) if isinstance(e, (list, tuple)) and len(e) > 1]
+           for k in ("queue_running", "queue_pending")}
+    if activity is not None:
+        activity.running = str(prompt_id) in ids["queue_running"]
+        activity.queue_seen((tuple(ids["queue_running"]), tuple(ids["queue_pending"])))
+    return str(prompt_id) in ids["queue_running"] or str(prompt_id) in ids["queue_pending"]
 
 
-async def _check_terminal(client, prompt_id: str):
+def _stopped(health, activity, prompt_id: str, started_wall: float):
+    """A terminal dict when ComfyUI is gone (API silent too long) or the running job is hung."""
+    from agenty_core.utils import comfyui_liveness as L
+    if health is not None and health.dead():
+        return L.stopped_result(
+            prompt_id, started_wall, reason="comfyui_unreachable",
+            detail=f"its API has not answered for {health.down_for():.0f}s (connection refused / "
+                   "closed), so the process most likely died.")
+    if activity is not None and getattr(activity, "running", False) and activity.stalled():
+        return L.stopped_result(
+            prompt_id, started_wall, reason="comfyui_stalled",
+            detail=f"the job is running but sent no progress, console output or queue change for "
+                   f"{activity.quiet_for() / 60:.0f} min (limit {L.stall_after() / 60:.0f} min, "
+                   "AGENTY_COMFY_STALL_MIN).")
+    return None
+
+
+async def _check_terminal(client, prompt_id: str, health=None, activity=None, started_wall: float = 0.0):
     """Terminal-state check that does NOT rely solely on /history.
 
     Extends ``_check_history`` with a **queue** check so a job that left the queue
@@ -144,20 +170,21 @@ async def _check_terminal(client, prompt_id: str):
     timeout. Returns a terminal dict (``{"history": …}`` or ``{"error": …}``) or
     ``None`` (still running / can't tell — keep waiting).
     """
-    hist = _check_history(client, prompt_id)
+    hist = _check_history(client, prompt_id, health)
     if hist is not None:
         return hist
-    # Still queued (or the queue can't be read) → not terminal.
-    if _prompt_in_queue(client, prompt_id) is not False:
-        return None
+    # Still queued (or the queue can't be read) -> not terminal, unless ComfyUI
+    # has been unreachable too long or the job has gone silent too long.
+    if _prompt_in_queue(client, prompt_id, health, activity) is not False:
+        return _stopped(health, activity, prompt_id, started_wall)
     # Not in the queue and /history isn't terminal: the job has finished/failed.
     # Give lagging outputs a brief window before declaring the outcome.
     for _ in range(6):  # ~2.4 s
         await asyncio.sleep(0.4)
-        hist = _check_history(client, prompt_id)
+        hist = _check_history(client, prompt_id, health)
         if hist is not None:
             return hist
-        if _prompt_in_queue(client, prompt_id):  # re-queued (rare) → keep waiting
+        if _prompt_in_queue(client, prompt_id, health, activity):  # re-queued (rare) → keep waiting
             return None
     return {
         "error": "ComfyUI job left the queue without producing a result — it "
@@ -195,7 +222,8 @@ def _queue_status(client, prompt_id: str, started: float) -> str:
     return f"⏳ Waiting for ComfyUI — {mins} min so far"
 
 
-async def _poll_until_done(client, prompt_id: str, started: float, *, timeout: float | None = None):
+async def _poll_until_done(client, prompt_id: str, started: float, *, timeout: float | None = None,
+                           health=None, activity=None, started_wall: float = 0.0):
     """Follow a job by polling when the WebSocket is not there to follow it.
 
     A dropped socket (ComfyUI restarted, the network blinked) used to end the
@@ -207,7 +235,7 @@ async def _poll_until_done(client, prompt_id: str, started: float, *, timeout: f
     last_line = time.monotonic()
     while timeout is None or time.monotonic() - started < timeout:
         await asyncio.sleep(_POLL_EVERY)
-        fallback = await _check_terminal(client, prompt_id)
+        fallback = await _check_terminal(client, prompt_id, health, activity, started_wall)
         if fallback is not None:
             yield fallback
             return
@@ -294,12 +322,15 @@ async def stream_comfyui_job(
 
     # If the job already completed before we got here (common in batch flows),
     # short-circuit without opening a socket.
-    pre = _check_history(client, prompt_id)
+    from agenty_core.utils import comfyui_liveness as _live
+    health, activity = _live.Health(), _live.Activity()
+    pre = _check_history(client, prompt_id, health)
     if pre is not None:
         yield pre
         return
 
     import time as _time
+    started_wall = _time.time()
 
     last_progress_pct: int = -1
     last_emit_loop_t: float = 0.0
@@ -350,6 +381,8 @@ async def stream_comfyui_job(
                             tap.close()
                             tap = None
                         console_fut = None
+                        if _lines:
+                            activity.touch()
                         for _line in _lines:
                             yield f"🖥 {_line}"
 
@@ -365,7 +398,7 @@ async def stream_comfyui_job(
                     if loop.time() - last_heard >= RECV_TIMEOUT:
                         last_heard = loop.time()
                         last_check = _time.monotonic()
-                        fallback = await _check_terminal(client, prompt_id)
+                        fallback = await _check_terminal(client, prompt_id, health, activity, started_wall)
                         if fallback is not None:
                             yield fallback
                             return
@@ -378,7 +411,7 @@ async def stream_comfyui_job(
                     _now = _time.monotonic()
                     if _now - last_check >= _CHECK_EVERY:
                         last_check = _now
-                        fallback = await _check_terminal(client, prompt_id)
+                        fallback = await _check_terminal(client, prompt_id, health, activity, started_wall)
                         if fallback is not None:
                             yield fallback
                             return
@@ -400,7 +433,8 @@ async def stream_comfyui_job(
                     recv_fut = None
 
                     if isinstance(raw, (bytes, bytearray)):
-                        # Binary preview frames — not used for progress.
+                        # Binary preview frames — not used for progress, but a sign of life.
+                        activity.touch()
                         continue
 
                     try:
@@ -417,6 +451,7 @@ async def stream_comfyui_job(
                         continue
                     if msg_prompt_id == prompt_id:
                         last_line = _time.monotonic()   # news of this job: no heartbeat due
+                        activity.touch()
 
                     if msg_type == "status":
                         qrem = (
@@ -530,5 +565,7 @@ async def stream_comfyui_job(
     # The job outlives a socket that could not be opened or was dropped: keep
     # following it, by polling, until it really ends.
     if ws_lost:
-        async for ev in _poll_until_done(client, prompt_id, started, timeout=timeout):
+        async for ev in _poll_until_done(client, prompt_id, started, timeout=timeout,
+                                         health=health, activity=activity,
+                                         started_wall=started_wall):
             yield ev
