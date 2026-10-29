@@ -362,8 +362,10 @@ class TheRegeneratedCorpus(unittest.TestCase):
 
     def test_sd15_ltxv_hunyuan_video_by_their_files(self):
         # sd15-img2img-denoise06 is a machine-local test template, not part of the
-        # shipped corpus (which has no SD 1.5 template): check it only where present.
-        if "sd15-img2img-denoise06" in self.v.templates:
+        # shipped corpus (which has no SD 1.5 template): check it only where present
+        # in the corpus AND the recipe DB (a local file the committed DB was built
+        # without has no task, so it can't be pinned).
+        if "sd15-img2img-denoise06" in self.v.templates and self.v.task_of("sd15-img2img-denoise06"):
             out = M.pin_templates("SD 1.5 img2img of this photo, denoise 0.6", vocab=self.v)
             self.assertEqual(out["templates"], ["sd15-img2img-denoise06"])
         self.assertEqual(M.pin_templates("LTXV text to video of waves", vocab=self.v)["templates"],
