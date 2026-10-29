@@ -1170,7 +1170,7 @@
             }
           ]
         },
-        "description": "API / cloud generation via Nano Banana 2. text input → 1 image output. Processes and generates content using ComfyUI workflows."
+        "description": "[API] text-to-image via Nano-Banana. text -> image. Uses Gemini APIs for cloud-based generation without local GPU requirements."
       }
     ]
   },
@@ -1217,7 +1217,7 @@
             }
           ]
         },
-        "description": "API / cloud image editing via Nano Banana 2. 1 image input → 1 image output. Processes and generates content using ComfyUI workflows."
+        "description": "[API] image edit via Nano-Banana and GeminiNanoBanana2 nodes. 1 image -> 1 image. Select for instant cloud rendering without local VRAM requirements."
       }
     ]
   },
@@ -1250,7 +1250,7 @@
             }
           ]
         },
-        "description": "API / cloud image editing via Seedream 5.0 lite. 2 image inputs → 1 image output. Processes and generates content using ComfyUI workflows."
+        "description": "[API] Image edit via Seedream. 2 inputs -> 1 output. Use this for cloud-based generation when local hardware is limited."
       }
     ]
   },
@@ -1277,7 +1277,7 @@
             }
           ]
         },
-        "description": "API / cloud image editing via OpenAI GPT2. 1 image input → 1 image output. Processes and generates content using ComfyUI workflows."
+        "description": "[API] image edit via GPT Image 2. 1 input image -> 1 output image. Pick this for cloud-based editing using OpenAI's API."
       }
     ]
   },
@@ -1297,7 +1297,7 @@
             }
           ]
         },
-        "description": "Local generation via ComfyUI Model. text input → 1 image output. Processes and generates content using ComfyUI workflows."
+        "description": "[API] text-to-image via gpt-image-2. prompt -> image. Relies on OpenAI’s cloud generation instead of local models."
       }
     ]
   },
@@ -1369,7 +1369,7 @@
     "templates": [
       {
         "name": "story_refs_only",
-        "description": "Local generation via ComfyUI Model. text input → 1 video output. Processes and generates content using ComfyUI workflows.",
+        "description": "[API] text-to-image via Z-Image and AgentYPython. text prompt -> image. Uses agentY sidebar chat to generate images with Z-Image turbo.",
         "models": [
           "z_image_turbo_bf16",
           "qwen_3_4b",
@@ -1386,7 +1386,7 @@
     "templates": [
       {
         "name": "akagane-video-batch1",
-        "description": "Local image editing via Kling. 6 image inputs → 1 video output. Processes and generates content using ComfyUI workflows.",
+        "description": "[API] image-to-video via ByteDance Seedream, Kling Omni Pro. images -> video. Tags multiple references with AgentYRefNote and aggregates files for dual API video generation.",
         "models": [],
         "io": {
           "inputs": [
@@ -1427,6 +1427,94 @@
               "mediaType": "image"
             }
           ],
+          "outputs": []
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "RemoveBackground_RMBG2",
+        "description": "[Local] background removal via RMBG. image -> image. Pick this for quick single-image background isolation using the dedicated node.",
+        "models": [],
+        "io": {
+          "inputs": [],
+          "outputs": []
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "rain_platform_storyboard",
+        "description": "[API] Storyboard generation via gpt-image-2.5-flare. Eight image refs -> Final image. Use this to batch-create consistent panels from a set of visual inputs.",
+        "models": [],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 25,
+              "nodeType": "VHS_LoadImagePath",
+              "file": "W:\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\0010\\images\\v001\\_Selected\\concept_00006_.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 34,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165705.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 35,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165711.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 36,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165720.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 37,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165727.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 38,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165734.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 39,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165742.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 40,
+              "nodeType": "LoadImage",
+              "file": "Screenshot 2026-09-17 165747.png",
+              "mediaType": "image"
+            }
+          ],
+          "outputs": []
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "morning_people_character_sheet",
+        "description": "[API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> bEpicSendToViewer. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.",
+        "models": [],
+        "io": {
+          "inputs": [],
           "outputs": []
         }
       }

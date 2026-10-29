@@ -1,0 +1,123 @@
+{
+  "25": {
+    "inputs": {
+      "image": "W:\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\0010\\images\\v001\\_Selected\\concept_00006_.png",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load Image (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "28": {
+    "inputs": {
+      "model": "gpt-image-2.5-flare",
+      "model.size": "Custom",
+      "model.custom_width": 1920,
+      "model.custom_height": 1088,
+      "model.background": "auto",
+      "model.quality": "low",
+      "n": 1,
+      "seed": 441399962,
+      "model.images.image_1": [
+        "25",
+        0
+      ],
+      "prompt": "Using the FIRST attached image as the overall STYLE FRAME, and the SEVEN subsequent images as BLOCKOUT / PREVIZ CAMERA REFERENCES (grey 3D blockout screenshots of the train platform: grey geometry = platform, canopy, shelter wall and tracks; a blue/dark box-with-sphere = the MAN; a red box-with-sphere = the WOMAN), create a single storyboard sheet: 6 panels arranged in a clean grid (3 on the top row, 3 on the bottom row). Take the POSITION, FRAMING and CAMERA ANGLE of every panel from its designated blockout reference below — reproduce that camera exactly, but render it in the watercolor style of the first image. NEVER copy the blockout look: no grey clay, no wireframe, no grid lines, no 3D shading, no viewport UI. EVERY panel is a 16:9 widescreen frame — all six identical in size and aspect ratio (16:9, landscape), separated by thin white gutters, read left-to-right, top row then bottom row. No portrait, square, or mixed-format panels anywhere on the sheet; every shot composed for the wide 16:9 frame with generous horizontal negative space.\n\nMEDIUM — COPY THE STYLE FRAME EXACTLY: traditional watercolor on textured paper; visible paper grain and pigment granulation; wet-on-wet blended sky and backgrounds; drier, softer edges on foreground figures; bleeding outlines, never hard ink lines; low saturation, soft contrast, no harsh blacks. Keep fixed across ALL panels: cool desaturated blues/greys/slate palette; muted coral accent; diagonal rain streaks running top-left to bottom-right; strong vertical reflections of lights and figures on the wet platform ground; misty atmospheric perspective dissolving the far background; warm amber lamp/train-headlight glow as the only warm accent against the cold scene.\n\nSETTING — open-air train platform in heavy early-morning rain; tracks receding into fog; station shelter with arched roof supports, large windows and a salmon-pink lower wall; vintage lamp posts with warm glowing lights; puddles rippling near feet. Where the blockout shows the vanishing point off to one side rather than centred, follow the blockout, not the style frame.\n\nCHARACTERS — consistent identities in every panel, clothing colours fixed:\nMAN: short dark hair, long dark navy/black coat, dark trousers; black umbrella in one hand, smartphone in the other.\nWOMAN: shoulder-length dark hair soaking wet, coral/salmon jacket, blue jeans, dark boots, grey scarf; hands jammed in her pockets, shoulders hunched against the cold.\n\nSHOT BREAKDOWN (one 16:9 panel per shot, in this exact order, each keyed to its blockout reference):\n\nPANEL 1 — WIDE SHOT down the length of the platform, camera at standing eye level, perpendicular to the platform edge, wide-angle with strong converging perspective. Vanishing point FAR viewer-LEFT, about halfway up the frame, where the track bed, the platform edge line and the shelter roofline all meet. Composition heavily weighted viewer-RIGHT: the MAN large in the right third, closest object to camera, seen from BEHIND, full body, looking down the platform toward that left vanishing point; the WOMAN mid-ground just right of centre, roughly half his visual height because of the distance, also seen from behind, facing the same way. Shelter wall and canopy occupying the upper-right quadrant; the dark track void along the lower-left diagonal; a light strip of platform edge running diagonally from bottom-centre to middle-left. Environment dominates the frame. Diagonal rain crossing the whole width; pale overcast sky in loose washes; amber lamplight smeared vertically in the soaked ground. Establishes scale, emptiness, and the distance he keeps pretending not to notice.\n\nPANEL 2 — OVER-HIS-SHOULDER, camera at the MAN's eye level, wide-angle. The MAN fills the extreme viewer-LEFT foreground — his head, shoulder and raised phone cropped by the left and top edges of the frame, softly out of focus, we see the back/side of him. Beyond, the WOMAN stands near horizontal centre in the middle distance, sharply smaller (about a quarter of his visible mass), the focal point of the depth of field. A large expanse of empty rain-streaked platform floor spreads between the base of his silhouette on the left and her figure at centre. Canopy structure overhead in the top-right; a brick shelter wall at the far viewer-right edge; the platform's architectural lines converging to a vanishing point on the RIGHT-hand side just above the horizon of the distant tracks. Her reflection a loose vertical smear in the wet ground; rain threading diagonally across the gap that separates them. His head turned only slightly, gaze sidelong and furtive, chin lowered, peeking over the top edge of the phone without really reading it.\n\nPANEL 3 — EXTREME CLOSE-UP on the MAN's face, low angle looking up, wide-angle so his head towers past the horizon line and the crown is CROPPED by the top edge of the panel. He occupies roughly two-thirds of the frame from viewer-left to centre, face turned three-quarter away from camera toward the viewer-RIGHT, but his eyes sharp, steady and unblinking, looking directly at her off-frame in that direction — the pretence of the phone dropped entirely. Water beads on his lashes and temple; rain threads falling past the rim of the motionless umbrella above him; warm amber lamplight catching one eye, cold blue-grey sitting in the shadow of the other; the blurred suggestion of her coral jacket tiny and far off at the right edge of the washed-out background. Background almost dissolved to pale paper. Quiet, exposed, tender rather than intense.\n\nPANEL 4 — LOW-ANGLE LONG SHOT FROM NEAR THE GROUND (roughly knee height), oblique to the platform edge, wide-angle stretching the space aggressively. The WOMAN is the primary subject: CENTRE FRAME, biased very slightly viewer-left, medium shot size relative to the frame, occupying the vertical middle third without touching top or bottom, facing DIRECTLY TOWARD CAMERA — front view, chin lifted, eyes finding him. The MAN is a tiny dark silhouette deep in the BACKGROUND on the viewer-LEFT, standing at the far platform/tracks edge, barely readable, facing generally toward her. Vast empty grey-wet space separating them, spanning what reads as several metres of platform and track. The great dark canopy roof sweeps in from the TOP-RIGHT corner angling sharply down toward centre; a horizontally panelled shelter wall runs along the viewer-RIGHT receding into fog; flat platform surface and a dark track drop-off on the viewer-LEFT. Vanishing point near horizontal centre, just above the base of her figure, where canopy edge, wall panelling and platform edge converge. Amber lamp glow reflecting vertically beneath her.\n\nPANEL 5 — BIG EXTREME CLOSE-UP on the SAME MAN, SAME FACE, SAME LOW ANGLE AND SAME DIRECTION OF GAZE as Panel 3 — identical setup, pushed in much tighter. This is Panel 3 again but even closer: an even more extreme punch-in on the same framing, so tight that the face OVERFLOWS the wide 16:9 frame and is cropped on all four edges — the brow cut by the top edge, the chin and mouth cut off below the bottom edge, cheek running off both side edges. What remains in frame is only the EYE REGION: his two eyes, the bridge of his nose, and the skin of his temples, filling the entire width of the panel. Same three-quarter turn toward the viewer-RIGHT, same steady unblinking look aimed directly at her off-frame, now inescapable at this magnification. Extremely shallow focus: the eyes razor sharp while everything else dissolves into wet pigment. Individual wet lashes separable, a bead of rain hanging on one lash and another tracking down his temple, skin pores and stubble rendered as loose granulated wash rather than hard detail, the damp part of his hairline bleeding off the top of the frame. Warm amber lamplight glinting as a small highlight in one iris, cold blue-grey pooling in the shadow of the other; the faintest blurred ghost of her coral jacket as a smudge of warm colour reflected in the nearer eye. Background entirely pale washed-out paper, texture showing through. No umbrella visible in frame at all — the crop is too tight to include anything but his eyes. The most exposed, unguarded beat of the sequence.\n\nPANEL 6 — TWO-SHOT, balanced composition using the full width of the 16:9 frame, matching the blockout's profile master: camera at standing eye level, positioned perpendicular to the platform edge, looking ACROSS the platform width. The MAN stands on the viewer-RIGHT, seen in near-profile facing left; the WOMAN stands on the viewer-LEFT-CENTRE, also mid-ground, seen in three-quarter-back view turning her head to look up sharply toward him. A wide band of empty, rain-streaked platform floor stretches horizontally between them across the middle third of the frame — clearly several metres of gap, though noticeably less overwhelming than Panels 1 and 4. The dark canopy roof runs as a continuous horizontal band across the TOP THIRD of the frame, supported by thin vertical pillars descending behind both figures; the long, horizontally-panelled shelter wall fills the entire background behind them, receding toward a vanishing point OFF-FRAME to the far LEFT. A darker strip of track bed/platform-edge drop-off runs along the very BOTTOM EDGE of the frame. Their gazes cross for a split second — rain streaking diagonally through the space that connects their faces. His umbrella still perfectly still above him; her hands still in her pockets, shoulders hunched.\n\n(An additional low-angle reverse-angle blockout exists as a continuity reference — woman dominant foreground-right, man a tiny dark shape far left mid-ground — use it only to keep screen-direction and relative scale consistent between Panels 2, 4 and 6; do not draw it as a seventh panel.)\n\nSmall handwritten-style shot numbers \"1\" through \"6\" in the corner of each panel are allowed; no other text, no captions, no dialogue anywhere. Melancholic, quiet, introspective tone throughout — a tiny almost-romance told entirely in glances.\n\nNOTE ON PANEL ORDERING: the closing beat of the sequence (the woman's three-quarter back view, eyes rolled, turning away from him while he smiles faintly and eerily as a soft blur at the opposite edge of the wide frame) belongs AFTER these six panels and is not drawn here."
+    },
+    "class_type": "OpenAIGPTImageNodeV2",
+    "_meta": {
+      "title": "OpenAI GPT Image 2.5"
+    }
+  },
+  "29": {
+    "inputs": {
+      "tab_name": "",
+      "save_to_output": true,
+      "file_format": "png",
+      "fps": 24,
+      "filename_prefix": "./agentrnd/0010/images/v003/concept",
+      "input": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "bEpicSendToViewer",
+    "_meta": {
+      "title": "bEpic Send To Image Viewer"
+    }
+  },
+  "31": {
+    "inputs": {
+      "value": "Using the attached image as the overall STYLE FRAME, create a single storyboard sheet: 6 panels arranged in a clean grid (3 on the top row, 3 on the bottom row). EVERY panel is a 16:9 widescreen frame — all six identical in size and aspect ratio (16:9, landscape), separated by thin white gutters, read left-to-right, top row then bottom row. No portrait, square, or mixed-format panels anywhere on the sheet; every shot is composed for the wide 16:9 frame with generous horizontal negative space.\n\nMEDIUM — COPY THE REFERENCE EXACTLY: traditional watercolor on textured paper; visible paper grain and pigment granulation; wet-on-wet blended sky and backgrounds; drier, softer edges on foreground figures; bleeding outlines, never hard ink lines; low saturation, soft contrast, no harsh blacks. Keep fixed across ALL panels: cool desaturated blues/greys/slate palette; muted coral accent; diagonal rain streaks running top-left to bottom-right; strong vertical reflections of lights and figures on the wet platform ground; misty atmospheric perspective dissolving the far background; warm amber lamp/train-headlight glow as the only warm accent against the cold scene.\n\nSETTING — same as the reference: open-air train platform in heavy early-morning rain; tracks receding into fog; station shelter with arched roof supports, large windows and a salmon-pink lower wall; vintage lamp posts with warm glowing lights; puddles rippling near feet.\n\nCHARACTERS — consistent identities in every panel, clothing colours fixed:\nMAN: short dark hair, long dark navy/black coat, dark trousers; black umbrella in one hand, smartphone in the other.\nWOMAN: shoulder-length dark hair soaking wet, coral/salmon jacket, blue jeans, dark boots, grey scarf; hands jammed in her pockets, shoulders hunched against the cold.\n\nSHOT BREAKDOWN (one 16:9 panel per shot, in this exact order):\n\nPANEL 1 — EXTREME WIDE SHOT, perfectly SYMMETRICAL one-point composition filling the full width of the 16:9 frame. Camera dead-centre on the axis of the platform: vanishing point exactly mid-frame where the fog-swallowed tracks converge; the canopy roofline and its row of arched supports mirrored on the right by the station building's wall and windows; matching lamp posts standing at equal distances down both sides, their amber lights reflected in identical vertical smears on the soaked ground. The two figures are tiny within this symmetry, placed either side of the centre line and clearly far apart — the man small in frame near one edge, the woman a distant speck at the opposite end of the platform, a wide empty stretch of rain-streaked wet concrete between them. Diagonal rain crossing the whole width; pale overcast sky in loose washes. Establishes scale, emptiness, and the distance he keeps pretending not to notice.\n\nPANEL 2 — MEDIUM SHOT OVER HIS SHOULDER, camera just behind and beside him, his umbrella edge and raised phone framing the near corner of the panel softly out of focus. Beyond, she stands waiting — noticeably FAR away, eight to ten metres of empty rainy platform stretching across the width of the 16:9 frame between them, appearing small in the frame, profile view, hands in her pockets, dark hair dripping, breath faint in the cold air. His head is turned only slightly: peeking awkwardly over the top edge of the phone, gaze sidelong and furtive, chin lowered. Rain streaks diagonally through the gap that separates them; her reflection a loose vertical smear in the wet ground.\n\nPANEL 3 — EXTREME CLOSE-UP on the MAN's face, filling the wide 16:9 frame from brow to chin, his eyes sharp and in perfect focus while everything else dissolves. He is looking directly at her — gaze steady, unblinking, aimed off-camera toward where she waits, the pretence of the phone dropped. Water beads on his lashes and temple; rain threads falling past the edge of the umbrella above him; warm amber lamplight catching one eye, cold blue-grey in the shadow of the other; the rim of the umbrella and the blurred suggestion of her coral jacket far off in the soft background. Quiet, exposed, tender rather than intense.\n\nPANEL 4 — HALF-CLOSE / MEDIUM CLOSE-UP on the MAN, eye level, framed wide in 16:9 so his head and shoulders sit slightly off-centre with empty rainy space beside him. He is alone in frame, standing under his tilted black umbrella, phone held up in one hand, the umbrella in the other; flat, blank expression of a man watching nothing in particular, eyes resting on the screen without really reading it. Warm amber lamplight soft on one cheek, cold blue-grey spill on the other; rain threads falling from the umbrella's rim; everything behind him dissolved into pale watery wash so the woman is not readable yet, only a suggestion of colour far off in the wide background. Droplets on his coat shoulders.\n\nPANEL 5 — CLOSE DETAIL, low angle, still in the wide 16:9 format: frame dominated horizontally by the umbrella held motionless above, its spokes spreading across the upper part of the frame. Rain running off the spokes and falling in silver threads from its rim; his eyes sharp and steady beyond it, staring directly toward the woman, unblinking; the phone forgotten and hanging low in his other hand. Water droplets catch the amber lamplight; background washed almost white.\n\nPANEL 6 — TWO-SHOT, medium, balanced composition using the full width of the 16:9 frame: he at one side, she at the other, the rainy gap between them reading clearly across the middle. She looks up sharply; their gazes cross for a split second, rain streaking diagonally through the space that connects their faces. His umbrella still perfectly still above him; her hands still in her pockets, shoulders hunched.\n\nSmall handwritten-style shot numbers \"1\" through \"6\" in the corner of each panel are allowed; no other text, no captions, no dialogue anywhere. Melancholic, quiet, introspective tone throughout — a tiny almost-romance told entirely in glances.\n\nNOTE ON PANEL ORDERING: the closing beat of the sequence (the woman's three-quarter back view, eyes rolled, turning away from him while he smiles faintly and eerily as a soft blur at the opposite edge of the wide frame) belongs AFTER these six panels and is not drawn here."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text (Multiline)"
+    }
+  },
+  "34": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165705.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "35": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165711.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "36": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165720.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "37": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165727.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "38": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165734.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "39": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165742.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "40": {
+    "inputs": {
+      "image": "Screenshot 2026-09-17 165747.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  }
+}

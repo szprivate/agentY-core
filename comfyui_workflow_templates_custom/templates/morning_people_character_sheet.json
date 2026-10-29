@@ -1,0 +1,52 @@
+{
+  "30": {
+    "inputs": {
+      "tab_name": "CHARACTERS",
+      "save_to_output": true,
+      "file_format": "png",
+      "fps": 24.01,
+      "is_sequence": false,
+      "first_frame_number": 1001,
+      "padding": 4,
+      "bit_depth": "auto",
+      "compression": "auto",
+      "quality": 90,
+      "compress_level": 6,
+      "codec": "auto",
+      "input": [
+        "336",
+        0
+      ]
+    },
+    "class_type": "bEpicSendToViewer",
+    "_meta": {
+      "title": "bEpic Send To Image Viewer"
+    }
+  },
+  "307": {
+    "inputs": {
+      "files": "\\\\bepic-storage01\\work\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\agentrnd_0050\\images\\v220\\agentrnd_0050_v220_MARA_longface_00001_.png\n\\\\bepic-storage01\\work\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\agentrnd_0050\\images\\v209\\agentrnd_0050_v209_bEpic_00001_.png\n\\\\bepic-storage01\\work\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\agentrnd_0050\\images\\v220\\agentrnd_0050_v220_ELLA_longface_00001_.png\n\\\\bepic-storage01\\work\\i002_ai_rnd\\02_build\\comfy\\sebastian.zilius\\output\\agentrnd\\agentrnd_0050\\images\\v220\\agentrnd_0050_v220_NORA_longface_00001_.png",
+      "load_incrementally": false
+    },
+    "class_type": "AgentYImageCollector",
+    "_meta": {
+      "title": "review — pick what continues"
+    }
+  },
+  "336": {
+    "inputs": {
+      "model": "gpt-image-2.5-flare",
+      "model.size": "1536x1024",
+      "model.custom_width": 1024,
+      "model.custom_height": 1024,
+      "model.background": "auto",
+      "model.quality": "high",
+      "n": 1,
+      "seed": 1029033390
+    },
+    "class_type": "OpenAIGPTImageNodeV2",
+    "_meta": {
+      "title": "OpenAI GPT Image 2.5"
+    }
+  }
+}
