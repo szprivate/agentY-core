@@ -196,12 +196,24 @@ def _model_brand(stem: str) -> str | None:
     return None
 
 
-def snap_combo(val: str, opts: list, fallback_first: bool = True):
+# Model families whose files do not stand in for one another.
+_FAMILY_BRANDS = ("qwen", "flux", "wan", "ltx", "hunyuan", "hidream", "sdxl", "sd15", "sd3",
+                  "cosmos", "lumina", "chroma", "minimax", "zimage", "kandinsky", "omnigen")
+
+
+def _families(name) -> set:
+    """The known model families a file's name carries ("FLUX.1-dev-…" → {"flux"})."""
+    flat = re.sub(r"[^a-z0-9]", "", str(name).replace("\\", "/").rsplit("/", 1)[-1].lower())
+    return {b for b in _FAMILY_BRANDS if b in flat}
+
+
+def snap_combo(val: str, opts: list, fallback_first: bool = True, strict_family: bool = False):
     """Snap an invalid combo value (e.g. a model file the template references but
     that isn't installed) to the best same-family option. With ``fallback_first``
     (default) an unmatched value falls back to the first option; pass False to
     return None instead (so a model combo can be surfaced for download rather than
-    snapped to an unrelated file)."""
+    snapped to an unrelated file). With ``strict_family`` a file of another known
+    family never stands in (a ControlNet: one made for another model breaks the run)."""
     base = str(val).replace("\\", "/").rsplit("/", 1)[-1].lower()
     stem = base.rsplit(".", 1)[0]
     for o in opts:
@@ -220,6 +232,14 @@ def snap_combo(val: str, opts: list, fallback_first: bool = True):
             same = [o for o in opts if brand in str(o).replace("\\", "/").rsplit("/", 1)[-1].lower()]
             if same:
                 opts = same
+        # A ControlNet never goes into ANOTHER known family. With no Qwen
+        # inpainting ControlNet installed, "Qwen-Image-InstantX-ControlNet-Inpainting"
+        # took "FLUX.1-dev-Controlnet-Inpainting-Beta" on word overlap; the graph
+        # validated and KSampler died with "tuple index out of range", four
+        # attempts running (TC06, night_20261029).
+        mine = _families(stem) if strict_family else set()
+        if mine:
+            opts = [o for o in opts if not (_families(o) and not (_families(o) & mine))]
     best, best_n = None, 0
     for o in opts:
         ot = set(re.findall(r"[a-z0-9]+",
@@ -808,7 +828,8 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
             if is_model and "lora" in str(cinp).lower():
                 snapped = next((o for o in copts if _same_file(o, sval)), None)
             else:
-                snapped = snap_combo(sval, copts, fallback_first=not is_model)
+                snapped = snap_combo(sval, copts, fallback_first=not is_model,
+                                     strict_family=is_model and "control" in str(cinp).lower())
             if snapped is not None and snapped != cval:
                 node.setdefault("inputs", {})[cinp] = snapped
                 # Said out loud unless it is the same file in another folder: a

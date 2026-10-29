@@ -438,7 +438,11 @@ def _local_files(pattern: str, *, exact: bool = False, category: str = "",
         base = name.rsplit("/", 1)[-1]
         if exact and base != pattern:
             continue
-        if not exact and not _matches(name, pattern):
+        # "upscale_models/*" names the folder kind as part of the path: matched
+        # against the name alone it found nothing, and a 2x model that was there
+        # went undownloaded only because the benchmark stopped the turn (CX12).
+        if not exact and not (_matches(name, pattern)
+                              or ("/" in pattern and _matches(f"{cat}/{name}", pattern))):
             continue
         try:
             size = os.path.getsize(full)

@@ -92,7 +92,21 @@ def _versions(text: str, only: str | None = None) -> list[tuple[str, str]]:
             if ver and "." not in ver and fam in ("seedance", "kling", "wan", "ltx", "veo"):
                 ver = ver + ".0"
             out.append((fam, ver))
+    # The first LTX-Video releases name their version after the size
+    # ("ltx-video-2b-v0.9", "ltxv-13b-0.9.7"). Unread, ltxv_text_to_video counted as
+    # versionless, passed for an "LTX-2" request and was built from twice
+    # (CX10, night_20261029): an LTXV 0.9 graph with a T5 encoder.
+    if not only or only == "ltx":
+        for m in re.finditer(r"\bltx[\s-]*v(?:ideo)?[\s-]*(?:\d+(?:\.\d+)?b[\s-]*)?v?(0\.\d+)", low):
+            out.append(("ltx", m.group(1)))
     return out
+
+
+def _no_folders(text: str) -> str:
+    """*text* without the folder part of model paths. "LTX2/ltx-2.5-22b-....safetensors"
+    names LTX 2.5; read with its folder it also "named" LTX 2.0, and every LTX template
+    was then marked NOT FOR THIS REQUEST (CX15, night_20261029)."""
+    return re.sub(r"[\w.-]+[\\/]+(?=[\w.-])", " ", str(text or ""))
 
 
 def request_wants(text: str) -> dict[str, Any]:
@@ -119,7 +133,7 @@ def request_wants(text: str) -> dict[str, Any]:
         shots = int(m.group(1))
     return {
         "kind": kind,
-        "models": [(f, v) for f, v in _versions(low) if v],
+        "models": list(dict.fromkeys((f, v) for f, v in _versions(_no_folders(low)) if v)),
         "families": sorted({f for f, _v in _versions(low)}),
         "resolutions": res,
         "audio": audio,
@@ -278,10 +292,16 @@ def check(request: str | dict, facts: dict) -> dict[str, Any]:
                        + " and animates that, which the request does not ask for")
     # -- model version -------------------------------------------------------
     have = facts.get("models") or []
+    named: dict[str, list[str]] = {}
     for fam, ver in want.get("models") or []:
+        named.setdefault(fam, [])
+        if ver not in named[fam]:
+            named[fam].append(ver)
+    for fam, vers in named.items():
         mine = sorted({v for f, v in have if f == fam})
-        if mine and ver not in mine:
-            reasons.append(f"it uses {fam.title()} {'/'.join(mine)}, the request names {fam.title()} {ver}")
+        if mine and not set(vers) & set(mine):
+            reasons.append(f"it uses {fam.title()} {'/'.join(mine)}, the request names "
+                           f"{fam.title()} {'/'.join(vers)}")
     # -- how the job starts ----------------------------------------------------
     cap = facts.get("capability")
     if want.get("from_frames") and not want.get("reference"):

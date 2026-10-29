@@ -43,5 +43,20 @@ class SnapFamilyTest(unittest.TestCase):
         self.assertIsNone(_model_brand("sd_xl_base_1.0"))
 
 
+class AControlNetStaysInItsFamily(unittest.TestCase):
+    """TC06, night_20261029: the Qwen inpainting ControlNet was not installed and the
+    FLUX one took its place on word overlap; KSampler died on every attempt."""
+
+    NETS = ["Flux-Dev\FLUX.1-dev-Controlnet-Inpainting-Beta.safetensors", "SD15\control_sd15_canny.pth"]
+
+    def test_another_family_does_not_stand_in(self):
+        self.assertIsNone(snap_combo("Qwen-Image-InstantX-ControlNet-Inpainting.safetensors", self.NETS,
+                                     fallback_first=False, strict_family=True))
+
+    def test_its_own_family_still_does(self):
+        self.assertEqual(snap_combo("control_v11p_sd15_canny.pth", self.NETS, fallback_first=False,
+                                    strict_family=True), "SD15\control_sd15_canny.pth")
+
+
 if __name__ == "__main__":
     unittest.main()

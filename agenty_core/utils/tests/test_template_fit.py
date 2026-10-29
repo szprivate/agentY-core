@@ -118,3 +118,39 @@ class Synthetic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelPathsInTheRequest(unittest.TestCase):
+    """CX15, night_20261029: the request listed its files as "LTX2/ltx-2.5-....safetensors";
+    the folder read as "LTX 2.0" and every LTX template, the 2.5 one too, was rejected."""
+
+    REQ = ("Local LTX-2.5 text-to-video. Files: LTX2/ltx-2.5-22b-distilled.safetensors, "
+           "LTX2\gemma4-12b-with-proj-ltx-2.5.safetensors")
+
+    def test_a_folder_is_not_a_version(self):
+        self.assertEqual(T.request_wants(self.REQ)["models"], [("ltx", "2.5")])
+
+    def test_the_named_version_fits_and_another_is_rejected(self):
+        def facts(ver):
+            return {"primary": "video", "kinds": ["video"], "models": [("ltx", ver)]}
+        self.assertEqual(T.check(self.REQ, facts("2.5"))["verdict"], "fit")
+        v = T.check(self.REQ, facts("2.0"))
+        self.assertEqual(v["reasons"], ["it uses Ltx 2.0, the request names Ltx 2.5"])
+
+    def test_two_versions_named_reject_neither(self):
+        v = T.check("compare LTX 2.3 against LTX 2.5", {"models": [("ltx", "2.5")]})
+        self.assertEqual(v["reasons"], [])
+
+
+class TheFirstLtxVideoReleases(unittest.TestCase):
+    """CX10, night_20261029: ltxv_text_to_video (LTX-Video 0.9, a T5 encoder) passed for
+    an "LTX-2" request because its checkpoint name carries the version after the size."""
+
+    def test_the_version_after_the_size_is_read(self):
+        got = {v for f, v in T._versions("ltx-video-2b-v0.9.safetensors and ltxv-13b-0.9.7-dev") if v}
+        self.assertEqual(got, {"0.9"})
+
+    def test_an_ltx_2_request_rejects_it(self):
+        facts = {"models": [("ltx", "0.9")]}
+        v = T.check("Build an LTX-2 text-to-video workflow", facts)
+        self.assertEqual(v["verdict"], "reject")

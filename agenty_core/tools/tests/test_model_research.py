@@ -149,6 +149,12 @@ class OnThisMachine(unittest.TestCase):
         self.assertEqual([f["name"] for f in out["files"]], ["gemma4.gguf"])
         self.assertEqual(json.loads(mr.find_local_models("*gemma*", category="vae"))["count"], 0)
 
+    def test_the_folder_kind_in_the_pattern(self):
+        out = json.loads(mr.find_local_models("vae/*"))
+        self.assertEqual([f["name"] for f in out["files"]], ["ltx-2.5-vae.safetensors"])
+        out = json.loads(mr.find_local_models("loras/*ic-lora*"))
+        self.assertEqual([f["name"] for f in out["files"]], ["ltx/ltx-2.5-ic-lora.safetensors"])
+
     def test_a_workflow_file(self):
         wf = {
             "nodes": [
