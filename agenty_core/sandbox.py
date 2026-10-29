@@ -233,7 +233,15 @@ def check_command(command: str, *, cwd: Path | None = None
 
     roots = allowed_roots()
     base = Path(cwd) if cwd else (roots[0] if roots else Path.cwd())
+    from agenty_core.utils.path_guard import is_secret
     for token in argv[1:]:
+        # `type .env` / `cat .env` carry no slash, so the root check below never
+        # saw them, and .env is inside the project. Not a wall (python -c can
+        # spell the name any way it likes), but the plain way is refused.
+        if not token.startswith("-") and "://" not in token:
+            named = Path(token).expanduser()
+            if is_secret(named if named.is_absolute() else base / named):
+                return None, (f"'{token}' holds credentials; run_script does not read it.")
         if not looks_like_path(token):
             continue
         candidate = Path(token).expanduser()

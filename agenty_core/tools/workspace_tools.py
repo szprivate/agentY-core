@@ -261,6 +261,9 @@ def get_node_source(node_class: str = "", query: str = "", path: str = "",
         target = Path(path)
         if not target.is_absolute() and root is not None:
             target = root / path
+        from agenty_core.utils.path_guard import refuse_read
+        if refuse_read(target):
+            return _out({"ok": False, "error": refuse_read(target, "get_node_source")})
         if not target.exists():
             return _out({"ok": False, "error": f"No such file or folder: {target}"})
         files = _py_files(target)

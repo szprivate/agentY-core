@@ -11,6 +11,7 @@ involved.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -206,9 +207,14 @@ def unregister_workflow_template(name: str, index_path: str = "") -> str:
 
         # Remove the skill directory (kebab-case derived from the name).
         kebab = name.lower().replace("_", "-")
+        skills_root = (root / "skills").resolve()
         skill_dir = root / "skills" / kebab
         skill_removed = False
-        if skill_dir.is_dir():
+        # rmtree of a name the model chose: "..", "../.." or an absolute name
+        # resolved to the project root or above. Only a plain folder name, and
+        # only one directly inside skills/.
+        plain = bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]*", kebab)) and ".." not in kebab
+        if plain and skill_dir.is_dir() and skill_dir.resolve().parent == skills_root:
             shutil.rmtree(skill_dir)
             skill_removed = True
 

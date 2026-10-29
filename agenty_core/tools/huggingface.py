@@ -979,7 +979,18 @@ def _download_blocking(
         # from. Falls back to the models base dir.
         dl_dir, dl_source = _resolve_download_dir(node_class_type, destination_folder, filename, subfolder)
         dl_dir, dl_source = _ensure_not_c_drive(dl_dir, dl_source)  # never fill C:
-        dest_path = dl_dir / filename
+        # The file name is the model's to choose: "../../custom_nodes/x/__init__.py"
+        # or an absolute name would land a download (code) outside the models
+        # folder. A name may hold subfolders, never a way out of dl_dir.
+        _fn = str(filename or "").replace("\\", "/")
+        if (not _fn.strip("/") or _fn.startswith("/") or ":" in _fn
+                or any(seg == ".." for seg in _fn.split("/"))):
+            return json.dumps({"ok": False, "error": f"unusable file name: {filename!r} "
+                               "(a file name, optionally inside subfolders; no '..', "
+                               "drive or absolute path)"})
+        dest_path = dl_dir / _fn.strip("/")
+        if not dest_path.resolve().is_relative_to(dl_dir.resolve()):
+            return json.dumps({"ok": False, "error": f"{filename!r} would land outside {dl_dir}"})
         logger.info("download target: %s (%s)", dest_path, dl_source)
         if job is not None:
             job["to"] = str(dest_path)

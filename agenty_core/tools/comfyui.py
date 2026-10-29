@@ -667,7 +667,12 @@ def _save_workflow(workflow: dict, name: str = "") -> str:
     """Save *workflow* dict to a JSON file and return the absolute path."""
     wd = _workflows_dir()
     wd.mkdir(parents=True, exist_ok=True)
-    stem = name or uuid.uuid4().hex[:8]
+    # A name, never a path: the model picks it, and "../../config/mcp" or an
+    # absolute name used to write any .json on the disk (mcp.json starts programs).
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or "")).strip(". ")
+    stem = stem or uuid.uuid4().hex[:8]
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5] or uuid.uuid4().hex[:8]
     path = wd / f"{stem}.json"
     if isinstance(workflow, dict) and _is_graph_format(workflow):
         _normalize_graph_links(workflow)     # a hand-written UI file must load with its wires
@@ -699,6 +704,9 @@ def _edit_target(workflow_path) -> Path | None:
         resolved = p.resolve()
         if resolved.is_relative_to(_corpus_root().resolve()):
             return None
+        from agenty_core.utils.path_guard import refuse_write
+        if refuse_write(resolved):
+            return None      # keep a copy in the agentY folder; never write config back
         if _is_graph_format(json.loads(resolved.read_text(encoding="utf-8"))):
             return None
         return resolved

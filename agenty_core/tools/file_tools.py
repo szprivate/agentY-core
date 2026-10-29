@@ -62,6 +62,10 @@ def read_text_file(path: list | str, offset: int = 0, max_chars: int = 0,
 
 def _read_text_file_one(path: str, offset: int = 0, max_chars: int = 0,
                         find: str = "") -> str:
+    from agenty_core.utils.path_guard import refuse_read
+    why = refuse_read(path, "read_text_file")
+    if why:
+        return why
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
@@ -139,6 +143,11 @@ def write_text_file(path: str, content: str) -> str:
         p = Path(path)
         if not p.is_absolute():
             p = _WORKSPACE_ROOT / p
+
+        from agenty_core.utils.path_guard import refuse_write
+        why = refuse_write(p, "write_text_file")
+        if why:
+            return json.dumps({"ok": False, "error": why})
 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")

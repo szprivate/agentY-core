@@ -369,6 +369,10 @@ def upload_file_to_url(url: str, file_path: str, content_type: str = "") -> str:
             # set_project_root() at startup, which is what makes a relative path
             # mean the same thing here as it does everywhere else in that app.
             p = (project_root() / file_path).resolve()
+        from agenty_core.utils.path_guard import refuse_read
+        why = refuse_read(p, "upload_file_to_url")
+        if why:
+            return json.dumps({"ok": False, "error": why})
         if not p.exists():
             return json.dumps({"ok": False, "error": f"file not found: {p}"})
         if not p.is_file():
