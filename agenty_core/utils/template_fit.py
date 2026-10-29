@@ -109,6 +109,36 @@ def _no_folders(text: str) -> str:
     return re.sub(r"[\w.-]+[\\/]+(?=[\w.-])", " ", str(text or ""))
 
 
+def _fit_version(ver: str) -> str:
+    """A whole-number version as this module has always written it: "2" -> "2.0"
+    (a 4-digit release like Qwen's "2511" stays as it is)."""
+    return ver + ".0" if re.fullmatch(r"\d{1,2}", ver or "") else ver
+
+
+def _named_versions(text: str) -> list[tuple[str, str]] | None:
+    """``[(family, version)]`` the request names, by the corpus's own model names
+    (:mod:`agenty_core.utils.model_names`); None when that vocabulary is unavailable."""
+    try:
+        from agenty_core.utils import model_names
+        named = model_names.named_models(text)
+    except Exception:  # noqa: BLE001
+        return None
+    return list(dict.fromkeys((m["family"], _fit_version(m["version"])) for m in named if m["version"]))
+
+
+def _template_versions(name: str, data: Any) -> list[tuple[str, str]] | None:
+    """``[(family, version)]`` of a template's model names (catalog names + main model
+    files), or None when it states none - never read off a folder or a template file name."""
+    try:
+        from agenty_core.utils import model_names
+        names = model_names.template_model_names(name, data)
+    except Exception:  # noqa: BLE001
+        return None
+    if not names:
+        return None
+    return [(f, _fit_version(v)) for f, v in model_names.model_versions(names)]
+
+
 def request_wants(text: str) -> dict[str, Any]:
     """What a request asks for, as far as its words say."""
     t = str(text or "")
@@ -131,9 +161,16 @@ def request_wants(text: str) -> dict[str, Any]:
     m = re.search(r"\b(\d{1,3})\s*(?:-)?\s*(shots?|panels?|clips?|scenes?)\b", low)
     if m:
         shots = int(m.group(1))
+    # The model versions named: matched against the model names the corpus uses
+    # ("Qwen Image Edit 2511", "LTX-2.5", "Wan2.2"), so "8 steps" or a folder
+    # ("LTX2/ltx-2.5-...") never reads as a version. The old family regexes only
+    # stand in when that vocabulary cannot be read.
+    models = _named_versions(t)
+    if models is None:
+        models = list(dict.fromkeys((f, v) for f, v in _versions(_no_folders(low)) if v))
     return {
         "kind": kind,
-        "models": list(dict.fromkeys((f, v) for f, v in _versions(_no_folders(low)) if v)),
+        "models": models,
         "families": sorted({f for f, _v in _versions(low)}),
         "resolutions": res,
         "audio": audio,
@@ -215,13 +252,24 @@ def template_facts(data: dict, name: str = "", description: str = "") -> dict[st
     blob = " ".join(texts)
     low_name = (name or "").lower()
 
-    # model versions: node classes ("ByteDance2..."), widget values ("Seedance 2.0"), the name itself
+    # model versions: from the template's model names - the catalog's ("LTX-0.9.5",
+    # "Qwen-Image 2512") and its main model files, without their folders. Only a
+    # graph that states none (an API graph of a custom pack) is read from its
+    # widget values and description, folders stripped. Never from the template's
+    # file name: "image_qwen_image_2512_with_2steps_lora" names a LoRA's step count.
     seen = []
     for src in (blob, name, description):
         for fam, ver in _versions(src):
             if (fam, ver) not in seen:
                 seen.append((fam, ver))
-    facts["models"] = [(f, v) for f, v in seen if v]
+    stated = _template_versions(name, data)
+    if stated is None:
+        stated = []
+        for src in (_no_folders(blob), description):
+            for fam, ver in _versions(src):
+                if ver and (fam, ver) not in stated:
+                    stated.append((fam, ver))
+    facts["models"] = stated
     facts["families"] = sorted({f for f, _v in seen})
 
     res = set()

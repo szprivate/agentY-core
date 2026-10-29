@@ -128,7 +128,8 @@ class ModelPathsInTheRequest(unittest.TestCase):
            "LTX2\gemma4-12b-with-proj-ltx-2.5.safetensors")
 
     def test_a_folder_is_not_a_version(self):
-        self.assertEqual(T.request_wants(self.REQ)["models"], [("ltx", "2.5")])
+        # (The text encoder's file names Gemma 4 too; that is not an LTX version.)
+        self.assertEqual([m for m in T.request_wants(self.REQ)["models"] if m[0] == "ltx"], [("ltx", "2.5")])
 
     def test_the_named_version_fits_and_another_is_rejected(self):
         def facts(ver):
