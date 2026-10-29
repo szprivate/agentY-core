@@ -73,6 +73,10 @@ _TASK_MEDIA = {
 _TASK_FITS = {
     "first_last_frame_to_video": {"first_last_frame_to_video"},
     "image_to_video": {"image_to_video"},
+    # The recipe DB has no reference-to-video task: its r2v graphs are filed under
+    # image / text / video to video by their inputs. The catalog's "Reference to
+    # Video" tag tells them apart (see _tag_fit).
+    "reference_to_video": {"image_to_video", "text_to_video", "video_to_video"},
     "video_to_video": {"video_to_video", "video_inpaint"},
     "text_to_video": {"text_to_video"},
     "inpaint_outpaint": {"inpaint_outpaint", "image_edit"},
@@ -86,6 +90,7 @@ _TASK_FITS = {
 _TASK_WORDS: list[tuple[str, re.Pattern]] = [
     ("first_last_frame_to_video", re.compile(
         r"\bflf2?v?\b|first[\s/-]*(?:and[\s-]*|&[\s-]*)?last[\s-]*frames?|start[\s-]*(?:and|&|/)[\s-]*end[\s-]*frames?")),
+    ("reference_to_video", re.compile(r"reference[\s-]*to[\s-]*video|\br2v\b|\bref2v\b")),
     ("image_to_video", re.compile(
         r"image[\s-]*to[\s-]*video|\bi2v\b|img2vid|animate (?:this|the|my|an?|each|these) "
         r"(?:image|photo|picture|still|frame)s?|(?:image|photo|picture|still) (?:is|as) the first frame|"
@@ -125,12 +130,26 @@ def tokens(text: str) -> list[str]:
     ``"ltx2.5"``, ``"LTX 2.5"``, ``"video_ltx2_5"`` -> ``[..., "ltx", "2.5"]``;
     ``"Wan2.2"``, ``"wan 2.2"``, ``"wan22"`` -> ``["wan", "2.2"]``; ``"LTX-2"`` ->
     ``["ltx", "2"]``; ``"v1.0"`` -> ``["1"]``; ``"Stable Diffusion XL"`` -> ``["sdxl"]``.
+
+    Two well-known file-stem spellings name their model without its usual name;
+    they are the only hand-written spellings here:
+
+    * ``"v1-5-pruned-emaonly"``, ``"v2-1_768-ema-pruned"``: the Stable Diffusion
+      1.x / 2.x release files, which start with the bare version -> ``["sd", "1.5", ...]``;
+    * ``"ltxv"``, ``"ltx-video"``, ``"ltx_video"``: LTX-Video (0.9.x) -> ``["ltx", "v"]``.
+      Not "LTX video" with a space: that is any LTX model making a video.
+
+    Compound words the catalog itself writes apart ("hunyuanvideo" for "Hunyuan
+    Video") are split by :meth:`Vocabulary.respell`, from the catalog's names.
     """
     s = _strip_folders(text).lower()
     s = re.sub(r"\.(?:safetensors|sft|ckpt|pth?|bin|gguf)\b", " ", s)
     s = re.sub(r"stable[\s_-]*diffusion[\s_-]*xl\b", "sdxl", s)
     s = re.sub(r"stable[\s_-]*diffusion", "sd", s)
     s = re.sub(r"(?<![a-z0-9])sd[\s_-]+xl(?![a-z])", "sdxl", s)
+    s = re.sub(r"(?<!sd[\s_-])(?<![a-z0-9])v([12])-(\d)(?=[-_](?:pruned|ema|nonema|inpainting|\d{3}))",
+               r"sd v\1.\2", s)
+    s = re.sub(r"(?<![a-z0-9])ltx(?:[-_]?video|v)(?![a-z])", "ltx v", s)
     # "sd-v1-5": the SD 1.x files write their version with a dash.
     s = re.sub(r"(?<![a-z0-9])v(\d)-(\d)(?![0-9])", r"v\1.\2", s)
     # "wan2_2", "ltx2_5", "ace_step_1_5": a version written with "_" between its parts.
@@ -230,33 +249,49 @@ class Vocabulary:
 
     def __init__(self, entries: dict[str, dict]):
         # entries: {template: {"models": [str], "files": [str], "side": set[str],
-        #                      "task": str|None, "family": str|None}}
+        #                      "task": str|None, "family": str|None, "tags": [str]}}
+        # Words the catalog writes apart and a file (or a request) writes as one:
+        # "Hunyuan Video" / "hunyuanvideo1.5_720p_i2v". Read off the catalog's own
+        # names, so the split is the corpus's, not a hand-kept alias list.
+        self.compounds: dict[str, tuple] = {}
+        for e in entries.values():
+            for raw in e.get("models") or []:
+                t = tokens(raw)
+                if len(t) >= 2 and all(re.fullmatch(r"[a-z]{2,}", x) for x in t) and len("".join(t)) >= 6:
+                    self.compounds.setdefault("".join(t), tuple(t))
         self.templates: dict[str, dict] = {}
         counts: dict[tuple, int] = {}
         for tpl, e in entries.items():
             side = set(e.get("side") or ())
             names: list[tuple] = []
             shown: dict[tuple, str] = {}
-            for raw in list(e.get("models") or []) + list(e.get("files") or []):
-                t = tuple(tokens(raw))
-                if (not t or " ".join(t) in side or str(raw).strip().lower() in _NOT_A_NAME
-                        or _COMPONENT_WORDS & set(t)):
-                    continue
-                # A file's model part ends at its version: "qwen_image_edit_2511_bf16"
-                # names Qwen Image Edit 2511, whatever precision the file is in.
-                cut = next((i for i, x in enumerate(t) if i and is_version(x)), None)
-                for form in ((t[:cut + 1], t) if cut is not None and cut + 1 < len(t) else (t,)):
-                    if form not in names:
-                        names.append(form)
-                        shown.setdefault(form, str(raw) if form == t else " ".join(form))
+            # Where each name comes from: the catalog's model names ("catalog") or
+            # the main model files the graph loads ("file").
+            origin: dict[str, set] = {"catalog": set(), "file": set()}
+            for kind, raws in (("catalog", e.get("models") or []), ("file", e.get("files") or [])):
+                for raw in raws:
+                    t = tuple(self.respell(tokens(raw)))
+                    if (not t or " ".join(t) in side or str(raw).strip().lower() in _NOT_A_NAME
+                            or _COMPONENT_WORDS & set(t)):
+                        continue
+                    # A file's model part ends at its version: "qwen_image_edit_2511_bf16"
+                    # names Qwen Image Edit 2511, whatever precision the file is in.
+                    cut = next((i for i, x in enumerate(t) if i and is_version(x)), None)
+                    for form in ((t[:cut + 1], t) if cut is not None and cut + 1 < len(t) else (t,)):
+                        origin[kind].add(form)
+                        if form not in names:
+                            names.append(form)
+                            shown.setdefault(form, str(raw) if form == t else " ".join(form))
             fam = e.get("family")
             if fam and fam.lower() != "generic":
                 ft = tuple(tokens(fam))
                 if ft and not names:
                     names.append(ft)
                     shown.setdefault(ft, fam)
+                    origin["catalog"].add(ft)
             self.templates[tpl] = {"names": names, "shown": shown, "task": e.get("task"),
-                                   "family": fam}
+                                   "family": fam, "catalog": origin["catalog"],
+                                   "files": origin["file"], "tags": list(e.get("tags") or [])}
             for t in set(names) | ({tuple(tokens(fam))} if fam and fam.lower() != "generic" else set()):
                 counts[t] = counts.get(t, 0) + 1
         # The names a request can name a model by. A file name is long and never
@@ -280,7 +315,13 @@ class Vocabulary:
         for e in entries.values():
             fam = e.get("family")
             if fam and fam.lower() != "generic":
-                vocab.setdefault(tuple(tokens(fam)), fam)
+                ft = tuple(tokens(fam))
+                vocab.setdefault(ft, fam)
+                # A family that has versions ("LTX-2", "WAN 2.2") is also named by
+                # its word alone, so "LTX 3" reads as LTX version 3 - a version no
+                # template has - instead of naming nothing.
+                if len(ft) > 1 and any(is_version(x) for x in ft[1:]):
+                    vocab.setdefault(ft[:1], re.split(r"[\s_-]", fam)[0])
         self.vocab: dict[tuple, str] = {}
         for t, shown in vocab.items():
             if t[0] in _SETTING_WORDS or is_version(t[0]) or len(t) > 6:
@@ -288,6 +329,14 @@ class Vocabulary:
             versioned = any(is_version(x) for x in t[1:])
             if versioned or t[0] in family_heads or len(t) > 1 or (counts.get(t, 0) >= 3 and len(t[0]) >= 4):
                 self.vocab[t] = shown
+
+    def respell(self, toks: Iterable[str]) -> list[str]:
+        """*toks* with the catalog's compounds written apart ("hunyuanvideo" ->
+        "hunyuan", "video")."""
+        out: list[str] = []
+        for t in toks:
+            out.extend(self.compounds.get(t, (t,)))
+        return out
 
     def names_of(self, template: str) -> list[tuple]:
         return list((self.templates.get(template) or {}).get("names") or [])
@@ -359,9 +408,16 @@ def build_entries(dirs: Iterable[Path], db: dict | None) -> dict[str, dict]:
                     continue
                 for t in list(cat.get("templates") or []) + list(cat.get("blueprints") or []):
                     name = t.get("name") if isinstance(t, dict) else None
-                    if name and name not in entries:
-                        entries[name] = {"models": [str(m) for m in (t.get("models") or [])
-                                                    if isinstance(m, str)]}
+                    if not name:
+                        continue
+                    # A template listed in more than one index (a mirror, a node
+                    # pack's own list) keeps what every listing says: the first one
+                    # found can be a bare entry with no models ("FLUX.2 Klein") or tags.
+                    e = entries.setdefault(name, {"models": [], "tags": []})
+                    for key in ("models", "tags"):
+                        for m in t.get(key) or []:
+                            if isinstance(m, str) and m not in e[key]:
+                                e[key].append(m)
         for p in sorted(Path(d).rglob("*.json")):
             if p.name == "index.json" or p.stem in files:
                 continue
@@ -445,7 +501,7 @@ def named_models(text: str, vocab: Vocabulary | None = None) -> list[dict]:
     of reading as "any Wan".
     """
     vocab = vocab or vocabulary()
-    toks = tokens(text)
+    toks = vocab.respell(tokens(text))
     hits: list[tuple[int, int, tuple]] = []
     for name in vocab.vocab:
         n = len(name)
@@ -520,16 +576,84 @@ def model_versions(names: Iterable[tuple]) -> list[tuple[str, str]]:
 def template_model_names(template: str, data: Any = None, vocab: Vocabulary | None = None) -> list[tuple]:
     """The model names of *template*: the corpus's, else (a local graph) its main model files."""
     try:
-        names = (vocab or vocabulary()).names_of(template)
+        vocab = vocab or vocabulary()
+        names = vocab.names_of(template)
     except Exception:  # noqa: BLE001
-        names = []
+        vocab, names = None, []
     if names:
         return names
     if data is not None:
         side = side_model_files(data)
-        return [tuple(tokens(f)) for f in main_model_files(data)
+        respell = vocab.respell if vocab is not None else list
+        return [tuple(respell(tokens(f))) for f in main_model_files(data)
                 if " ".join(tokens(f)) not in side and not _COMPONENT_WORDS & set(tokens(f))]
     return []
+
+
+# The catalog's own task tags (index.json "tags") -> the task they state: a
+# request task, or (the specialties) a task of its own that no request word maps
+# to, so a "Lip Sync" / "Voice Cloning" graph does not pass for plain image-to-
+# video. A tag that names no task ("Video", "API", "Int8", "Anime") states none.
+_TAG_TASKS = {
+    "text to image": "text_to_image", "image edit": "image_edit",
+    "image to video": "image_to_video", "text to video": "text_to_video",
+    "flf2v": "first_last_frame_to_video", "reference to video": "reference_to_video",
+    "video edit": "video_to_video", "video to video": "video_to_video",
+    "inpainting": "inpaint_outpaint", "outpainting": "inpaint_outpaint",
+    "controlnet": "image_edit_with_controlnet",
+    "image upscale": "upscale", "video upscale": "upscale",
+    **{t: t.replace(" ", "_").replace("-", "_") for t in (
+        "lip sync", "voice cloning", "motion control", "character replacement", "video extend",
+        "audio to video", "style transfer", "relight", "virtual try-on", "layer decompose",
+        "remove background", "image to 3d", "text to 3d", "text to audio", "text to speech",
+        "text to music", "frame interpolation", "depth estimation", "pose map")},
+}
+
+# An image request that names no task is a request to MAKE an image (text to
+# image) - unless it hands one in. Without this, "an SD 1.5 workflow with
+# regional prompting" pinned the corpus's only SD 1.5 graphs: an upscaler and an
+# img2img.
+_IMAGE_IN = re.compile(
+    r"\b(?:load(?:s|ed)?|input|upload(?:ed)?|attached|given|this|my)\s+(?:an?\s+|the\s+)?(?:[a-z-]+\s+)?"
+    r"(?:image|photo|picture|still|frame)s?\b(?!\s*(?:of|at)\b)")
+
+# "this workflow", "the current graph", "this text-to-image workflow": the request
+# changes a graph it is given; it names no template to build from.
+_GIVEN_GRAPH = re.compile(
+    r"\b(?:this|my|the (?:current|existing|open|loaded))\s+(?:[\w.-]+\s+){0,3}?(?:workflow|graph)\b")
+
+
+def _tag_fit(task: str | None, tags: Iterable[str], recipe_task: str | None = None) -> int:
+    """-1 when the template's catalog tags state only tasks other than the
+    request's (a "Reference to Video" or "FLF2V" graph for an image-to-video
+    request), else 0. Agreeing tags earn nothing: most custom templates have no
+    tags, and they are no worse a fit for it.
+
+    A tag naming another plain job than the template's recipe task - the catalog
+    tags image_to_video_wan "Text to Video" - is the catalog's slip: the recipe
+    task, read off the graph, has already said what the graph does. Finer tasks
+    (reference / first-last frame / lip sync ...) and a plain one the recipe
+    agrees with count."""
+    if not task:
+        return 0
+    stated = {_TAG_TASKS[t.strip().lower()] for t in tags or () if t.strip().lower() in _TAG_TASKS}
+    stated = {x for x in stated if x not in _BASE_TASKS or x == recipe_task}
+    return -1 if stated and task not in stated else 0
+
+
+_BASE_TASKS = {"text_to_image", "image_edit", "image_to_video", "text_to_video", "video_to_video"}
+
+
+def _unsaid(names: Iterable[tuple], named: list[tuple], words: set) -> int:
+    """The fewest words a name carrying a *named* model adds that the request does
+    not say ("base" in flux-2-klein-base-4b for a "distilled klein" request).
+    Only plain words count: sizes and precisions ("4b", "fp8") are not variants."""
+    out = None
+    for n in names:
+        if any(_contains(tuple(n), m) for m in named):
+            k = sum(1 for x in n if re.fullmatch(r"[a-z]+", x) and x not in words)
+            out = k if out is None else min(out, k)
+    return out or 0
 
 
 def pin_templates(text: str, catalog: Iterable[str] | None = None, vocab: Vocabulary | None = None,
@@ -538,22 +662,41 @@ def pin_templates(text: str, catalog: Iterable[str] | None = None, vocab: Vocabu
 
     ``{"named": [...], "task": ..., "templates": [...]}`` - the templates that carry
     the most of the named models (to the version), whose recipe task fits what
-    the request says (edit / text-to-image / image-to-video ...) and whose model
-    names share the most words with it. None when nothing is named, nothing fits,
-    or the fit is no choice: more than *cap* templates spread over more than two
-    recipes ("FLUX.1" fits every FLUX.1 graph; every Qwen Image Edit 2511 edit
-    graph sits in one recipe and is a fair pick).
+    the request says (edit / text-to-image / image-to-video ...), in this order of
+    preference:
+
+    1. the most named models carried;
+    2. not contradicted: a template whose catalog names, or whose main model
+       files, do not even name the model's family is built on something else and
+       lists the named model only beside it (an SVD graph whose first stage is
+       SDXL; FastH3, a distillation listed as "MiniMax H3" whose files are fasth3);
+    3. the catalog's own task tags do not state another task (not a "Reference
+       to Video" or "FLF2V" graph for an image-to-video request);
+    4. model names that share the most words with the request ("FLUX.1 fill" is
+       flux1-fill-dev, "base and refiner" the refiner example);
+    5. among graphs that load model files, the files that add the fewest words
+       the request does not say ("base" when it asks for the distilled model).
+       A graph with no model file (an API node) is not compared on this.
+
+    None when nothing is named, nothing fits, the request changes a graph it is
+    given ("convert this workflow to SDXL"), or the fit is no choice: more than
+    *cap* templates spread over more than two recipes ("FLUX.1" fits every FLUX.1
+    graph; every Qwen Image Edit 2511 edit graph sits in one recipe and is a fair
+    pick).
     """
     vocab = vocab or vocabulary()
+    if _GIVEN_GRAPH.search(str(text or "").lower()):
+        return None
     named = named_models(text, vocab)
     if not named:
         return None
     task = request_task(text)
     media = None if task else _request_media(text)
-    words = set(tokens(text))
+    if not task and media == "image" and not _IMAGE_IN.search(str(text or "").lower()):
+        task = "text_to_image"
+    words = set(vocab.respell(tokens(text)))
     pool = list(catalog) if catalog is not None else list(vocab.templates)
-    best: list[str] = []
-    best_score: tuple = (0, 0)
+    scored: list[tuple[tuple, int | None, str]] = []
     for tpl in pool:
         names = vocab.names_of(tpl)
         if not names:
@@ -561,23 +704,30 @@ def pin_templates(text: str, catalog: Iterable[str] | None = None, vocab: Vocabu
         carried = [m for m in named if carries(names, m["tokens"])]
         if not carried or not task_fits(task, media, vocab.task_of(tpl)):
             continue
+        info = vocab.templates.get(tpl) or {}
         # A template whose recipe puts it in ANOTHER family loads the named model
         # only as a part (Lotus depth on an SD 1.5 base, Bernini-R on Wan 2.2): not
         # a template "for" that model.
-        fam = (vocab.templates.get(tpl) or {}).get("family") or ""
+        fam = info.get("family") or ""
         if fam and fam.lower() != "generic":
             head = (tokens(fam) or [""])[0]
             if not any(m["family"] == head for m in carried):
                 continue
-        # Then the template whose model names say most of what the request says:
-        # "FLUX.1 fill" is flux1-fill-dev, "base and refiner" the refiner example.
+        toks = [m["tokens"] for m in carried]
+        heads = {t[0] for t in toks}
+        contradicted = any(info.get(k) and not any(heads & set(n) for n in info[k])
+                           for k in ("catalog", "files"))
         said = max(len(set(n) & words) for n in names)
-        score = (len(carried), said)
-        if score > best_score:
-            best, best_score = [tpl], score
-        elif score == best_score:
-            best.append(tpl)
+        score = (len(carried), not contradicted, _tag_fit(task, info.get("tags"), info.get("task")), said)
+        unsaid = _unsaid(info["files"], toks, words) if info.get("files") else None
+        scored.append((score, unsaid, tpl))
+    if not scored:
+        return None
+    top = max(s for s, _u, _t in scored)
+    tied = [(u, t) for s, u, t in scored if s == top]
+    least = min((u for u, _t in tied if u is not None), default=None)
+    best = [t for u, t in tied if u is None or u == least]
     recipes = {(vocab.task_of(t), (vocab.templates.get(t) or {}).get("family")) for t in best}
-    if not best or (len(best) > cap and len(recipes) > 2) or len(best) > 3 * cap:
+    if (len(best) > cap and len(recipes) > 2) or len(best) > 3 * cap:
         return None
     return {"named": [m["name"] for m in named], "task": task, "templates": sorted(best)}
