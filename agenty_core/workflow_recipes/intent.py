@@ -30,12 +30,18 @@ from .roles import classify_role
 # --------------------------------------------------------------------------- #
 # (label, [substrings]) - a label matches if any substring is in the search text.
 _MODEL_FAMILIES: List[tuple] = [
-    ("WAN VACE", ["vace"]),
+    ("WAN VACE", ["vace", "wanvace"]),
     ("WAN 2.2", ["wan2_2", "wan 2.2", "wan_2_2", "wan22", "wan2.2"]),
     ("WAN 2.6", ["wan2_6", "wan 2.6", "wan_2_6", "wan26", "wan2.6"]),
     ("WAN", ["wan"]),
-    ("LTX-2", ["ltx_2", "ltx2", "ltx-2", "ltxv", "ltx 2"]),
+    ("LTX-2", ["ltx_2", "ltx2", "ltx-2", "ltx 2"]),
+    # LTX-Video 0.9.x, by its file "ltx-video-2b-v0.9.5". Not by "ltxv": that was
+    # in LTX-2's list and filed ltxv_text_to_video (LTX-Video 0.9) as LTX-2, but the
+    # LTX-2 API nodes are "LtxvApi..." too. A name that says only "ltxv" reads as
+    # LTX, and the loaded model says which (see _model_families).
+    ("LTX-Video", ["ltx-video", "ltx_video", "ltxvideo"]),
     ("LTX", ["ltx"]),
+    ("Flux 3", ["flux3", "flux_3", "flux 3", "flux.3"]),
     ("Flux 2 Klein", ["flux2_klein", "flux 2 klein", "klein"]),
     ("Flux 2", ["flux_2", "flux 2", "flux2"]),
     ("Flux Krea", ["krea"]),
@@ -45,6 +51,8 @@ _MODEL_FAMILIES: List[tuple] = [
     ("Kling", ["kling"]),
     ("Nano-Banana", ["nano_banana", "nanobanana", "nano-banana"]),
     ("Veo", ["veo"]),
+    # Hunyuan Video before Hunyuan3D, whose bare "hunyuan" filed it as 3D.
+    ("Hunyuan Video", ["hunyuan_video", "hunyuan video", "hunyuanvideo"]),
     ("Hunyuan3D", ["hunyuan3d", "hunyuan"]),
     ("SAM3", ["sam3", "sam_3"]),
     ("MoGe", ["moge"]),
@@ -56,6 +64,7 @@ _MODEL_FAMILIES: List[tuple] = [
     ("ACE-Step", ["ace_step", "ace-step", "ace step"]),
     ("Stable Audio", ["stable_audio", "stable audio"]),
     ("Depth Anything", ["depth_anything", "depth anything"]),
+    ("MiniMax", ["minimax", "hailuo"]),
     ("Lotus", ["lotus"]),
     ("Bernini", ["bernini"]),
     ("SCAIL", ["scail"]),
@@ -71,6 +80,26 @@ _MODEL_FAMILIES: List[tuple] = [
     ("SDPose", ["sdpose"]),
 ]
 
+# A family name is matched where a word STARTS (not inside one: "unwanted" is not
+# WAN, "topaz_image" not Z-Image, "homogeneous" not MoGe). It may run on into a
+# compound ("wanmove", "nanobananapro", "fluxredux"), except where that compound
+# is an ordinary English word: "anima" in "animation"/"animate" filed every
+# MiniMax H3, PixVerse and Seedance image-to-video template whose description
+# animates a still under the Anima family, and "you want" filed others as WAN.
+# Those words end here instead.
+_FAMILY_WORD_END = {
+    "anima": r"(?![a-z])",          # animate, animation, animal
+    "wan": r"(?!t|d|e)",            # want, wanted, wander, wane - not wanvideo, wanmove
+}
+
+
+def _family_pattern(sub: str) -> "re.Pattern":
+    return re.compile(r"(?<![a-z])" + re.escape(sub) + _FAMILY_WORD_END.get(sub, ""))
+
+
+_FAMILY_PATTERNS: List[tuple] = [(label, [_family_pattern(s) for s in subs])
+                                 for label, subs in _MODEL_FAMILIES]
+
 # When a specific variant matches, drop the generic family it implies. This
 # covers both version specifics (WAN 2.2 implies WAN) and finetunes that ship
 # under their own name but load a base-architecture checkpoint (Bernini-R is a
@@ -78,8 +107,9 @@ _MODEL_FAMILIES: List[tuple] = [
 # Bernini, not WAN 2.2, so a "WAN 2.2 video" request is not misrouted to it).
 _FAMILY_SUPPRESS = {
     "WAN VACE": ["WAN"], "WAN 2.2": ["WAN"], "WAN 2.6": ["WAN"],
-    "LTX-2": ["LTX"],
+    "LTX-2": ["LTX", "LTX-Video"], "LTX-Video": ["LTX"], "Hunyuan Video": ["Hunyuan3D"],
     "Flux 2 Klein": ["Flux 2", "Flux"], "Flux 2": ["Flux"], "Flux Krea": ["Flux"],
+    "Flux 3": ["Flux 2 Klein", "Flux"],
     "Bernini": ["WAN 2.2", "WAN"],
 }
 
@@ -252,6 +282,11 @@ class IntentClassifier:
                 wv = node.widgets_values
                 values = wv if isinstance(wv, list) else (wv.values() if isinstance(wv, dict) else [])
                 parts.extend(str(v) for v in values if isinstance(v, str))
+            elif isinstance(node.widgets_values, dict) \
+                    and isinstance(node.widgets_values.get("model"), str):
+                # A partner node's model choice ("LTX-2 (Pro)") is its model (an
+                # API-format graph; is_api depends on the object_info cache).
+                parts.append(node.widgets_values["model"])
         return self._two_view(parts)
 
     @staticmethod
@@ -269,13 +304,23 @@ class IntentClassifier:
     @staticmethod
     def _model_families(primary_text: str, model_text: str = "") -> List[str]:
         def _match(text: str) -> List[str]:
-            return [label for label, subs in _MODEL_FAMILIES if any(s in text for s in subs)]
+            return [label for label, pats in _FAMILY_PATTERNS if any(p.search(text) for p in pats)]
 
         # Prefer the model named in the human-facing text; only fall back to the
         # loaded-checkpoint filenames when the primary text names no family, so a
         # finetune's base-architecture file (wan2.2_bernini_r) does not inject a
         # competing generation family that misroutes requests.
-        matched = _match(primary_text) or _match(model_text)
+        matched = _match(primary_text)
+        if matched:
+            # The name may say only the family's root ("LTXV Text to Video" is
+            # LTX, "image_to_video_wan" WAN); the model it loads says which one
+            # (ltx-video-2b-v0.9.5 is LTX-Video, an API node's "LTX-2 (Pro)" LTX-2).
+            finer = [label for label in _match(model_text)
+                     if set(_FAMILY_SUPPRESS.get(label, [])) & set(matched)]
+            if finer and all(any(r in _FAMILY_SUPPRESS.get(f, []) for f in finer) for r in matched):
+                matched = finer + matched
+        else:
+            matched = _match(model_text)
         suppressed = set()
         for label in matched:
             suppressed.update(_FAMILY_SUPPRESS.get(label, []))

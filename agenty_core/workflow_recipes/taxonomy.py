@@ -157,6 +157,14 @@ class TaxonomyClassifier:
                 return "Image to Video"
             if _name_has(name, "v2v", "vid2vid", "video_to_video", "vace") or has_vid_in:
                 return "Video to Video"
+            # A control-guided video (canny / depth / pose to video) follows a
+            # control video, even when that video comes in as an IMAGE batch of
+            # frames: canny_to_video_ltx_2_0 and pose_to_video_ltx_2_0 were filed
+            # as Image to Video beside their own depth / canny siblings in Video to
+            # Video, and an "LTX-2 image to video" request pinned them.
+            if _name_has(name, "canny", "depth_to", "pose_to", "_control", "controlnet") \
+                    or _has(classes, "controlnet"):
+                return "Video to Video"
             # A bare image input implies image-to-video for LOCAL graphs. Partner
             # generation nodes (e.g. Veo) often expose an OPTIONAL image input, so
             # for API workflows a generic node with no i2v signal stays text-to-video.

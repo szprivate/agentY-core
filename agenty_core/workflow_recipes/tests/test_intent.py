@@ -84,6 +84,37 @@ class TestMediaTaskModel(unittest.TestCase):
         self.assertEqual(I.classify(_graph("image_captioning_gemini")).media, "text")
 
 
+class TestFamilyWords(unittest.TestCase):
+    """A family name is matched where a word starts, and English words are not names."""
+
+    def test_animation_is_not_anima(self):
+        g = _graph("video_minimax_h3_i2v",
+                   description="MiniMax H3 image to video, ideal for character-driven animation tests.")
+        self.assertEqual(I.classify(g).model_families, ["MiniMax"])
+        g = _graph("api_pixverse_v6_max_i2v", description="Image to video: animate a still image.")
+        self.assertEqual(I.classify(g).model_families, [])
+        self.assertEqual(I.classify(_graph("image_anima_preview")).model_families, ["Anima"])
+
+    def test_want_is_not_wan_and_topaz_image_is_not_z_image(self):
+        g = _graph("api_bria_eraser", description="Remove unwanted objects; describe what you want.")
+        self.assertEqual(I.classify(g).model_families, [])
+        self.assertEqual(I.classify(_graph("api_topaz_image_enhance")).model_families, ["Topaz"])
+        self.assertEqual(I.classify(_graph("video_wanmove_480p")).model_families, ["WAN"])
+        self.assertEqual(I.classify(_graph("bEpic_VID2VID_WanVace")).model_families, ["WAN VACE"])
+
+    def test_the_loaded_model_says_which_ltx(self):
+        g = _graph("ltxv_text_to_video", classes=["CheckpointLoaderSimple"],
+                   widgets={"CheckpointLoaderSimple": ["ltx-video-2b-v0.9.5.safetensors"]})
+        self.assertEqual(I.classify(g).model_families, ["LTX-Video"])
+        g = _graph("api_ltxv_text_to_video", classes=["LtxvApiTextToVideo"])
+        next(iter(g.nodes.values())).widgets_values = {"model": "LTX-2 (Pro)", "prompt": "waves"}
+        self.assertEqual(I.classify(g).model_families, ["LTX-2"])
+
+    def test_hunyuan_video_is_not_hunyuan3d(self):
+        self.assertEqual(I.classify(_graph("video_hunyuan_video_1.5_720p_t2v")).model_families, ["Hunyuan Video"])
+        self.assertEqual(I.classify(_graph("3d_hunyuan3d-v2.1")).model_families, ["Hunyuan3D"])
+
+
 class TestPhrasing(unittest.TestCase):
     def test_example_requests_match_user_phrasing(self):
         reqs = I.example_requests("video", "image_to_video", ["WAN 2.2"])

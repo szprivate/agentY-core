@@ -71,6 +71,13 @@ class TestTaxonomy(unittest.TestCase):
                    b_out=["VIDEO"])
         self.assertEqual(T.classify(g), "Image to Video")
 
+    def test_control_to_video_is_video_to_video(self):
+        # The control video can come in as an IMAGE batch of frames.
+        for name in ("canny_to_video_ltx_2_0", "pose_to_video_ltx_2_0"):
+            g = _graph(name, ["UNETLoader", "KSampler", "SaveVideo"], b_in=["STRING", "IMAGE", "IMAGE"],
+                       b_out=["VIDEO"])
+            self.assertEqual(T.classify(g), "Video to Video", name)
+
     def test_first_last_frame(self):
         g = _graph("video_wan2_2_14B_flf2v", ["UNETLoader", "KSampler", "VHS_VideoCombine"],
                    b_in=["IMAGE"], b_out=["VIDEO"])
