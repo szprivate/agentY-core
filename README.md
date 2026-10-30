@@ -59,3 +59,7 @@ uv pip install -e ../agentY-core
 ```
 
 Both apps' `requirements.txt` already include `-e ../agentY-core`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
