@@ -3286,14 +3286,143 @@ def _resolve_comfyui_python() -> "Path | None":
             root / "python_embeded" / "python.exe",
             root / ".venv" / "Scripts" / "python.exe",
             root / "venv" / "Scripts" / "python.exe",
+            root.parent / ".venv" / "Scripts" / "python.exe",
+            root.parent / "venv" / "Scripts" / "python.exe",
         ]
     else:
         candidates = [
             root / ".venv" / "bin" / "python",
             root / "venv" / "bin" / "python",
+            root.parent / ".venv" / "bin" / "python",
             root.parent / "venv" / "bin" / "python",
         ]
-    return next((c for c in candidates if c.exists()), None)
+    # The interpreter ComfyUI reports it runs on (/system_stats python_version):
+    # a venv lying next to ComfyUI that is NOT the one it runs on would take the
+    # pack's requirements while ComfyUI goes on without them.
+    want = _comfyui_python_version()
+    for c in candidates:
+        if not c.exists():
+            continue
+        if want and _python_version_of(c) not in (want, ""):
+            continue
+        return c
+    return None
+
+
+def _comfyui_python_version() -> str:
+    """``"3.12"`` from ComfyUI's /system_stats, or ``""`` when it does not say."""
+    try:
+        stats = get_client().get("/system_stats")
+        ver = str(((stats or {}).get("system") or {}).get("python_version") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    m = re.match(r"\s*(\d+)\.(\d+)", ver)
+    return f"{m.group(1)}.{m.group(2)}" if m else ""
+
+
+def _python_version_of(py: Path) -> str:
+    """``"3.12"`` for the interpreter at *py*, or ``""`` when it cannot be run."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            [str(py), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _is_embedded_python(py: Path) -> bool:
+    """The Windows portable build's ``python_embeded``: run it with ``-s`` (no user
+    site-packages), as ComfyUI's own launch scripts and ComfyUI-Manager do, so the
+    pack's requirements land in the embedded environment and not in the user's
+    roaming site-packages."""
+    return any(p.lower() == "python_embeded" for p in Path(py).parts)
+
+
+def _pip_install_command(py: Path, requirements: Path) -> "list[str] | None":
+    """The command that installs *requirements* into the environment of *py*.
+
+    ``python -m pip`` when that interpreter has pip; a uv-made venv has none, so
+    then ``uv pip install --python <py>`` when uv is on PATH. ``None`` when
+    neither can install."""
+    import shutil
+    import subprocess
+    lead = [str(py)] + (["-s"] if _is_embedded_python(py) else [])
+    try:
+        has_pip = subprocess.run(
+            lead + ["-m", "pip", "--version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001
+        has_pip = False
+    if has_pip:
+        return lead + ["-m", "pip", "install", "-r", str(requirements)]
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", str(py), "-r", str(requirements)]
+    return None
+
+
+# Where a node pack may be cloned from: https on a public git host. Anything
+# else (ssh, git://, file://, ext::, a host nobody named) is refused before git
+# runs. More hosts, e.g. a studio's own GitLab: AGENTY_CUSTOM_NODE_HOSTS
+# (comma-separated host names).
+_NODE_PACK_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "gitee.com")
+_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10)),
+                     *(f"lpt{i}" for i in range(10))}
+
+
+def _node_pack_hosts() -> set:
+    extra = os.environ.get("AGENTY_CUSTOM_NODE_HOSTS", "")
+    return {h.strip().lower() for h in (*_NODE_PACK_HOSTS, *extra.split(",")) if h.strip()}
+
+
+def validate_node_pack_source(source: str) -> "tuple[str, str]":
+    """``(clone_url, folder_name)`` for a node pack's repository URL, or
+    ``ValueError`` saying why it is refused.
+
+    Only ``https://<known git host>/<owner>/<repo>[.git]``: no credentials, port,
+    query or fragment in the URL, every path segment a plain name, and the folder
+    the pack gets in custom_nodes (the repo name) a safe file name - it used to be
+    taken unchecked from the URL's last segment."""
+    from urllib.parse import urlsplit
+
+    raw = (source or "").strip()
+    if not raw:
+        raise ValueError("source must be the pack's https git URL")
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError(f"not a valid URL: {raw!r} ({exc})") from None
+    if parts.scheme.lower() != "https":
+        raise ValueError(f"only https git URLs are allowed, not {parts.scheme or 'no scheme'!r}: {raw!r}")
+    if parts.username or parts.password or "@" in parts.netloc:
+        raise ValueError("the URL must not carry a user name or password")
+    if port not in (None, 443):
+        raise ValueError("the URL must not name a port")
+    if parts.query or parts.fragment or "?" in raw or "#" in raw:
+        raise ValueError("the URL must not have a query or fragment - give the repository URL itself")
+    host = (parts.hostname or "").lower()
+    allowed = _node_pack_hosts()
+    if host not in allowed:
+        raise ValueError(f"{host or '(no host)'!r} is not a git host node packs are installed from "
+                         f"({', '.join(sorted(allowed))}; more via AGENTY_CUSTOM_NODE_HOSTS)")
+    segs = [s for s in parts.path.split("/") if s]
+    if segs and segs[-1].lower().endswith(".git"):
+        segs[-1] = segs[-1][:-4]
+    if len(segs) < 2 or (host == "github.com" and len(segs) != 2):
+        raise ValueError(f"give the repository itself (https://{host}/<owner>/<repo>), not {raw!r}")
+    for s in segs:
+        if not _SAFE_SEGMENT.match(s) or ".." in s:
+            raise ValueError(f"unsafe path segment {s!r} in {raw!r}")
+    name = segs[-1]
+    if name.lower().split(".")[0] in _WINDOWS_RESERVED or name.endswith("."):
+        raise ValueError(f"{name!r} cannot be a folder name")
+    return f"https://{host}/" + "/".join(segs) + ".git", name
 
 
 def _manager_get_mappings() -> dict:
@@ -3426,19 +3555,27 @@ def find_custom_node_for(node_type: str) -> str:
 
 @tool
 def install_custom_node(source: str, run_pip: bool = True, restart: bool = False) -> str:
-    """Install a ComfyUI custom-node pack from a git URL.
+    """Install a ComfyUI custom-node pack from its git repository.
+
+    Use it when the user asks to install / set up a node pack (they give its
+    GitHub link), or to heal a workflow that is missing a node. Never clone into
+    custom_nodes with a script: this is the one sanctioned way, and it asks the
+    user first.
 
     Clones the pack into ComfyUI's ``custom_nodes/`` directory and (when
-    ``run_pip`` is True) installs its ``requirements.txt`` into ComfyUI's *own*
-    Python environment. New nodes only load after a ComfyUI restart — set
-    ``restart=True`` to ask ComfyUI-Manager to reboot the server (works only when
-    Manager is installed); otherwise restart ComfyUI manually.
+    ``run_pip`` is True) installs its ``requirements.txt`` into the Python
+    ComfyUI itself runs on (the portable build's ``python_embeded``, or ComfyUI's
+    venv - pip, or uv for a venv without pip). New nodes only load after a ComfyUI
+    restart: tell the user so. ``restart=True`` asks ComfyUI-Manager to reboot the
+    server (only when Manager is installed and the user agreed).
 
-    To resolve a git URL from a *missing node class*, call ``find_custom_node_for``
-    first and pass one of its candidate ``source`` URLs here.
+    Only ``https://`` URLs on a known git host (github.com, gitlab.com,
+    bitbucket.org, codeberg.org, gitee.com) are accepted, of the repository
+    itself (``https://github.com/<owner>/<repo>``). To resolve a URL from a
+    *missing node class*, call ``find_custom_node_for`` first.
 
     Args:
-        source: A git URL (``https://…`` or ``git@…``) to the pack's repository.
+        source: The pack's repository URL, e.g. 'https://github.com/owner/ComfyUI-Pack'.
         run_pip: Install the pack's requirements.txt into ComfyUI's Python (default True).
         restart: Ask ComfyUI-Manager to reboot ComfyUI afterwards (default False).
 
@@ -3449,14 +3586,11 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
     import subprocess
 
     if not isinstance(source, str) or not source.strip():
-        return json.dumps({"status": "error", "error": "source must be a git URL"})
-    source = source.strip()
-    if not (source.startswith("http://") or source.startswith("https://") or source.startswith("git@")):
-        return json.dumps({
-            "status": "error",
-            "error": (f"source does not look like a git URL: {source!r}. Call "
-                      "find_custom_node_for(node_type) to resolve a URL first."),
-        })
+        return json.dumps({"status": "error", "error": "source must be the pack's https git URL"})
+    try:
+        url, name = validate_node_pack_source(source)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": f"{exc}. Not installed."})
 
     cn_dir = _custom_nodes_dir()
     if cn_dir is None:
@@ -3467,10 +3601,11 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
     if shutil.which("git") is None:
         return json.dumps({"status": "error", "error": "'git' is not on PATH; cannot clone."})
 
-    name = source.rstrip("/").split("/")[-1]
-    if name.endswith(".git"):
-        name = name[:-4]
-    dest = cn_dir / name
+    base = cn_dir.resolve()
+    dest = (base / name).resolve()
+    if dest.parent != base:
+        return json.dumps({"status": "error",
+                           "error": f"{name!r} would land outside custom_nodes ({base}). Not installed."})
 
     result = {
         "status": "ok", "path": str(dest), "cloned": False, "pip": "skipped",
@@ -3480,10 +3615,13 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
     if dest.exists():
         result["message"] = f"'{name}' already present in custom_nodes; skipped clone."
     else:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}   # a private repo fails, it does not hang on a prompt
         try:
             subprocess.run(
-                ["git", "clone", "--depth", "1", source, str(dest)],
-                check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                ["git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+                 "clone", "--depth", "1", "--no-recurse-submodules", "--", url, str(dest)],
+                check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=300, env=env,
             )
             result["cloned"] = True
         except subprocess.CalledProcessError as e:
@@ -3495,20 +3633,26 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
     req = dest / "requirements.txt"
     if run_pip and req.exists():
         py = _resolve_comfyui_python()
+        cmd = _pip_install_command(py, req) if py is not None else None
         if py is None:
             result["pip"] = "unresolved-python"
-            result["message"] += (" Could not locate ComfyUI's Python — install the pack's "
+            result["message"] += (" Could not locate ComfyUI's Python - install the pack's "
                                   "requirements.txt into ComfyUI's environment manually.")
+        elif cmd is None:
+            result["pip"] = "failed"
+            result["message"] += (f" ComfyUI's Python ({py}) has no pip and uv is not on PATH - "
+                                  "install the pack's requirements.txt into it manually.")
         else:
+            result["python"] = str(py)
             try:
                 subprocess.run(
-                    [str(py), "-m", "pip", "install", "-r", str(req)],
-                    check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
+                    cmd, cwd=str(dest),
+                    check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900,
                 )
                 result["pip"] = "installed"
             except subprocess.CalledProcessError as e:
                 result["pip"] = "failed"
-                result["message"] += f" pip install failed: {(e.stderr or '').strip()[:300]}"
+                result["message"] += f" pip install failed: {(e.stderr or '').strip()[-300:]}"
             except Exception as e:  # noqa: BLE001
                 result["pip"] = "failed"
                 result["message"] += f" pip install failed: {e}"
@@ -3521,7 +3665,7 @@ def install_custom_node(source: str, run_pip: bool = True, restart: bool = False
             result["needs_restart"] = False
         else:
             result["message"] += (" Restart requested, but the ComfyUI-Manager reboot endpoint "
-                                  "was unavailable — restart ComfyUI manually.")
+                                  "was unavailable - restart ComfyUI manually.")
 
     if result["needs_restart"] and not result["restarted"]:
         result["message"] = (result["message"] + " Restart ComfyUI to load the new nodes.").strip()
