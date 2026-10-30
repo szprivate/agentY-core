@@ -9,13 +9,15 @@ one-call "make me a world" service. It is a set of view-synthesis tasks, each an
 * ``atlasGenerate``      posed RGBD context + new target cameras -> new views (+ optional depth)
 * ``atlasMasked`` / ``atlasChisel``  edit objects / depth-guided generation (not wrapped here)
 * ``splats2Mesh``        a Gaussian-splat ``.spz`` -> a GLB mesh
+* ``posedImages2Splats`` posed RGBD views -> a refined Gaussian splat (``.spz``); see ``atlas_splat.py``
 
 So "a world" here is built on our side: posed RGBD views become a textured depth mesh
 (one GLB, in the first picture's camera frame: the camera at the origin looking down -Z,
 exactly what ``render_camera_move(model=...)`` expects). ``atlas_expand_world`` asks Atlas to
 invent more views at new cameras and grows the same mesh. Nothing here is a splat: Atlas
 returns images, depth EXRs and (splats2Mesh only) a GLB, all of which the bEpic viewer
-already loads.
+already loads. The exception is ``posedImages2Splats`` (``atlas_views_to_splat``), which
+returns a splat built from the world's posed views.
 
 Output goes to ``<ComfyUI output>/3d_scenes/atlas/<name>/`` (``world.json`` records the
 cameras, assets and operations; every file has an ``.agenty.json`` sidecar).
@@ -768,6 +770,9 @@ def _finish(job: dict, op: dict, output_dir: str = "") -> str:
     if kind == "render":
         from agenty_core.tools.atlas_render import finish_render
         return finish_render(job, op)
+    if kind == "posed_splat":
+        from agenty_core.tools.atlas_splat import finish_splat
+        return finish_splat(job, op)
     resp = op.get("response") or {}
     op_id = op.get("id", "")
     usage = _usage_of(op)
