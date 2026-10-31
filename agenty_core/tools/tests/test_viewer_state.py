@@ -184,5 +184,46 @@ class Tools(unittest.TestCase):
         self.assertEqual(self.posts, [])
 
 
+class SelectedClips(unittest.TestCase):
+    """The Edit panel's selection is a list; one short line however many clips."""
+
+    def _clips(self, n, **kw):
+        return [{"name": f"shot_{i:02d}", "file": f"D:/o/shot_{i:02d}.mp4", "in": 0, "out": 48,
+                 "track": "V1", "id": f"V1:{i}", **kw} for i in range(n)]
+
+    def _line(self, sel):
+        text = vs.describe_lines(dict(QUIET, edit={"open": True, "selected": sel, "otio": "D:/cuts/a.otio"}))
+        return [ln for ln in text.splitlines() if ln.startswith("edit")]
+
+    def test_two_clips_one_line(self):
+        self.assertEqual(self._line(self._clips(2)), ["edit: 2 clips selected: shot_00, shot_01"])
+
+    def test_one_clip(self):
+        self.assertEqual(self._line(self._clips(1)), ["edit: 1 clip selected: shot_00"])
+
+    def test_name_falls_back_to_the_file_stem(self):
+        sel = [{"file": r"D:\o\hero_walk.mp4", "id": "V1:0"}]
+        self.assertEqual(self._line(sel), ["edit: 1 clip selected: hero_walk"])
+
+    def test_more_than_four_and_long_names_stay_under_forty_tokens(self):
+        for n in (5, 9, 300):
+            sel = self._clips(n, name="x" * 90)
+            (line,) = self._line(sel)
+            self.assertLessEqual(tokens(line), 40, line)
+            self.assertIn(f"+{n - 4} more", line)
+            self.assertEqual(line.count("x" * 24), 4)
+            self.assertNotIn("x" * 25, line)
+
+    def test_an_empty_list_is_no_line_and_the_old_shape_still_works(self):
+        self.assertEqual(self._line([]), [])
+        old = vs.describe_lines(dict(QUIET, edit={"open": True, "cut": "trailer",
+                                                  "selected": {"kind": "clip", "index": 3, "name": "shot 4"}}))
+        self.assertIn('edit=trailer selected=clip#3 "shot 4"', old)
+
+    def test_the_busy_state_stays_in_budget_with_a_selection(self):
+        st = dict(STATE, edit=dict(STATE["edit"], selected=self._clips(6), otio="D:/cuts/a.otio"))
+        self.assertLessEqual(tokens(vs.describe_lines(st)), BUDGET_TOKENS)
+
+
 if __name__ == "__main__":
     unittest.main()

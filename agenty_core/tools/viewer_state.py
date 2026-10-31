@@ -21,6 +21,7 @@ never an instruction to the agent. Every answer carrying it says so.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from urllib.parse import urlencode
 
 from agenty_core._compat import tool
@@ -55,6 +56,24 @@ def _num(v) -> str:
     except (TypeError, ValueError):
         return str(v)
     return str(int(f)) if f == int(f) else f"{f:g}"
+
+
+def _clip_name(c) -> str:
+    """A selected clip's name for the turn line: its name, else its file's stem."""
+    if not isinstance(c, dict):
+        return ""
+    n = " ".join(str(c.get("name") or "").split())
+    if not n and c.get("file"):
+        n = Path(str(c["file"]).replace("\\", "/")).stem
+    return n[:24]
+
+
+def _selected_line(sel: list) -> str:
+    """``edit: 2 clips selected: shot_03, shot_05`` - one short line however many are picked."""
+    names = [_clip_name(c) or "?" for c in sel]
+    k = len(sel)
+    shown = ", ".join(names[:4]) + (f" +{k - 4} more" if k > 4 else "")
+    return f"edit: {k} clip{'s' if k != 1 else ''} selected: {shown}"
 
 
 def describe_lines(state: dict | None) -> str:
@@ -125,8 +144,10 @@ def describe_lines(state: dict | None) -> str:
         lines.append(" ".join(bits))
 
     e = s.get("edit") or {}
-    if e.get("selected"):
-        sel = e["selected"]
+    sel = e.get("selected")
+    if isinstance(sel, list) and sel:
+        lines.append(_selected_line(sel))
+    elif isinstance(sel, dict) and sel:
         lines.append(f"edit={_q(e.get('cut') or 'cut')} selected={sel.get('kind')}#{sel.get('index', 0)}"
                      + (f" {_q(sel['name'])}" if sel.get("name") else ""))
 
