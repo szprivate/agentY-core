@@ -220,6 +220,24 @@ class SelectedClips(unittest.TestCase):
                                                   "selected": {"kind": "clip", "index": 3, "name": "shot 4"}}))
         self.assertIn('edit=trailer selected=clip#3 "shot 4"', old)
 
+    def test_a_capped_list_counts_selected_total(self):
+        text = vs.describe_lines(dict(QUIET, edit={"open": True, "selected": self._clips(50), "selected_total": 120}))
+        (line,) = [ln for ln in text.splitlines() if ln.startswith("edit")]
+        self.assertTrue(line.startswith("edit: 120 clips selected: "), line)
+        self.assertIn("+116 more", line)
+        self.assertLessEqual(tokens(line), 40, line)
+
+    def test_a_text_or_dissolve_comes_as_selected_item(self):
+        for sel in ([], None):
+            text = vs.describe_lines(dict(QUIET, edit={"open": True, "cut": "trailer", "selected": sel,
+                                                       "selected_item": {"kind": "text", "index": 1, "name": "Title"}}))
+            self.assertIn('edit=trailer selected=text#1 Title', text)
+        # clips win: the item is not a second line
+        text = vs.describe_lines(dict(QUIET, edit={"open": True, "selected": self._clips(2),
+                                                   "selected_item": {"kind": "text", "index": 1}}))
+        self.assertEqual([ln for ln in text.splitlines() if ln.startswith("edit")],
+                         ["edit: 2 clips selected: shot_00, shot_01"])
+
     def test_the_busy_state_stays_in_budget_with_a_selection(self):
         st = dict(STATE, edit=dict(STATE["edit"], selected=self._clips(6), otio="D:/cuts/a.otio"))
         self.assertLessEqual(tokens(vs.describe_lines(st)), BUDGET_TOKENS)

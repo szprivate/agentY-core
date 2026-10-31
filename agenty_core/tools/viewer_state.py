@@ -68,10 +68,11 @@ def _clip_name(c) -> str:
     return n[:24]
 
 
-def _selected_line(sel: list) -> str:
-    """``edit: 2 clips selected: shot_03, shot_05`` - one short line however many are picked."""
+def _selected_line(sel: list, total=None) -> str:
+    """``edit: 2 clips selected: shot_03, shot_05`` - one short line however many are picked
+    (*total*: how many there are when the viewer listed fewer, ``selected_total``)."""
     names = [_clip_name(c) or "?" for c in sel]
-    k = len(sel)
+    k = total if isinstance(total, int) and not isinstance(total, bool) and total > len(sel) else len(sel)
     shown = ", ".join(names[:4]) + (f" +{k - 4} more" if k > 4 else "")
     return f"edit: {k} clip{'s' if k != 1 else ''} selected: {shown}"
 
@@ -145,11 +146,14 @@ def describe_lines(state: dict | None) -> str:
 
     e = s.get("edit") or {}
     sel = e.get("selected")
-    if isinstance(sel, list) and sel:
-        lines.append(_selected_line(sel))
-    elif isinstance(sel, dict) and sel:
-        lines.append(f"edit={_q(e.get('cut') or 'cut')} selected={sel.get('kind')}#{sel.get('index', 0)}"
-                     + (f" {_q(sel['name'])}" if sel.get("name") else ""))
+    if isinstance(sel, list) and sel:                    # the clips (viewer 2026-10-31 and on)
+        lines.append(_selected_line(sel, e.get("selected_total")))
+    else:
+        # one object: the old shape of `selected`, or a text / dissolve as `selected_item`
+        one = sel if isinstance(sel, dict) and sel else e.get("selected_item")
+        if isinstance(one, dict) and one:
+            lines.append(f"edit={_q(e.get('cut') or 'cut')} selected={one.get('kind')}#{one.get('index', 0)}"
+                         + (f" {_q(one['name'])}" if one.get("name") else ""))
 
     v = s.get("view") or {}
     bits = []
