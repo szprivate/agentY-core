@@ -105,6 +105,37 @@ class Sidecar(Base):
         self.assertEqual(doc["provenance"]["prompt_id"], "two")
         self.assertEqual(doc["provenance"]["derived_from"]["changes"], ["3.seed: 1 -> 2"])
 
+    def test_capture_from_a_history_entry_in_the_background(self):
+        a, b = self.tmp / "o_00001_.png", self.tmp / "o_00002_.png"
+        for f in (a, b):
+            f.write_bytes(b"x")
+        hist = {"p9": {"prompt": [1, "p9", GRAPH, {"api_key_comfy_org": "comfyui-SECRET0123456789"}, []],
+                       "outputs": {"9": {"images": [{"filename": a.name}, {"filename": b.name}]}}}}
+        t = pv.capture([a, b], hist, "p9", "w.json", source="agentY-mcp")
+        self.assertIsNotNone(t)
+        pv.wait_pending()
+        rec = pv.recorded(b)
+        self.assertEqual((rec["source"], rec["prompt_id"], rec["output_node"], rec["output_index"]),
+                         ("agentY-mcp", "p9", "9", 1))
+        self.assertNotIn("SECRET0123456789", gzip.decompress(Path(str(b) + ".prov.json.gz").read_bytes()).decode())
+        self.assertEqual(pv.capture([a], {}, "p9", background=False), 0)
+        self.assertIsNone(pv.capture([a], {"p9": {"prompt": "junk"}}, "p9"))
+        self.assertEqual(pv.recorded(self.tmp / "none.png"), {})
+
+    def test_the_write_waits_for_a_host_holding_the_sidecar_lock(self):
+        import threading
+        f = self.tmp / "a.png"
+        f.write_bytes(b"x")
+        done = threading.Event()
+        with pv.SIDECAR_LOCK:
+            t = threading.Thread(target=lambda: (pv.write(f, GRAPH, prompt_id="p"), done.set()))
+            t.start()
+            self.assertFalse(done.wait(0.3))          # blocked while the host has the sidecar
+            Path(str(f) + ".agenty.json").write_text(json.dumps({"role": "hero"}))
+        t.join(10)
+        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        self.assertEqual((doc["role"], doc["provenance"]["prompt_id"]), ("hero", "p"))
+
     def test_move_takes_the_sidecars_along(self):
         f = self.tmp / "a.png"
         f.write_bytes(b"x")

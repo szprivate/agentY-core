@@ -91,6 +91,23 @@ class Base(unittest.TestCase):
 
 
 class Params(Base):
+    def test_a_controlnet_between_sampler_and_prompts_keeps_positive_and_negative_apart(self):
+        # found on a real output (street_canny_00001_.png): KSampler.positive / .negative are
+        # slots 0 / 1 of ControlNetApplyAdvanced, which takes both prompts
+        g = {"2": {"class_type": "CLIPTextEncode", "inputs": {"text": "a red fox", "clip": ["1", 1]}},
+             "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry", "clip": ["1", 1]}},
+             "5": {"class_type": "KSampler", "inputs": {"seed": 1, "positive": ["11", 0], "negative": ["11", 1]}},
+             "11": {"class_type": "ControlNetApplyAdvanced", "inputs": {"positive": ["2", 0], "negative": ["3", 0],
+                                                                         "strength": 0.8}}}
+        idx = {e["id"]: e["label"] for e in rg.param_index(g)}
+        self.assertEqual((idx["2.text"], idx["3.text"]), ("positive", "negative"))
+        self.assertEqual(rg._resolve(g, rg.param_index(g), "positive")["id"], "2.text")
+        # a chain of two: the role is kept through every pass-through node
+        g["12"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {"positive": ["11", 0], "negative": ["11", 1]}}
+        g["5"]["inputs"].update(positive=["12", 0], negative=["12", 1])
+        idx = {e["id"]: e["label"] for e in rg.param_index(g)}
+        self.assertEqual((idx["2.text"], idx["3.text"]), ("positive", "negative"))
+
     def test_flux_t2i_template(self):
         g = template("image_flux2_klein_text_to_image")
         idx = {e["id"]: e for e in rg.param_index(g)}
@@ -341,6 +358,41 @@ class Regenerate(Base):
         self.assertNotIn(SENTINEL, raw)
         for r in out["results"]:
             self.assertLessEqual(tok(rg._j(r)), 400)
+
+    def test_a_runner_that_only_gives_outputs_is_completed_from_their_provenance(self):
+        a = self.wan(rel="r/shot_03.mp4", prompt_id="pidA")
+        inner = self.runner_that_writes(log=[])
+
+        def run(path, *, confirm_cost=False):
+            out = inner(path, confirm_cost=confirm_cost)
+            for i, o in enumerate(out["outputs"]):          # what a host's executor records
+                pv.capture([o], {"hostpid": {"prompt": [1, "hostpid", {"41": {"class_type": "X", "inputs": {}}}],
+                                             "outputs": {"41": {"videos": [{"filename": Path(o).name}]}}}},
+                           "hostpid")
+            return {"status": "done", "outputs": out["outputs"]}
+        rg.set_runner(run)
+        out = json.loads(rg.regenerate_from_source([a], [{"param": "duration", "value": 8}], dry_run=False))
+        self.assertEqual(out["results"][0]["prompt_id"], "hostpid")
+        self.assertEqual(pv.recorded(out["results"][0]["new_file"])["prompt_id"], "hostpid")
+
+    def test_the_host_hears_where_a_produced_file_went(self):
+        a = self.wan(rel="r/shot_03.mp4", prompt_id="pidA")
+        moved, produced = [], []
+        inner = self.runner_that_writes(log=[])
+
+        def run(path, *, confirm_cost=False):
+            out = inner(path, confirm_cost=confirm_cost)
+            produced.extend(out["outputs"])
+            return out
+        rg.set_runner(run)
+        rg.set_move_listener(lambda src, dst: moved.append((src, dst)))
+        self.addCleanup(rg.set_move_listener, None)
+        out = json.loads(rg.regenerate_from_source([a], [{"param": "duration", "value": 8}], dry_run=False))
+        self.assertEqual(moved, [(produced[0], out["results"][0]["new_file"])])
+        # a listener that fails is the host's problem, never the shot's
+        rg.set_move_listener(lambda *_: 1 / 0)
+        out = json.loads(rg.regenerate_from_source([a], [{"param": "duration", "value": 9}], dry_run=False))
+        self.assertEqual(out["status"], "ok")
 
     def test_confirm_cost_and_errors_are_reported_per_shot(self):
         a, b = self.wan(rel="r/shot_03.mp4"), self.wan(rel="r/shot_05.mp4")

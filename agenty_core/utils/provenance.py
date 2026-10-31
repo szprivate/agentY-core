@@ -32,6 +32,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -58,6 +59,11 @@ _PARTNER_CLASS = re.compile(
 _PARTNER_API = re.compile(r"(?:[a-z0-9]Api|^Api)")      # WanImageToVideoApi, LtxvApiImageToVideo
 _PARTNER_NOT = re.compile(r"(?i)^(VHS_|Load|Save|Preview|GetVideo|CreateVideo|SaveVideo|Primitive|Note|Reroute)")
 _MAX_PARTNER_STR = 200
+
+#: Held while a ``.agenty.json`` sidecar is read, changed and written back. A host that
+#: keeps other keys in the same sidecar (agentY's output tags) takes it too, so two
+#: writers on two threads never lose each other's key.
+SIDECAR_LOCK = threading.RLock()
 
 
 # ── redaction ────────────────────────────────────────────────────────────────
@@ -222,13 +228,86 @@ def write(path, graph: dict, *, prompt_id: str = "", output_node: str = "", outp
         if derived_from:
             prov["derived_from"] = _redact_walk(copy.deepcopy(derived_from))
         sc = sidecar_path(p)
-        existing = _read_json(sc) if sc.is_file() else None
-        doc = existing if isinstance(existing, dict) else {}
-        doc["provenance"] = prov
-        _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
+        with SIDECAR_LOCK:
+            existing = _read_json(sc) if sc.is_file() else None
+            doc = existing if isinstance(existing, dict) else {}
+            doc["provenance"] = prov
+            _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
         return True
     except Exception:  # noqa: BLE001 - provenance is never worth failing a run
         return False
+
+
+# ── capture at the end of a run ──────────────────────────────────────────────
+
+_pending: list = []
+_pending_lock = threading.Lock()
+
+
+def _capture_jobs(paths, history, prompt_id: str) -> tuple[dict, list]:
+    entry = history.get(prompt_id) if isinstance(history, dict) else None
+    if not isinstance(entry, dict) and isinstance(history, dict) and "prompt" in history:
+        entry = history
+    graph = graph_from_history(entry or {})
+    if not _looks_api(graph):
+        return {}, []
+    return graph, [(str(p), *output_position(entry, os.path.basename(str(p)))) for p in paths or () if p]
+
+
+def capture(paths, history, prompt_id: str, workflow_path: str = "", *, source: str = "agentY",
+            background: bool = True):
+    """Write the provenance of a finished run's output files *paths*, from the run's own
+    ``/history`` entry (*history*: ``{prompt_id: entry}`` or the entry): the exact API
+    prompt that ran - never its extra_data - with the output node and index of each file.
+
+    On a background thread by default (an output folder on a network share is slow): it
+    returns the thread, or with ``background=False`` how many were written. Never raises.
+    :func:`wait_pending` waits for what was started."""
+    try:
+        graph, jobs = _capture_jobs(paths, history, str(prompt_id or ""))
+    except Exception:  # noqa: BLE001
+        graph, jobs = {}, []
+    if not jobs:
+        return None if background else 0
+
+    def write_all() -> int:
+        n = 0
+        for path, node, index in jobs:
+            if write(path, graph, prompt_id=str(prompt_id or ""), output_node=node, output_index=index,
+                     workflow_file=str(workflow_path or ""), source=source):
+                n += 1
+        return n
+    if not background:
+        return write_all()
+
+    def run():
+        try:
+            write_all()
+        finally:
+            with _pending_lock:
+                if t in _pending:
+                    _pending.remove(t)
+
+    t = threading.Thread(target=run, name="provenance-capture", daemon=True)
+    with _pending_lock:
+        _pending.append(t)
+    t.start()
+    return t
+
+
+def wait_pending(timeout: float = 60.0) -> None:
+    """Wait for the provenance writes :func:`capture` started so far."""
+    with _pending_lock:
+        pending = list(_pending)
+    for t in pending:
+        t.join(timeout)
+
+
+def recorded(path) -> dict:
+    """The ``provenance`` key of *path*'s sidecar ({} when there is none)."""
+    doc = _read_json(sidecar_path(path)) if sidecar_path(path).is_file() else None
+    prov = doc.get("provenance") if isinstance(doc, dict) else None
+    return prov if isinstance(prov, dict) else {}
 
 
 def move_with_sidecars(src, dst) -> None:
@@ -236,19 +315,20 @@ def move_with_sidecars(src, dst) -> None:
     graph file is renamed to match and the sidecar's ``graph_file`` follows."""
     src, dst = Path(str(src)), Path(str(dst))
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dst))
-    for suf in (GRAPH_SUFFIX, SIDECAR_SUFFIX):
-        s = Path(str(src) + suf)
-        if s.is_file():
-            shutil.move(str(s), str(Path(str(dst) + suf)))
-    sc = sidecar_path(dst)
-    doc = _read_json(sc) if sc.is_file() else None
-    if isinstance(doc, dict) and isinstance(doc.get("provenance"), dict):
-        doc["provenance"]["graph_file"] = graph_path(dst).name
-        try:
-            _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
-        except OSError:
-            pass
+    with SIDECAR_LOCK:
+        shutil.move(str(src), str(dst))
+        for suf in (GRAPH_SUFFIX, SIDECAR_SUFFIX):
+            s = Path(str(src) + suf)
+            if s.is_file():
+                shutil.move(str(s), str(Path(str(dst) + suf)))
+        sc = sidecar_path(dst)
+        doc = _read_json(sc) if sc.is_file() else None
+        if isinstance(doc, dict) and isinstance(doc.get("provenance"), dict):
+            doc["provenance"]["graph_file"] = graph_path(dst).name
+            try:
+                _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
+            except OSError:
+                pass
 
 
 # ── history ──────────────────────────────────────────────────────────────────

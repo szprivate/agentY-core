@@ -120,9 +120,12 @@ def _literal_for(graph: dict, nid: str, name: str):
     return None
 
 
-def _prompt_targets(graph: dict, nid: str, seen: set, depth: int = 0) -> list:
+def _prompt_targets(graph: dict, nid: str, seen: set, depth: int = 0, role: str = "") -> list:
     """The literal text inputs behind a conditioning link: the text-encode node(s) reached
-    from *nid* through conditioning pass-through nodes."""
+    from *nid* through conditioning pass-through nodes. Coming from a sampler's *role*
+    input (positive / negative), a pass-through node that has both (ControlNetApplyAdvanced,
+    an inpaint or InstructPix2Pix conditioning) is followed on that role's input only - its
+    other one is the other prompt."""
     if nid in seen or depth > 8 or str(nid) not in graph:
         return []
     seen.add(nid)
@@ -135,9 +138,11 @@ def _prompt_targets(graph: dict, nid: str, seen: set, depth: int = 0) -> list:
                 found.append(lit)
     if found:
         return found
+    if role and _is_link(inputs.get(role)):
+        return _prompt_targets(graph, str(inputs[role][0]), seen, depth + 1, role)
     for name, v in inputs.items():
         if _is_link(v) and (name.startswith("conditioning") or name in ("positive", "negative", "cond")):
-            found += _prompt_targets(graph, str(v[0]), seen, depth + 1)
+            found += _prompt_targets(graph, str(v[0]), seen, depth + 1, role)
     return found
 
 
@@ -179,7 +184,7 @@ def param_index(graph: dict) -> list[dict]:
         for role in ("positive", "negative"):
             v = inputs.get(role)
             if _is_link(v):
-                for tid, tname, tval in _prompt_targets(graph, str(v[0]), set()):
+                for tid, tname, tval in _prompt_targets(graph, str(v[0]), set(), role=role):
                     claimed.setdefault((tid, tname), role)
     for (tid, tname), role in claimed.items():
         add(_entry(graph, tid, tname, _node_inputs(graph, tid)[tname], role, "prompt",
@@ -721,13 +726,23 @@ def describe_plans(plans: list[dict], dry_run: bool = True) -> dict:
 # ── running ──────────────────────────────────────────────────────────────────
 
 _runner: Callable | None = None
+_on_moved: Callable | None = None
 
 
 def set_runner(fn: Callable | None) -> None:
     """Install the function that runs a workflow file: ``fn(workflow_path, *, confirm_cost=False)
-    -> {"status", "outputs": [abs paths], "prompt_id", "error"?, "error_kind"?}`` (blocking)."""
+    -> {"status", "outputs": [abs paths], "prompt_id", "error"?, "error_kind"?}`` (blocking;
+    it is called from a worker thread)."""
     global _runner
     _runner = fn
+
+
+def set_move_listener(fn: Callable | None) -> None:
+    """Install ``fn(produced_path, new_version_path)``, called once a produced file has been
+    moved to its versioned name - a host that keeps lists of the turn's outputs (agentY)
+    points them at the new place."""
+    global _on_moved
+    _on_moved = fn
 
 
 def _default_runner(workflow_path: str, *, confirm_cost: bool = False) -> dict:
@@ -823,6 +838,11 @@ def finish_regeneration(plan: dict, outputs: list[str], prompt_id: str = "", *,
             res["error"] = f"{target} already exists"
             return res
         _prov.move_with_sidecars(chosen, target)
+        if _on_moved is not None:
+            try:
+                _on_moved(chosen, target)
+            except Exception:  # noqa: BLE001 - a host's bookkeeping never fails the shot
+                pass
         _prov.write(target, plan["_graph"], prompt_id=prompt_id, output_node=node, output_index=idx,
                     workflow_file=plan.get("workflow_path", ""), source="regenerate",
                     derived_from={"file": plan.get("file", ""), "prompt_id": plan.get("prompt_id", ""),
@@ -845,6 +865,19 @@ def _validation_error(workflow_path: str) -> str:
     return "invalid workflow: " + "; ".join(str(e)[:140] for e in errs[:3])
 
 
+def _from_recorded(outputs: list[str]) -> tuple[str, dict]:
+    """(prompt id, ``{node: [paths in output order]}``) from the provenance beside *outputs*."""
+    _prov.wait_pending(60.0)
+    pid, by_node = "", {}
+    for o in outputs:
+        rec = _prov.recorded(o)
+        pid = pid or str(rec.get("prompt_id") or "")
+        node = str(rec.get("output_node") or "")
+        if node:
+            by_node.setdefault(node, []).append((int(rec.get("output_index") or 0), o))
+    return pid, {n: [p for _, p in sorted(v)] for n, v in by_node.items()}
+
+
 def _run_one(plan: dict, confirm_cost: bool) -> dict:
     res = {"shot": plan["shot"], "file": plan["file"], "new_file": "", "version": plan.get("version"),
            "prompt_id": "", "status": "error"}
@@ -865,7 +898,14 @@ def _run_one(plan: dict, confirm_cost: bool) -> dict:
     if out.get("error") or not out.get("outputs"):
         res["error"] = str(out.get("error") or "the run produced no output")[:300]
         return res
-    fin = finish_regeneration(plan, out["outputs"], res["prompt_id"], outputs_by_node=out.get("outputs_by_node"))
+    by_node = out.get("outputs_by_node")
+    if not res["prompt_id"] or not by_node:
+        # A host runner that does not say which run / node made which file: the
+        # provenance the host's executor wrote beside each output does (_prov.capture).
+        pid, found = _from_recorded([str(o) for o in out["outputs"]])
+        res["prompt_id"] = res["prompt_id"] or pid
+        by_node = by_node or found or None
+    fin = finish_regeneration(plan, out["outputs"], res["prompt_id"], outputs_by_node=by_node)
     res.update({k: v for k, v in fin.items() if v not in (None, "")})
     return res
 
