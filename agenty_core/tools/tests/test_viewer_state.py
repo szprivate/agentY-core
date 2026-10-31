@@ -72,6 +72,16 @@ class Lines(unittest.TestCase):
         self.assertEqual(text, "display=docked tab=agentY mode=image\nitem=1/1 kind=image file=D:/out/a.png")
         self.assertLessEqual(tokens(text), 40)
 
+    def test_a_contact_sheet_of_many_is_one_short_line(self):
+        st = dict(QUIET, compare={"mode": "contact", "items": 12, "shown": 12, "indices": list(range(12)),
+                                  "grid": [4, 3], "a": {"index": 0, "path": "D:/o/a.mp4"},
+                                  "b": {"index": 1, "path": "D:/o/b.mp4"}, "wipe": {"mode": "contact"}})
+        lines = vs.describe_lines(st).splitlines()
+        self.assertEqual(lines[-1], "compare=contact 12 items")
+        # A wipe of the first two of several says how many there are.
+        st["compare"] = dict(st["compare"], mode="history", wipe={"mode": "vertical", "position": 0.5})
+        self.assertIn("of=12", vs.describe_lines(st))
+
     def test_a_long_path_keeps_its_start_and_end(self):
         st = dict(QUIET, item={"index": 0, "kind": "image", "path": "D:/" + "x" * 300 + "/final.png"})
         line = vs.describe_lines(st).splitlines()[1]

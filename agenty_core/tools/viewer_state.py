@@ -107,11 +107,18 @@ def describe_lines(state: dict | None) -> str:
         lines.append(" ".join(bits))
 
     c = s.get("compare") or {}
+    if c.get("mode") == "contact":
+        # A Contact Sheet of several history items: the count is all a turn needs;
+        # which ones, in what order, is get_viewer_state's.
+        lines.append(f"compare=contact {c.get('items', 0)} items")
+        c = {}
     if c:
         def side(x):
             x = x or {}
             return _short(x.get("path") or x.get("filename") or (f"#{x['index']}" if "index" in x else "?"), 60)
         bits = [f"compare={c.get('mode', 'tab')}", f"A={side(c.get('a'))}", f"B={side(c.get('b'))}"]
+        if c.get("items", 0) > 2:
+            bits.append(f"of={c['items']}")
         w = c.get("wipe") or {}
         if w.get("mode"):
             bits.append(f"wipe={w['mode']}" + (f"@{_num(w['position'])}" if "position" in w else ""))
