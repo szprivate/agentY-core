@@ -154,6 +154,11 @@ def describe_lines(state: dict | None) -> str:
         if isinstance(one, dict) and one:
             lines.append(f"edit={_q(e.get('cut') or 'cut')} selected={one.get('kind')}#{one.get('index', 0)}"
                          + (f" {_q(one['name'])}" if one.get("name") else ""))
+        elif e.get("open") and e.get("otio"):
+            # A cut open in the Edit panel: what to read or change it with (not a hand-written .otio).
+            lines.append(f"edit={_q(e.get('cut') or 'cut')} open"
+                         + (f" clips={e['clips']}" if isinstance(e.get("clips"), int) else "")
+                         + " - read or change it with edit_cut")
 
     v = s.get("view") or {}
     bits = []

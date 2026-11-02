@@ -214,8 +214,14 @@ class SelectedClips(unittest.TestCase):
             self.assertEqual(line.count("x" * 24), 4)
             self.assertNotIn("x" * 25, line)
 
-    def test_an_empty_list_is_no_line_and_the_old_shape_still_works(self):
-        self.assertEqual(self._line([]), [])
+    def test_an_empty_list_is_no_selection_line_and_the_old_shape_still_works(self):
+        # Nothing selected: the open cut is named with the tool that changes it, in one short line.
+        (line,) = self._line([])
+        self.assertEqual(line, "edit=cut open - read or change it with edit_cut")
+        self.assertLessEqual(tokens(line), 20)
+        text = vs.describe_lines(dict(QUIET, edit={"open": True, "cut": "cut1", "clips": 21, "otio": "D:/c.otio"}))
+        self.assertIn('edit=cut1 open clips=21 - read or change it with edit_cut', text)
+        self.assertNotIn("edit", vs.describe_lines(dict(QUIET, edit={"open": True, "cut": "new"})), "no file: no line")
         old = vs.describe_lines(dict(QUIET, edit={"open": True, "cut": "trailer",
                                                   "selected": {"kind": "clip", "index": 3, "name": "shot 4"}}))
         self.assertIn('edit=trailer selected=clip#3 "shot 4"', old)
