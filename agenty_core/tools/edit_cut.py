@@ -61,6 +61,23 @@ def _row(n: int, c: dict, at: float) -> dict:
     if float(c.get("gap") or 0) > 0:
         out["gap_before"] = _r(c.get("gap"))
     _fades(out, c)
+    fx = _effects(c.get("afx"))
+    if fx:
+        out["effects"] = fx
+    return out
+
+
+_AFX_NAMES = {"eq": "EQ", "comp": "Compressor", "limit": "Limiter", "reverb": "Reverb", "delay": "Delay",
+              "gain": "Gain", "pan": "Pan"}
+
+
+def _effects(chain) -> list[str]:
+    """Sound effects of a chain as display names, a bypassed one marked: ``["EQ", "Reverb (bypassed)"]``."""
+    out = []
+    for fx in chain if isinstance(chain, list) else []:
+        if isinstance(fx, dict):
+            name = _AFX_NAMES.get(str(fx.get("type")), str(fx.get("type") or "effect"))
+            out.append(name + (" (bypassed)" if fx.get("on") is False else ""))
     return out
 
 
@@ -152,12 +169,17 @@ def outline(edit: dict) -> list[dict]:
             row["locked"] = True
         if t.get("auto") is False:
             row["auto_select_off"] = True
+        if _effects(t.get("afx")):
+            row["effects"] = _effects(t.get("afx"))
         tracks.append(row)
     for t in tracks[:2]:
         if (e.get("lock") or {}).get(t["track"]):
             t["locked"] = True
         if (e.get("auto") or {}).get(t["track"]) is False:
             t["auto_select_off"] = True
+    bed_fx = _effects((e.get("afx") or {}).get("A1") if isinstance(e.get("afx"), dict) else None)
+    if bed_fx:
+        tracks[1]["effects"] = bed_fx
     for t in tracks:
         xs = _crossfades(t["clips"])
         if xs:
@@ -222,7 +244,9 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
     [{clip, name, file, at, end, in, length, fade_in?, fade_out?, crossfade_in?}], crossfades?:
     [{from_clip, into_clip, length, curve, align}]}], said, pushed}``; ``said`` lists what was
     changed, ``pushed`` whether the open panels were told. Audio fades are seconds of the clip; a
-    crossfade lies on the clip coming into a cut.
+    crossfade lies on the clip coming into a cut. Sound effects (EQ, Compressor, Reverb ...) are
+    shown too - ``effects`` on a clip or a track, e.g. ``["EQ", "Reverb (bypassed)"]`` - but are
+    not changeable through edit_cut: the user sets them in the panel.
     """
     from agenty_core.utils import canvas_scope as _cs
     ops = ops or []

@@ -94,6 +94,19 @@ class Reading(Base):
         out = json.loads(ec.edit_cut("W:/c.otio"))
         self.assertTrue(out["texts_locked"])
 
+    def test_sound_effects_are_shown_on_clips_and_tracks(self):
+        edit = json.loads(json.dumps(EDIT))
+        edit["clips"][0]["afx"] = [{"type": "eq", "on": True, "p": {}}, {"type": "reverb", "on": False, "p": {}}]
+        edit["tracks"][0]["afx"] = [{"type": "comp", "on": True, "p": {}}]
+        edit["afx"] = {"A1": [{"type": "limit", "on": True, "p": {}}]}
+        tracks = {t["track"]: t for t in ec.outline(edit)}
+        self.assertEqual(tracks["V1"]["clips"][0]["effects"], ["EQ", "Reverb (bypassed)"])
+        self.assertNotIn("effects", tracks["V1"]["clips"][1])
+        self.assertEqual(tracks["A1"]["effects"], ["Limiter"])
+        self.assertEqual(tracks["A2"]["effects"], ["Compressor"])
+        self.assertNotIn("effects", tracks["V1"])
+        json.dumps(ec.outline(edit))
+
     def test_the_open_cut_comes_from_the_viewer_state_and_a_read_writes_nothing(self):
         state = {"status": "ok", "state": {"open": True, "edit": {"open": True, "otio": "W:/x/cut1.otio", "clips": 2}}}
         self.client.post.return_value = {"ok": True, "otio": "W:/x/cut1.otio", "edit": EDIT, "length": 14,
