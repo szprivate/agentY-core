@@ -64,6 +64,17 @@ class Reading(Base):
                                                  "in": 0.0, "length": 6.0, "volume": 1.2})
         self.assertNotIn("ref", json.dumps(tracks))
 
+    def test_a_title_clip_with_no_file_is_described_by_its_words(self):
+        edit = dict(EDIT, tracks=EDIT["tracks"] + [{"id": "V2", "kind": "video", "name": "V2", "clips": [
+            {"ref": [3, 1], "name": "", "file": "", "in": 0, "length": 2, "at": 1.5,
+             "title": {"text": "Mara Lindqvist\nKitchen", "font": "Inter"}},
+            {"ref": [3, 2], "name": "", "file": "", "in": 0, "length": 1, "at": 5, "title": {"text": ""}}]}])
+        v2 = ec.outline(edit)[3]["clips"]
+        self.assertEqual((v2[0]["name"], v2[0]["file"], v2[0]["at"], v2[0]["end"], v2[0]["is_title"]),
+                         ('title "Mara Lindqvist"', "", 1.5, 3.5, True))
+        self.assertEqual(v2[1]["name"], "title")
+        json.dumps(ec.outline(edit))
+
     def test_the_open_cut_comes_from_the_viewer_state_and_a_read_writes_nothing(self):
         state = {"status": "ok", "state": {"open": True, "edit": {"open": True, "otio": "W:/x/cut1.otio", "clips": 2}}}
         self.client.post.return_value = {"ok": True, "otio": "W:/x/cut1.otio", "edit": EDIT, "length": 14,

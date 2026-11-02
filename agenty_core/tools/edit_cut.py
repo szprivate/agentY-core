@@ -42,9 +42,16 @@ def _r(v) -> float:
 
 
 def _row(n: int, c: dict, at: float) -> dict:
-    out = {"clip": n, "name": str(c.get("name") or os.path.basename(str(c.get("file") or "")))[:80],
+    words = ""
+    if isinstance(c.get("title"), dict):
+        words = str(c["title"].get("text") or "").strip().splitlines()[0:1]
+        words = words[0] if words else ""
+    name = (f'title "{words[:60]}"' if words else "title") if isinstance(c.get("title"), dict)         else str(c.get("name") or os.path.basename(str(c.get("file") or "")))
+    out = {"clip": n, "name": name[:80],
            "file": str(c.get("file") or ""), "at": _r(at), "end": _r(at + float(c.get("length") or 0)),
            "in": _r(c.get("in")), "length": _r(c.get("length"))}
+    if isinstance(c.get("title"), dict):
+        out["is_title"] = True
     if c.get("volume") not in (None, 1, 1.0):
         out["volume"] = _r(c.get("volume"))
     if c.get("speed") not in (None, 1, 1.0):
