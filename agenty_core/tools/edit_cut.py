@@ -60,7 +60,60 @@ def _row(n: int, c: dict, at: float) -> dict:
         out["dissolve"] = _r(c.get("transition"))
     if float(c.get("gap") or 0) > 0:
         out["gap_before"] = _r(c.get("gap"))
+    _fades(out, c)
     return out
+
+
+def _fades(out: dict, c: dict) -> None:
+    """Audio fades (seconds of the clip) and the crossfade into the clip, when it has any."""
+    if _r(c.get("fadeIn")) > 0:
+        out["fade_in"] = _r(c.get("fadeIn"))
+    if _r(c.get("fadeOut")) > 0:
+        out["fade_out"] = _r(c.get("fadeOut"))
+    x = c.get("xfade")
+    if isinstance(x, dict) and _r(x.get("len")) > 0:
+        out["crossfade_in"] = {"length": _r(x.get("len")), "curve": str(x.get("curve") or "+3"),
+                               "align": str(x.get("align") or "centre")}
+
+
+def _crossfades(clips: list[dict]) -> list[dict]:
+    """The audio crossfades of a track's rows: which clip they come into, from which, how long."""
+    out = []
+    for i, c in enumerate(clips):
+        x = c.get("crossfade_in")
+        if x:
+            prev = clips[i - 1] if i else None
+            out.append({"from_clip": prev["clip"] if prev else None, "into_clip": c["clip"],
+                        "between": f"{prev['name']} -> {c['name']}" if prev else f"-> {c['name']}", **x})
+    return out
+
+
+def locked_tracks(edit: dict) -> set[str]:
+    """Names (upper case) of the tracks the Edit panel has locked, texts as ``T``."""
+    e = edit if isinstance(edit, dict) else {}
+    out = {str(k).upper() for k, v in (e.get("lock") or {}).items() if v}
+    for t in e.get("tracks") or []:
+        if isinstance(t, dict) and t.get("lock"):
+            out.add(str(t.get("id") or t.get("name") or "").upper())
+    return out
+
+
+def _locked_refusal(lock: set[str], ops: list) -> str:
+    """Why the first op naming a locked track cannot be done ("" = none does)."""
+    for i, o in enumerate(ops, 1):
+        t = str(o.get("track") or "").strip().upper() if isinstance(o, dict) else ""
+        if t and t in lock:
+            return (f"not changed: change {i} ({o.get('op')}): track {t} is locked in the Edit panel - "
+                    "ask the user to unlock it there (the lock icon on the track), or use another track")
+    return ""
+
+
+def _said(msg) -> str:
+    """The viewer's refusal, as is; one about a locked track gets the way out added."""
+    text = str(msg)[:400]
+    if "locked" in text.lower() and "unlock" not in text.lower():
+        text += " - ask the user to unlock the track in the Edit panel"
+    return text
 
 
 def outline(edit: dict) -> list[dict]:
@@ -81,6 +134,11 @@ def outline(edit: dict) -> list[dict]:
     bed = [{"clip": n, "name": str(s.get("name") or os.path.basename(str(s.get("file") or "")))[:80],
             "file": str(s.get("file") or "")}
            for n, s in enumerate((x for x in e.get("sound") or [] if isinstance(x, dict)), 1)]
+    for row, s in zip(bed, (x for x in e.get("sound") or [] if isinstance(x, dict))):
+        if _r(s.get("fadeIn")) > 0:
+            row["fade_in"] = _r(s.get("fadeIn"))
+        if s.get("fadeOut") is not None and _r(s.get("fadeOut")) != 1.0:   # 1 s is agentY's default
+            row["fade_out"] = _r(s.get("fadeOut"))
     tracks.append({"track": "A1", "kind": "audio", "what": "the bed under the whole film", "clips": bed})
     for t in e.get("tracks") or []:
         if not isinstance(t, dict):
@@ -90,7 +148,20 @@ def outline(edit: dict) -> list[dict]:
                "clips": [_row(n, c, float(c.get("at") or 0)) for n, c in enumerate(clips, 1)]}
         if t.get("off"):
             row["off"] = True
+        if t.get("lock"):
+            row["locked"] = True
+        if t.get("auto") is False:
+            row["auto_select_off"] = True
         tracks.append(row)
+    for t in tracks[:2]:
+        if (e.get("lock") or {}).get(t["track"]):
+            t["locked"] = True
+        if (e.get("auto") or {}).get(t["track"]) is False:
+            t["auto_select_off"] = True
+    for t in tracks:
+        xs = _crossfades(t["clips"])
+        if xs:
+            t["crossfades"] = xs
     for t in tracks:
         if len(t["clips"]) > LIST_CAP:
             t["more"] = len(t["clips"]) - LIST_CAP
@@ -144,9 +215,14 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
             ``gap`` sets empty time before a clip (V1 clips have no ``at``).
             ``{"op": "remove", "track": "V1", "clip": 3}`` - take a clip out (V1 closes up).
 
-    Returns JSON ``{status, otio, length, tracks: [{track, kind, clips: [{clip, name, file, at,
-    end, in, length}]}], said, pushed}``; ``said`` lists what was changed, ``pushed`` whether the
-    open panels were told.
+    A track the user LOCKED in the panel takes no change: such an op is refused (ask the user to
+    unlock it); an add with no track named skips locked tracks.
+
+    Returns JSON ``{status, otio, length, tracks: [{track, kind, locked?, auto_select_off?, clips:
+    [{clip, name, file, at, end, in, length, fade_in?, fade_out?, crossfade_in?}], crossfades?:
+    [{from_clip, into_clip, length, curve, align}]}], said, pushed}``; ``said`` lists what was
+    changed, ``pushed`` whether the open panels were told. Audio fades are seconds of the clip; a
+    crossfade lies on the clip coming into a cut.
     """
     from agenty_core.utils import canvas_scope as _cs
     ops = ops or []
@@ -178,6 +254,15 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
     from agenty_core.utils.comfyui_client import get_client
     cid = _cs.client_id()
     route = "/bepic/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    if any(isinstance(o, dict) and str(o.get("track") or "").strip() for o in ops):
+        # Refuse a change to a locked track before sending it (the viewer refuses too).
+        try:
+            pre = get_client().post(route, json_data={"otio": otio, "ops": []})
+            why = _locked_refusal(locked_tracks(pre.get("edit") if isinstance(pre, dict) else {}), ops)
+        except Exception:  # noqa: BLE001 - the real call below says what is wrong
+            why = ""
+        if why:
+            return _j({"status": "error", "error": why})
     try:
         r = get_client().post(route, json_data={"otio": otio, "ops": ops})
     except Exception as e:  # noqa: BLE001
@@ -199,12 +284,17 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
             except Exception:  # noqa: BLE001
                 said = ""
             if said:
-                return _j({"status": "error", "error": str(said)[:400]})
+                return _j({"status": "error", "error": _said(said)})
         return _j({"status": "error", "error": f"could not reach ComfyUI ({str(e)[:160]}). Is it running?"})
     if not isinstance(r, dict) or not r.get("ok"):
-        return _j({"status": "error", "error": str((r or {}).get("error") if isinstance(r, dict) else r)[:400]})
+        return _j({"status": "error", "error": _said((r or {}).get("error") if isinstance(r, dict) else r)})
     out = {"status": "ok", "otio": r.get("otio") or otio, "length": _r(r.get("length")),
            "tracks": outline(r.get("edit") or {})}
+    ed = r.get("edit") if isinstance(r.get("edit"), dict) else {}
+    if (ed.get("lock") or {}).get("T"):
+        out["texts_locked"] = True
+    if (ed.get("auto") or {}).get("T") is False:
+        out["texts_auto_select_off"] = True
     if ops:
         out["said"] = [str(s)[:200] for s in (r.get("said") or [])][:50]
         out["pushed"] = bool(r.get("pushed"))

@@ -75,6 +75,25 @@ class Reading(Base):
         self.assertEqual(v2[1]["name"], "title")
         json.dumps(ec.outline(edit))
 
+    def test_locks_fades_and_crossfades_are_shown(self):
+        edit = json.loads(json.dumps(EDIT))
+        edit["lock"] = {"V1": False, "A1": True, "T": True}
+        edit["auto"] = {"V1": False, "A1": True, "T": True}
+        edit["clips"][1].update({"fadeOut": 0.5, "xfade": {"len": 1, "curve": "0", "align": "start"}})
+        edit["tracks"][0].update({"lock": True, "auto": False})
+        tracks = {t["track"]: t for t in ec.outline(edit)}
+        self.assertNotIn("locked", tracks["V1"])
+        self.assertTrue(tracks["V1"]["auto_select_off"])
+        self.assertTrue(tracks["A1"]["locked"])
+        self.assertTrue(tracks["A2"]["locked"] and tracks["A2"]["auto_select_off"])
+        self.assertEqual(tracks["V1"]["clips"][1]["fade_out"], 0.5)
+        self.assertEqual(tracks["V1"]["crossfades"], [{
+            "from_clip": 1, "into_clip": 2, "between": "a -> b", "length": 1.0, "curve": "0", "align": "start"}])
+        self.assertNotIn("crossfades", tracks["A2"])
+        self.client.post.return_value = {"ok": True, "otio": "W:/c.otio", "edit": edit, "length": 14}
+        out = json.loads(ec.edit_cut("W:/c.otio"))
+        self.assertTrue(out["texts_locked"])
+
     def test_the_open_cut_comes_from_the_viewer_state_and_a_read_writes_nothing(self):
         state = {"status": "ok", "state": {"open": True, "edit": {"open": True, "otio": "W:/x/cut1.otio", "clips": 2}}}
         self.client.post.return_value = {"ok": True, "otio": "W:/x/cut1.otio", "edit": EDIT, "length": 14,
@@ -110,6 +129,36 @@ class Changing(Base):
         self.assertEqual((out["said"], out["pushed"]), (["added vo on A2 at 8.0s for 6.0s"], True))
         json.loads(ec.edit_cut("W:/c.otio", json.dumps([op])))      # and as JSON text
         self.assertEqual(self.client.post.call_args[1]["json_data"]["ops"], [op])
+
+    def test_an_op_on_a_locked_track_is_refused_before_it_is_sent(self):
+        edit = json.loads(json.dumps(EDIT))
+        edit["tracks"][0]["lock"] = True
+        self.client.post.return_value = {"ok": True, "otio": "W:/c.otio", "edit": edit, "length": 14}
+        out = json.loads(ec.edit_cut("W:/c.otio", [{"op": "set", "track": "a2", "clip": 1, "at": 9}]))
+        self.assertEqual(out["status"], "error")
+        self.assertIn("A2 is locked", out["error"])
+        self.assertIn("unlock", out["error"])
+        for call in self.client.post.call_args_list:
+            self.assertEqual(call[1]["json_data"]["ops"], [])        # nothing with ops went out
+        # An unlocked track goes through (read first, then the change).
+        self.client.post.reset_mock()
+        out = json.loads(ec.edit_cut("W:/c.otio", [{"op": "set", "track": "V1", "clip": 1, "length": 2}]))
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(self.client.post.call_args[1]["json_data"]["ops"][0]["track"], "V1")
+
+    def test_a_viewer_refusal_about_a_locked_track_comes_through(self):
+        resp = mock.Mock(status_code=422)
+        resp.json.return_value = {"ok": False, "error": "add: track A2 is locked in the Edit panel"}
+        err = Exception("422")
+        err.response = resp
+        self.client.post.side_effect = err
+        out = json.loads(ec.edit_cut("W:/c.otio", [{"op": "add", "file": "D:/o/vo.mp3"}]))
+        self.assertIn("A2 is locked", out["error"])
+        self.client.post.side_effect = None
+        self.client.post.return_value = {"ok": False, "error": "remove: V1 is locked"}
+        out = json.loads(ec.edit_cut("W:/c.otio", [{"op": "remove", "file": "x"}]))
+        self.assertIn("locked", out["error"])
+        self.assertIn("unlock", out["error"])
 
     def test_refusals_the_route_gives_and_an_old_viewer(self):
         resp = mock.Mock(status_code=422)
