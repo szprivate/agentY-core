@@ -72,6 +72,15 @@ class Lines(unittest.TestCase):
         self.assertEqual(text, "display=docked tab=agentY mode=image\nitem=1/1 kind=image file=D:/out/a.png")
         self.assertLessEqual(tokens(text), 40)
 
+    def test_a_picture_in_paint_names_edit_image(self):
+        st = dict(QUIET, paint={"open": True, "name": "board", "w": 1920, "h": 1080, "layers": 4, "active": "Sky",
+                                "selection": True, "dirty": True, "path": "D:/out/bepic/paint/board_v001.ora"})
+        line = vs.describe_lines(st).splitlines()[-1]
+        self.assertEqual(line, 'paint=board 1920x1080 layers=4 active=Sky selection unsaved '
+                               'file=D:/out/bepic/paint/board_v001.ora - read or change it with edit_image')
+        st["paint"] = {"open": True, "empty": True}
+        self.assertEqual(vs.describe_lines(st).splitlines()[-1], "paint=empty (no picture open in Paint)")
+
     def test_a_contact_sheet_of_many_is_one_short_line(self):
         st = dict(QUIET, compare={"mode": "contact", "items": 12, "shown": 12, "indices": list(range(12)),
                                   "grid": [4, 3], "a": {"index": 0, "path": "D:/o/a.mp4"},

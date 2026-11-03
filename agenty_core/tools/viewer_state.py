@@ -147,6 +147,29 @@ def describe_lines(state: dict | None) -> str:
             bits.append(f"wipe={w['mode']}" + (f"@{_num(w['position'])}" if "position" in w else ""))
         lines.append(" ".join(bits))
 
+    p = s.get("paint") or {}
+    if p.get("open"):
+        # A picture in Paint: what to read or change it with (not a hand-written .ora).
+        if p.get("empty"):
+            lines.append("paint=empty (no picture open in Paint)")
+        else:
+            bits = [f"paint={_q(p.get('name') or 'picture')}"]
+            if p.get("w"):
+                bits.append(f"{p['w']}x{p.get('h', 0)}")
+            if isinstance(p.get("layers"), int):
+                bits.append(f"layers={p['layers']}")
+            if p.get("active"):
+                bits.append(f"active={_q(p['active'])}")
+            if p.get("selection"):
+                bits.append("selection")
+            if p.get("dirty"):
+                bits.append("unsaved")
+            where = p.get("path") or p.get("source") or ""
+            if where:
+                bits.append(f"file={_short(where)}")
+            bits.append("- read or change it with edit_image")
+            lines.append(" ".join(bits))
+
     e = s.get("edit") or {}
     sel = e.get("selected")
     if isinstance(sel, list) and sel:                    # the clips (viewer 2026-10-31 and on)
