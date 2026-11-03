@@ -191,28 +191,107 @@ def outline(edit: dict) -> list[dict]:
     return tracks
 
 
-def _open_cut() -> tuple[str, str]:
-    """``(the .otio the Edit panel has open, why not)``."""
-    from agenty_core.tools.viewer_state import get_viewer_state
+def marked_range(state: dict) -> tuple[int, int] | None:
+    """The in/out the user marked on the cut's timeline (film frames, both included), from the
+    viewer's state - only while the tab on screen is the Edit panel's cut (the marks of any other
+    tab are frames of that tab's clip, not of the cut)."""
+    s = state if isinstance(state, dict) else {}
+    edit = s.get("edit") or {}
+    tab = s.get("tab") or {}
+    if not edit.get("otio") or not (tab.get("mode") == "edit" or (edit.get("tab") and edit.get("tab") == tab.get("key"))):
+        return None
+    r = (s.get("timeline") or {}).get("range") or {}
     try:
-        got = json.loads(get_viewer_state())
+        return int(r["start"]), int(r["end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _open_cut() -> tuple[str, str, tuple[int, int] | None]:
+    """``(the .otio the Edit panel has open, why not, the in/out marked on it or None)``."""
+    from agenty_core.tools.viewer_state import read_state
+    try:
+        got = json.loads(read_state())
     except Exception as e:  # noqa: BLE001
-        return "", f"the viewer's state could not be read ({e})"
+        return "", f"the viewer's state could not be read ({e})", None
     if got.get("status") != "ok":
-        return "", got.get("error") or "the viewer's state could not be read"
-    edit = (got.get("state") or {}).get("edit") or {}
+        return "", got.get("error") or "the viewer's state could not be read", None
+    state = got.get("state") or {}
+    edit = state.get("edit") or {}
     if not edit.get("otio"):
         if edit.get("open"):
             return "", ("the cut open in the Edit panel has no file yet - ask the user to save it "
-                        "(Save in the Edit panel), or pass otio=")
-        return "", "no cut is open in the viewer's Edit panel - pass otio= (the cut's .otio path)"
-    return str(edit["otio"]), ""
+                        "(Save in the Edit panel), or pass otio="), None
+        return "", "no cut is open in the viewer's Edit panel - pass otio= (the cut's .otio path)", None
+    return str(edit["otio"]), "", marked_range(state)
+
+
+#: Most pieces of a marked range handed on (one per clip it touches, on every picture track).
+MARKED_CAP = 20
+
+#: What the agent is told about a marked range's pieces.
+MARKED_NOTE = ("pieces: one per clip under the marked in/out. src_in/src_out are frames of the clip's FILE "
+               "(0 = its first frame) and src_in_s/src_seconds its seconds - the viewer worked them out "
+               "through the clip's place, in point, speed and loop and the file's own fps; use them as they "
+               "are (video_frames(frames=[src_in, src_out]), a trim from src_in_s for src_seconds), never "
+               "work them out yourself. rec_in/rec_out are frames of the cut. A piece with covered_by is "
+               "under a clip of a higher track there.")
+
+
+def _marked_of(r: dict, start: int, end: int) -> dict:
+    """The ``marked`` part of a /bepic/cut answer, for the agent (or why there is none)."""
+    m = r.get("marked") if isinstance(r, dict) else None
+    if not isinstance(m, dict):
+        return {"error": ("the viewer in this ComfyUI does not map a marked range to its sources yet - update "
+                          "ComfyUI-ImageViewer under <ComfyUI>/custom_nodes/ and restart ComfyUI"),
+                "start": start, "end": end}
+    out = dict(m)
+    pieces = [p for p in m.get("pieces") or [] if isinstance(p, dict)]
+    out["pieces"] = pieces[:MARKED_CAP]
+    if len(pieces) > MARKED_CAP:
+        out["more_pieces"] = len(pieces) - MARKED_CAP
+    if not pieces:
+        out["note"] = "no clip with a picture lies under the marked in/out (a gap, or a switched-off clip)"
+    else:
+        out["note"] = MARKED_NOTE
+    return out
+
+
+def marked_sources(otio: str, start: int, end: int) -> dict:
+    """The marked in/out (*start*..*end*, film frames of the cut in *otio*) in the sources: the
+    viewer's ``timeline_io.source_map`` through ``POST /bepic/cut`` (a read; nothing is written).
+    ``{"start", "end", "frames", "fps", "start_s", "end_s", "pieces": [...], "note"}`` or
+    ``{"error"}``."""
+    from urllib.parse import urlencode
+    from agenty_core.utils import canvas_scope as _cs
+    from agenty_core.utils.comfyui_client import get_client
+    why = _guard(otio)
+    if why:
+        return {"error": why}
+    cid = _cs.client_id()
+    route = "/bepic/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    try:
+        r = get_client().post(route, json_data={"otio": otio, "ops": [],
+                                                "range": {"start": int(start), "end": int(end)}})
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"the cut could not be read ({str(e)[:160]})"}
+    if not isinstance(r, dict) or not r.get("ok"):
+        return {"error": _said((r or {}).get("error") if isinstance(r, dict) else r)}
+    return _marked_of(r, int(start), int(end))
 
 
 @tool
-def edit_cut(otio: str = "", ops: list | None = None) -> str:
+def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_out: int = -1) -> str:
     """Read the cut open in the bEpic viewer's Edit panel (or any .otio cut), and change it:
     lay a voice-over, music or a clip on a track at a time, move or trim a clip, take one out.
+
+    The in/out the user MARKED on the cut ("the shot between my marks", "recreate what I
+    marked"): a read returns ``marked`` - for every clip under the marks its file and the
+    source frames ``src_in``/``src_out`` (frames of THAT FILE, at its own fps) and
+    ``src_in_s``/``src_seconds``, worked out by the viewer through the clip's place, in point,
+    speed, loop and split pieces. Use them as they are; never compute source frames yourself.
+    The marks are taken from the viewer while its Edit tab is on screen; ``frame_in`` /
+    ``frame_out`` (frames of the cut, both included) give a range yourself.
 
     The viewer saves the change the way its Edit panel does and the open panel shows it at
     once (one Ctrl+Z undoes it). Never write the .otio yourself (run_script): the panel would
@@ -242,7 +321,9 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
 
     Returns JSON ``{status, otio, length, tracks: [{track, kind, locked?, auto_select_off?, clips:
     [{clip, name, file, at, end, in, length, fade_in?, fade_out?, crossfade_in?}], crossfades?:
-    [{from_clip, into_clip, length, curve, align}]}], said, pushed}``; ``said`` lists what was
+    [{from_clip, into_clip, length, curve, align}]}], marked?: {start, end, fps, pieces: [{track,
+    clip, file, rec_in, rec_out, src_in, src_out, src_frames, src_in_s, src_out_s, src_seconds,
+    src_fps, speed, loop?, runs?, covered_by?}]}, said, pushed}``; ``said`` lists what was
     changed, ``pushed`` whether the open panels were told. Audio fades are seconds of the clip; a
     crossfade lies on the clip coming into a cut. Sound effects (EQ, Compressor, Reverb ...) are
     shown too - ``effects`` on a clip or a track, e.g. ``["EQ", "Reverb (bypassed)"]`` - but are
@@ -262,12 +343,21 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
     if not isinstance(ops, list):
         return _j({"status": "error", "error": "ops is a list of changes"})
     otio = str(otio or "").strip()
+    try:
+        fin, fout = int(frame_in), int(frame_out)
+    except (TypeError, ValueError):
+        return _j({"status": "error", "error": "frame_in / frame_out are frames of the cut (whole numbers)"})
+    marks = (fin, fout) if fin >= 0 and fout >= 0 else None
+    if (fin >= 0) != (fout >= 0):
+        return _j({"status": "error", "error": "give both frame_in and frame_out (frames of the cut, both included)"})
     if not otio:
         if _cs.detached():
             return _j({"status": "error", "error": _cs.NO_CANVAS + " Pass otio= (the cut's .otio path)."})
-        otio, why = _open_cut()
+        otio, why, shown = _open_cut()
         if not otio:
             return _j({"status": "error", "error": why})
+        if marks is None and not ops:
+            marks = shown
     if not otio.lower().endswith(".otio"):
         return _j({"status": "error", "error": f"{os.path.basename(otio)} is not a cut (.otio)"})
     for path in [otio] + [str(o.get("file")) for o in ops if isinstance(o, dict) and o.get("file")]:
@@ -287,8 +377,11 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
             why = ""
         if why:
             return _j({"status": "error", "error": why})
+    body = {"otio": otio, "ops": ops}
+    if marks is not None:
+        body["range"] = {"start": marks[0], "end": marks[1]}
     try:
-        r = get_client().post(route, json_data={"otio": otio, "ops": ops})
+        r = get_client().post(route, json_data=body)
     except Exception as e:  # noqa: BLE001
         resp = getattr(e, "response", None)
         status = getattr(resp, "status_code", None)
@@ -319,6 +412,8 @@ def edit_cut(otio: str = "", ops: list | None = None) -> str:
         out["texts_locked"] = True
     if (ed.get("auto") or {}).get("T") is False:
         out["texts_auto_select_off"] = True
+    if marks is not None:
+        out["marked"] = _marked_of(r, *marks)
     if ops:
         out["said"] = [str(s)[:200] for s in (r.get("said") or [])][:50]
         out["pushed"] = bool(r.get("pushed"))

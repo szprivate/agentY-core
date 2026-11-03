@@ -120,6 +120,9 @@ def describe_lines(state: dict | None) -> str:
         r = tl.get("range")
         if r:
             bits.append(f"in/out={r.get('start')}-{r.get('end')}")
+            if tab.get("mode") == "edit":
+                # Frames of the cut: what they are in the clips' files is the viewer's arithmetic, not the agent's.
+                bits.append("(cut frames; source frames: edit_cut marked)")
         if tl.get("playing"):
             bits.append("playing")
         if tl.get("loop") and tl["loop"] != _DEFAULT_LOOP:
@@ -214,10 +217,39 @@ def get_viewer_state() -> str:
     "the shot I have open", "what I'm looking at" - and the turn's [VIEWER] lines are
     not enough or may be stale. For the marks themselves call get_viewer_annotations.
 
+    In/out marked on the Edit panel's cut (the cut's tab on screen): ``state.edit.marked``
+    gives what lies between the marks IN THE SOURCES - per clip its file, ``src_in`` /
+    ``src_out`` (frames of that file, at its own fps), ``src_in_s`` / ``src_seconds``, the cut's
+    ``rec_in`` / ``rec_out`` - worked out by the viewer through each clip's place, in point,
+    speed and loop. Use those numbers; never work source frames out yourself. (A selected
+    clip's ``in`` / ``out`` are the whole clip's seconds of its file, not the marks.)
+
     Requires ComfyUI open in a browser with agentY-comfyuiConnect and the bEpic viewer.
 
     Returns JSON: ``{status, state}``; ``state.open`` false while the viewer is closed.
     """
+    raw = read_state()
+    try:
+        out = json.loads(raw)
+    except ValueError:
+        return raw
+    state = out.get("state") if out.get("status") == "ok" else None
+    if isinstance(state, dict) and isinstance(state.get("edit"), dict):
+        edit = state["edit"]
+        from agenty_core.tools.edit_cut import marked_range, marked_sources
+        marks = marked_range(state)
+        if marks is not None:
+            edit["marked"] = marked_sources(str(edit["otio"]), *marks)
+        if edit.get("selected"):
+            edit["selected_note"] = ("a selected clip's in/out are seconds of its file over the WHOLE clip, "
+                                     "not the in/out marked on the timeline"
+                                     + (" - edit.marked has those in the sources" if marks is not None else ""))
+    return json.dumps(out)
+
+
+def read_state() -> str:
+    """The viewer's state as it answers it (``GET /agent/viewer_state``), nothing added:
+    get_viewer_state's JSON without ``edit.marked``."""
     from agenty_core.utils import canvas_scope as _cs
     if _cs.detached():
         return json.dumps({"status": "error", "error": _cs.NO_CANVAS})
