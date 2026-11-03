@@ -53,6 +53,13 @@ class ShowInViewerTests(unittest.TestCase):
         self.assertNotIn("error", out)
         self.assertEqual(out["motion"], ["C:/x/title.mgscene.json"])
 
+    def test_an_otio_with_no_film_opened_as_a_cut_is_not_an_error(self):
+        out, c = run({"paths": ["D:/out/edit.otio"], "panel": "edit"},
+                     {"ok": True, "shown": 0, "cuts": ["D:/out/edit.otio"], "refused": []})
+        self.assertNotIn("error", out)
+        self.assertEqual(out["cuts"], ["D:/out/edit.otio"])
+        self.assertEqual(c.post.call_args.kwargs["json_data"]["panel"], "edit")
+
     def test_old_viewer_404(self):
         out, _ = run({"paths": ["a.png"]}, exc=RuntimeError("404 Not Found"))
         self.assertIn("too old", out["error"])

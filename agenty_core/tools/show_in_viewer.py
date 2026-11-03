@@ -9,7 +9,8 @@ Paths must lie in folders the viewer may open (ComfyUI's input / output / temp a
 the roots the user allowed); the viewer refuses the rest and says so in ``refused``.
 A path may be an image, a video, a folder, an image sequence
 (``frame_%04d.png`` / ``frame_####.png`` / ``frame_*.png``) or an ``.otio`` (which
-stands for the film rendered beside it).
+stands for the film rendered beside it; an ``.otio`` with no film beside it is opened
+as a cut in the Edit panel).
 """
 
 from __future__ import annotations
@@ -100,7 +101,8 @@ def show_in_viewer(
     Args:
         paths: Files to load: images, videos, folders, image sequences
             (``frame_%04d.png`` or ``frame_*.png``), or an ``.otio`` cut (stands for
-            the film beside it). Absolute paths inside ComfyUI's input/output/temp
+            the film beside it; with no film beside it, the cut itself is opened in the
+            Edit panel). Absolute paths inside ComfyUI's input/output/temp
             folders or a folder the user allowed in the viewer.
         tab_name: The viewer tab to put them in. Empty uses the agentY tab; a new
             name makes a new tab (e.g. ``"side by side"``).
@@ -114,11 +116,11 @@ def show_in_viewer(
         play: Also start playing the first item (ignored with panel ``"edit"``).
 
     Returns:
-        JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``refused`` (paths the viewer
+        JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``cuts`` (``.otio`` cuts opened in the Edit panel), ``refused`` (paths the viewer
         may not open or that are not media), ``opened`` (viewer brought up),
         ``edit`` (Edit panel opened), ``notes`` and ``error`` when it failed.
     """
     res = open_in_viewer(paths, tab_name, group, label, focus, play, panel)
-    if "error" not in res and not res.get("shown") and not res.get("motion"):
+    if "error" not in res and not res.get("shown") and not res.get("motion") and not res.get("cuts"):
         res["error"] = "nothing was shown: none of the paths is a media file the viewer may open"
     return json.dumps(res)
