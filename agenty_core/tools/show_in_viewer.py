@@ -104,9 +104,11 @@ def show_in_viewer(
             the film beside it; with no film beside it, the cut itself is opened in the
             Edit panel). Absolute paths inside ComfyUI's input/output/temp
             folders or a folder the user allowed in the viewer.
-        tab_name: The viewer tab to put them in. Empty uses the agentY tab; a new
-            name makes a new tab (e.g. ``"side by side"``).
-        group: Optional heading the files sit under in the tab's history strip.
+        tab_name: The group of the viewer's one Viewer tab to put them in, when
+            ``group`` is empty (the viewer has no tab per send any more). Empty uses
+            the agentY group; a new name makes a new group (e.g. ``"side by side"``).
+        group: Optional group heading the files sit under in the History strip;
+            wins over ``tab_name``.
         label: Optional caption on the thumbnail.
         focus: Bring the viewer up (even when closed or docked) and select the
             first item. Default True.
