@@ -64,8 +64,8 @@ def open_in_viewer(
         return {"error": "no paths given"}
     body = {
         "paths": clean,
-        "tab_name": " ".join(str(tab_name or "").split()) or default_tab(),
-        "group": group or "",
+        # The group of the viewer's Viewer tab; tab_name is its old name.
+        "group": " ".join(str(group or tab_name or "").split()) or default_tab(),
         "label": label or "",
         "focus": bool(focus),
         "play": bool(play),
@@ -85,12 +85,12 @@ def open_in_viewer(
 @tool
 def show_in_viewer(
     paths: list[str],
-    tab_name: str = "",
     group: str = "",
     label: str = "",
     focus: bool = True,
     panel: str = "",
     play: bool = False,
+    tab_name: str = "",
 ) -> str:
     """Show files in the bEpic viewer, when the user asks to see them there.
 
@@ -104,11 +104,9 @@ def show_in_viewer(
             the film beside it; with no film beside it, the cut itself is opened in the
             Edit panel). Absolute paths inside ComfyUI's input/output/temp
             folders or a folder the user allowed in the viewer.
-        tab_name: The group of the viewer's one Viewer tab to put them in, when
-            ``group`` is empty (the viewer has no tab per send any more). Empty uses
-            the agentY group; a new name makes a new group (e.g. ``"side by side"``).
-        group: Optional group heading the files sit under in the History strip;
-            wins over ``tab_name``.
+        group: The group of the viewer's Viewer tab to put them in (a heading in
+            its History strip). Empty uses the agentY group; a new name makes a new
+            group (e.g. ``"side by side"``).
         label: Optional caption on the thumbnail.
         focus: Bring the viewer up (even when closed or docked) and select the
             first item. Default True.
@@ -118,6 +116,7 @@ def show_in_viewer(
             masks - change them with edit_image); an ``.ora`` / ``.psd`` always opens there.
             Empty for none.
         play: Also start playing the first item (ignored with panel ``"edit"``).
+        tab_name: Old name of ``group``; used when ``group`` is empty.
 
     Returns:
         JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``cuts`` (``.otio`` cuts opened in the Edit panel), ``paint`` (pictures opened in Paint), ``refused`` (paths the viewer

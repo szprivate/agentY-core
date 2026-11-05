@@ -29,7 +29,8 @@ class ShowInViewerTests(unittest.TestCase):
         body = c.post.call_args.kwargs["json_data"]
         self.assertEqual(route, "/bepic/push")
         self.assertEqual(body["paths"], [os.path.abspath("clip3.mp4")])
-        self.assertEqual(body["tab_name"], "agentY")
+        self.assertEqual(body["group"], "agentY")
+        self.assertNotIn("tab_name", body)
         self.assertTrue(body["focus"])
         self.assertEqual(body["panel"], "")
         self.assertEqual(out["shown"], 1)
@@ -38,10 +39,12 @@ class ShowInViewerTests(unittest.TestCase):
     def test_named_tab_panel_and_provider(self):
         s.set_default_tab_provider(lambda: "Mine")
         _, c = run({"paths": ["a.mp4"], "panel": "Edit"}, {"ok": True, "shown": 1})
-        self.assertEqual(c.post.call_args.kwargs["json_data"]["tab_name"], "Mine")
+        self.assertEqual(c.post.call_args.kwargs["json_data"]["group"], "Mine")
         self.assertEqual(c.post.call_args.kwargs["json_data"]["panel"], "edit")
-        _, c = run({"paths": ["a.png"], "tab_name": " side  by side "}, {"ok": True, "shown": 1})
-        self.assertEqual(c.post.call_args.kwargs["json_data"]["tab_name"], "side by side")
+        _, c = run({"paths": ["a.png"], "group": " side  by side "}, {"ok": True, "shown": 1})
+        self.assertEqual(c.post.call_args.kwargs["json_data"]["group"], "side by side")
+        _, c = run({"paths": ["a.png"], "tab_name": "old name"}, {"ok": True, "shown": 1})
+        self.assertEqual(c.post.call_args.kwargs["json_data"]["group"], "old name", "tab_name is the old name of group")
 
     def test_nothing_shown_is_an_error(self):
         out, _ = run({"paths": ["/etc/x.png"]}, {"ok": True, "shown": 0, "refused": ["/etc/x.png"]})
