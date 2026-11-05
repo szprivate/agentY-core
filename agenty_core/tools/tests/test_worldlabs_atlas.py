@@ -1,5 +1,6 @@
 """worldlabs_atlas offline: HTTP mocked, files into a temp dir, depth reading stubbed."""
 
+from agenty_core.utils.provenance import sidecar_path
 import io
 import json
 import math
@@ -120,7 +121,7 @@ class CreateTests(Base):
         wd = Path(out["world_dir"])
         self.assertEqual(wd.name, "Room_1")
         for f in ("view_000.png", "depth_000.exr", "conf_000.png", "world.glb", "world.json",
-                  "view_000.png.agenty.json", "world.glb.agenty.json"):
+                  "agent_metadata/view_000.png.agenty.json", "agent_metadata/world.glb.agenty.json"):
             self.assertTrue((wd / f).exists(), f)
         gltf, binary = read_glb(out["glb"])
         self.assertEqual(len(gltf["meshes"]), 1)
@@ -129,7 +130,7 @@ class CreateTests(Base):
         # the first camera is the origin; the plane lies in front of it (-Z), 4..5 units away
         self.assertAlmostEqual(pos["max"][2], -4.0, delta=0.05)
         self.assertAlmostEqual(pos["min"][2], -5.0, delta=0.05)
-        side = json.loads((wd / "world.glb.agenty.json").read_text())
+        side = json.loads((wd / "agent_metadata" / "world.glb.agenty.json").read_text())
         self.assertEqual(side["provider"], "worldlabs-atlas")
         self.assertIsNone(out["usage"])
         self.assertFalse(any("pending" in str(p) for p in wd.glob("pending/*.json")))

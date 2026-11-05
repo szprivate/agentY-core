@@ -14,6 +14,13 @@ from unittest import mock
 
 from agenty_core.utils import provenance as pv
 
+
+def _meta(path, suffix):
+    """``agent_metadata/<name><suffix>`` beside *path* (its folder made)."""
+    p = pv._in_meta(path, suffix)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 FAKE_KEY = "sk-test-FAKEKEY1234567890abcdef"
 
 GRAPH = {
@@ -68,10 +75,10 @@ class Sidecar(Base):
     def test_write_then_read_merges_and_keeps_the_role(self):
         f = self.tmp / "a.png"
         f.write_bytes(b"x")
-        Path(str(f) + ".agenty.json").write_text(json.dumps({"role": "hero", "made_by": "agentY"}))
+        _meta(f, ".agenty.json").write_text(json.dumps({"role": "hero", "made_by": "agentY"}))
         ok = pv.write(f, GRAPH, prompt_id="pid1", output_node="9", output_index=0, workflow_file="w.json")
         self.assertTrue(ok)
-        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        doc = json.loads(_meta(f, ".agenty.json").read_text())
         self.assertEqual(doc["role"], "hero")
         p = doc["provenance"]
         self.assertEqual((p["v"], p["source"], p["prompt_id"], p["output_node"]), (1, "agentY", "pid1", "9"))
@@ -79,7 +86,7 @@ class Sidecar(Base):
         self.assertEqual(p["seeds"], [{"node": "3", "input": "seed", "value": 912334}])
         self.assertIn({"node": "4", "input": "ckpt_name", "value": "sdxl_base.safetensors"}, p["models"])
         self.assertEqual(p["partner"][0]["class"], "KlingImage2VideoNode")
-        blob = json.loads(gzip.decompress(Path(str(f) + ".prov.json.gz").read_bytes()))
+        blob = json.loads(gzip.decompress(_meta(f, ".prov.json.gz").read_bytes()))
         self.assertEqual(blob["v"], 1)
         self.assertEqual(p["graph_sha1"], pv.canonical_sha1(blob["prompt"]))
         got = pv.provenance_of(f)
@@ -95,12 +102,12 @@ class Sidecar(Base):
         f = self.tmp / "a.png"
         f.write_bytes(b"x")
         pv.write(f, GRAPH, prompt_id="one")
-        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        doc = json.loads(_meta(f, ".agenty.json").read_text())
         doc["role"] = "keep"
-        Path(str(f) + ".agenty.json").write_text(json.dumps(doc))
+        _meta(f, ".agenty.json").write_text(json.dumps(doc))
         pv.write(f, GRAPH, prompt_id="two", source="regenerate",
                  derived_from={"file": "o.png", "prompt_id": "one", "changes": ["3.seed: 1 -> 2"]})
-        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        doc = json.loads(_meta(f, ".agenty.json").read_text())
         self.assertEqual(doc["role"], "keep")
         self.assertEqual(doc["provenance"]["prompt_id"], "two")
         self.assertEqual(doc["provenance"]["derived_from"]["changes"], ["3.seed: 1 -> 2"])
@@ -117,7 +124,7 @@ class Sidecar(Base):
         rec = pv.recorded(b)
         self.assertEqual((rec["source"], rec["prompt_id"], rec["output_node"], rec["output_index"]),
                          ("agentY-mcp", "p9", "9", 1))
-        self.assertNotIn("SECRET0123456789", gzip.decompress(Path(str(b) + ".prov.json.gz").read_bytes()).decode())
+        self.assertNotIn("SECRET0123456789", gzip.decompress(_meta(b, ".prov.json.gz").read_bytes()).decode())
         self.assertEqual(pv.capture([a], {}, "p9", background=False), 0)
         self.assertIsNone(pv.capture([a], {"p9": {"prompt": "junk"}}, "p9"))
         self.assertEqual(pv.recorded(self.tmp / "none.png"), {})
@@ -131,9 +138,9 @@ class Sidecar(Base):
             t = threading.Thread(target=lambda: (pv.write(f, GRAPH, prompt_id="p"), done.set()))
             t.start()
             self.assertFalse(done.wait(0.3))          # blocked while the host has the sidecar
-            Path(str(f) + ".agenty.json").write_text(json.dumps({"role": "hero"}))
+            _meta(f, ".agenty.json").write_text(json.dumps({"role": "hero"}))
         t.join(10)
-        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        doc = json.loads(_meta(f, ".agenty.json").read_text())
         self.assertEqual((doc["role"], doc["provenance"]["prompt_id"]), ("hero", "p"))
 
     def test_move_takes_the_sidecars_along(self):
@@ -144,8 +151,36 @@ class Sidecar(Base):
         pv.move_with_sidecars(f, g)
         self.assertFalse(f.exists())
         self.assertEqual(pv.provenance_of(g)["source"], "sidecar")
-        self.assertEqual(json.loads(Path(str(g) + ".agenty.json").read_text())["provenance"]["graph_file"],
+        self.assertEqual(json.loads(_meta(g, ".agenty.json").read_text())["provenance"]["graph_file"],
                          "b.png.prov.json.gz")
+
+
+    def test_the_files_go_into_agent_metadata_beside_the_file(self):
+        f = self.tmp / "a.png"
+        f.write_bytes(b"x")
+        pv.write(f, GRAPH)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["a.png", "agent_metadata"])
+        self.assertEqual(sorted(p.name for p in (self.tmp / "agent_metadata").iterdir()),
+                         ["a.png.agenty.json", "a.png.prov.json.gz"])
+        self.assertEqual(pv.read_sidecar(f)["provenance"]["graph_file"], "a.png.prov.json.gz")
+
+    def test_an_old_sidecar_right_beside_the_file_is_still_read_and_kept(self):
+        f = self.tmp / "old.png"
+        f.write_bytes(b"x")
+        blob = json.dumps({"v": 1, "prompt": GRAPH, "workflow": None}).encode()
+        Path(str(f) + ".prov.json.gz").write_bytes(gzip.compress(blob))
+        Path(str(f) + ".agenty.json").write_text(json.dumps(
+            {"role": "old", "provenance": {"v": 1, "graph_file": "old.png.prov.json.gz", "prompt_id": "x"}}))
+        self.assertEqual(pv.provenance_of(f, use_history=False)["source"], "sidecar")
+        pv.write(f, GRAPH, prompt_id="y")
+        self.assertFalse((self.tmp / "agent_metadata").exists())
+        doc = json.loads(Path(str(f) + ".agenty.json").read_text())
+        self.assertEqual((doc["role"], doc["provenance"]["prompt_id"]), ("old", "y"))
+        g = self.tmp / "moved" / "new.png"
+        pv.move_with_sidecars(f, g)
+        self.assertFalse(Path(str(f) + ".agenty.json").exists())
+        self.assertEqual(pv.provenance_of(g, use_history=False)["source"], "sidecar")
+        self.assertTrue(pv._in_meta(g, ".agenty.json").is_file())
 
 
 class Redaction(Base):
@@ -158,7 +193,7 @@ class Redaction(Base):
                                               "inputs": [{"name": "api_key", "widget": {"name": "api_key"}}],
                                               "widgets_values": [FAKE_KEY, 5]}], "links": []})
         for suf in (".agenty.json", ".prov.json.gz"):
-            raw = Path(str(f) + suf).read_bytes()
+            raw = _meta(f, suf).read_bytes()
             if suf.endswith("gz"):
                 raw = gzip.decompress(raw)
             self.assertNotIn(FAKE_KEY.encode(), raw, suf)
@@ -251,13 +286,14 @@ class History(Base):
             g2 = pv.provenance_of(self.tmp / "unrelated.png", prompt_id="pid9")
             self.assertEqual((g2["source"], g2["confidence"]), ("history", "medium"))
         c.get.assert_called_with("/history/pid9")
-        self.assertFalse(Path(str(f) + ".prov.json.gz").exists())      # in memory only
+        self.assertFalse(pv._in_meta(f, ".prov.json.gz").exists())  # in memory only
+        self.assertFalse(Path(str(f) + ".prov.json.gz").exists())
 
     def test_prompt_id_from_the_sidecar(self):
         self._stop()
         f = self.tmp / "beach_00001_.png"
         f.write_bytes(b"x")
-        Path(str(f) + ".agenty.json").write_text(json.dumps({"role": "r", "prompt_id": "pid9"}))
+        _meta(f, ".agenty.json").write_text(json.dumps({"role": "r", "prompt_id": "pid9"}))
         with mock.patch("agenty_core.utils.comfyui_client.get_client", return_value=self._client()):
             self.assertEqual(pv.provenance_of(f)["source"], "history")
 

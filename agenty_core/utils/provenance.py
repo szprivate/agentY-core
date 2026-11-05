@@ -4,12 +4,15 @@ A generated file carries (or can be traced to) the API-format graph ComfyUI ran.
 That is what lets "recreate this shot with one change" re-run the original with
 everything else identical.
 
-On disk, next to ``<file>``:
+On disk, in the folder ``agent_metadata`` beside ``<file>`` (:data:`META_DIR`):
 
-* ``<file>.agenty.json`` - the existing sidecar; provenance is merged in under the
-  key ``"provenance"`` (everything else in the sidecar is kept);
-* ``<file>.prov.json.gz`` - gzip of ``{"v": 1, "prompt": <API graph>, "workflow":
-  <UI workflow or null>}``.
+* ``agent_metadata/<name>.agenty.json`` - the existing sidecar; provenance is merged in
+  under the key ``"provenance"`` (everything else in the sidecar is kept);
+* ``agent_metadata/<name>.prov.json.gz`` - gzip of ``{"v": 1, "prompt": <API graph>,
+  "workflow": <UI workflow or null>}``.
+
+Files written before 1.18 have both directly beside ``<file>``. Those are still read,
+and a file that has one there keeps using it (:func:`sidecar_path`, :func:`graph_path`).
 
 Secrets are never stored: :func:`redact_graph` runs on everything written.
 The graph is INTERNAL - it never goes into a tool result (see tools/regenerate.py).
@@ -40,6 +43,9 @@ from pathlib import Path
 VERSION = 1
 SIDECAR_SUFFIX = ".agenty.json"
 GRAPH_SUFFIX = ".prov.json.gz"
+#: The folder beside a file that holds its sidecar and graph, so an output folder shows
+#: only the pictures.
+META_DIR = "agent_metadata"
 REDACTED = "<redacted>"
 
 _SECRET_NAME = re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|auth|credential)")
@@ -171,12 +177,55 @@ def summarize(graph: dict) -> dict:
 
 # ── write ────────────────────────────────────────────────────────────────────
 
+def _beside(path, suffix: str) -> Path:
+    """Where the file's record was kept before 1.18: right next to it."""
+    return Path(str(path) + suffix)
+
+
+def _in_meta(path, suffix: str) -> Path:
+    p = Path(str(path))
+    return p.parent / META_DIR / (p.name + suffix)
+
+
 def sidecar_path(path) -> Path:
-    return Path(str(path) + SIDECAR_SUFFIX)
+    """The ``.agenty.json`` of *path*: ``agent_metadata/<name>.agenty.json``, or the old
+    one right beside the file when that exists. Read and write it here; a writer creates
+    the folder (:func:`write_json`)."""
+    old = _beside(path, SIDECAR_SUFFIX)
+    return old if old.is_file() else _in_meta(path, SIDECAR_SUFFIX)
 
 
 def graph_path(path) -> Path:
-    return Path(str(path) + GRAPH_SUFFIX)
+    """The ``.prov.json.gz`` of *path*, kept with its sidecar (beside the file when the
+    file still has an old sidecar or graph there, else in ``agent_metadata``)."""
+    old = _beside(path, GRAPH_SUFFIX)
+    if old.is_file() or _beside(path, SIDECAR_SUFFIX).is_file():
+        return old
+    return _in_meta(path, GRAPH_SUFFIX)
+
+
+def graph_file_of(path, prov: dict | None = None) -> Path:
+    """The graph file a sidecar's ``graph_file`` names (next to the sidecar, or beside the
+    file), else :func:`graph_path`."""
+    p = Path(str(path))
+    name = str((prov or {}).get("graph_file") or "")
+    if name:
+        for d in (sidecar_path(p).parent, p.parent, p.parent / META_DIR):
+            if (d / name).is_file():
+                return d / name
+    return graph_path(p)
+
+
+def write_json(target: Path, doc) -> None:
+    """Write *doc* as the JSON file *target* (its folder made first), atomically."""
+    _atomic_write(Path(target), json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
+
+
+def read_sidecar(path) -> dict:
+    """The sidecar of *path* as a dict ({} when there is none or it is unreadable)."""
+    sc = sidecar_path(path)
+    doc = _read_json(sc) if sc.is_file() else None
+    return doc if isinstance(doc, dict) else {}
 
 
 def _atomic_write(target: Path, data: bytes) -> None:
@@ -227,12 +276,12 @@ def write(path, graph: dict, *, prompt_id: str = "", output_node: str = "", outp
         }
         if derived_from:
             prov["derived_from"] = _redact_walk(copy.deepcopy(derived_from))
-        sc = sidecar_path(p)
         with SIDECAR_LOCK:
+            sc = sidecar_path(p)
             existing = _read_json(sc) if sc.is_file() else None
             doc = existing if isinstance(existing, dict) else {}
             doc["provenance"] = prov
-            _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
+            write_json(sc, doc)
         return True
     except Exception:  # noqa: BLE001 - provenance is never worth failing a run
         return False
@@ -311,24 +360,29 @@ def recorded(path) -> dict:
 
 
 def move_with_sidecars(src, dst) -> None:
-    """Move *src* to *dst* and its ``.agenty.json`` / ``.prov.json.gz`` along; the
-    graph file is renamed to match and the sidecar's ``graph_file`` follows."""
+    """Move *src* to *dst* and its ``.agenty.json`` / ``.prov.json.gz`` along (into
+    ``agent_metadata`` beside *dst*); the sidecar's ``graph_file`` follows."""
     src, dst = Path(str(src)), Path(str(dst))
     dst.parent.mkdir(parents=True, exist_ok=True)
     with SIDECAR_LOCK:
+        sc_src = sidecar_path(src)
+        doc = _read_json(sc_src) if sc_src.is_file() else None
+        g_src = graph_file_of(src, (doc or {}).get("provenance") if isinstance(doc, dict) else None)
         shutil.move(str(src), str(dst))
-        for suf in (GRAPH_SUFFIX, SIDECAR_SUFFIX):
-            s = Path(str(src) + suf)
-            if s.is_file():
-                shutil.move(str(s), str(Path(str(dst) + suf)))
-        sc = sidecar_path(dst)
-        doc = _read_json(sc) if sc.is_file() else None
-        if isinstance(doc, dict) and isinstance(doc.get("provenance"), dict):
-            doc["provenance"]["graph_file"] = graph_path(dst).name
-            try:
-                _atomic_write(sc, json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8"))
-            except OSError:
-                pass
+        g_dst = _in_meta(dst, GRAPH_SUFFIX)
+        if g_src.is_file():
+            g_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(g_src), str(g_dst))
+        if sc_src.is_file():
+            sc_dst = _in_meta(dst, SIDECAR_SUFFIX)
+            sc_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(sc_src), str(sc_dst))
+            if isinstance(doc, dict) and isinstance(doc.get("provenance"), dict):
+                doc["provenance"]["graph_file"] = g_dst.name
+                try:
+                    write_json(sc_dst, doc)
+                except OSError:
+                    pass
 
 
 # ── history ──────────────────────────────────────────────────────────────────
@@ -534,9 +588,7 @@ def _from_sidecar(p: Path) -> dict | None:
     prov = doc.get("provenance") if isinstance(doc, dict) else None
     if not isinstance(prov, dict):
         return None
-    gf = p.parent / str(prov.get("graph_file") or graph_path(p).name)
-    if not gf.is_file():
-        gf = graph_path(p)
+    gf = graph_file_of(p, prov)
     try:
         blob = json.loads(gzip.decompress(gf.read_bytes()).decode("utf-8"))
     except (OSError, ValueError, EOFError, zlib.error):

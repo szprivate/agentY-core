@@ -1,6 +1,7 @@
 """atlas_render_camera_move offline: the path maths, the plan and its price, the cost gate, the task sequence
 against a stubbed Atlas API, resume without paying twice, and the assembly through a fake viewer."""
 
+from agenty_core.utils.provenance import sidecar_path
 import json
 import os
 import unittest
@@ -174,7 +175,7 @@ class RunTests(Base):
         self.assertTrue(scene["items"][0]["src"]["path"].endswith("world.glb"))
         self.assertTrue(body["render"]["useCameraRes"])
         self.assertEqual(out["measured"], {"ok": 1})
-        self.assertTrue(Path(out["path"] + ".agenty.json").exists())
+        self.assertTrue(sidecar_path(out["path"]).exists())
         self.assertEqual(progress[0]["tasks_total"], 2)
 
     def test_resume_does_not_pay_twice(self):

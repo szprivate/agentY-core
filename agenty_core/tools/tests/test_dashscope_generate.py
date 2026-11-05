@@ -1,5 +1,6 @@
 """dashscope_generate offline: HTTP mocked, files into a temp dir."""
 
+from agenty_core.utils.provenance import sidecar_path
 import base64
 import json
 import os
@@ -69,7 +70,7 @@ class VideoTests(Base):
                             image_paths=[str(img)], resolution="480P")
         self.assertEqual(out["usage"]["duration"], 5)
         self.assertEqual(Path(out["files"][0]).read_bytes(), b"MP4DATA")
-        self.assertTrue(Path(out["files"][0] + ".agenty.json").is_file())
+        self.assertTrue(sidecar_path(out["files"][0]).is_file())
         url, kw = posted[0]
         self.assertTrue(url.startswith("https://dashscope-intl.aliyuncs.com/api/v1/"))
         self.assertEqual(kw["headers"]["X-DashScope-Async"], "enable")

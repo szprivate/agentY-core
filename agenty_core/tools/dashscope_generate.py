@@ -160,7 +160,8 @@ def _save(url: str, kind: str, model: str, out_dir: str, index: int, meta: dict)
     try:  # same shape as agentY's output_tags sidecar
         body = {"role": f"DashScope {model} {kind}", "made_by": "agentY",
                 "when": time.strftime("%Y-%m-%dT%H:%M:%S"), **meta}
-        Path(str(path) + ".agenty.json").write_text(json.dumps(body, indent=1), encoding="utf-8")
+        from agenty_core.utils.provenance import sidecar_path, write_json
+        write_json(sidecar_path(path), body)
     except Exception:  # noqa: BLE001
         pass
     from agenty_core.tools.image_io import _publish

@@ -3,6 +3,7 @@ result is versioned beside the original, and no tool answer ever carries the gra
 
 Real templates from the corpus (API format) are the graphs; ComfyUI is mocked.
 """
+from agenty_core.utils.provenance import sidecar_path as pv_sidecar
 import copy
 import json
 import shutil
@@ -351,7 +352,7 @@ class Regenerate(Base):
         got = pv.provenance_of(new)
         self.assertEqual(got["source"], "sidecar")
         self.assertEqual(got["graph"]["41"]["inputs"]["duration"], 8)
-        doc = json.loads(Path(new + ".agenty.json").read_text(encoding="utf-8"))["provenance"]
+        doc = json.loads(pv_sidecar(new).read_text(encoding="utf-8"))["provenance"]
         self.assertEqual(doc["source"], "regenerate")
         self.assertEqual(doc["prompt_id"], "newpid1")
         self.assertEqual(doc["derived_from"], {"file": a, "prompt_id": "pidA", "changes": ["41.duration: 5 → 8"]})
@@ -463,7 +464,7 @@ class Regenerate(Base):
         self.assertFalse(p["ok"])
         self.assertIn("redacted", p["error"])
         for suffix in (".agenty.json",):
-            self.assertNotIn(FAKE_KEY, Path(f + suffix).read_text(encoding="utf-8"))
+            self.assertNotIn(FAKE_KEY, pv_sidecar(f).read_text(encoding="utf-8"))
         self.assertNotIn(FAKE_KEY, rg.recreatable_params(f))
 
 

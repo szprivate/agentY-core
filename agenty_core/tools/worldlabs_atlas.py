@@ -329,7 +329,8 @@ def _sidecar(path: Path, role: str, meta: dict) -> None:
     try:
         body = {"role": role, "made_by": "agentY", "provider": "worldlabs-atlas",
                 "when": time.strftime("%Y-%m-%dT%H:%M:%S"), **meta}
-        Path(str(path) + ".agenty.json").write_text(json.dumps(body, indent=1), encoding="utf-8")
+        from agenty_core.utils.provenance import sidecar_path, write_json
+        write_json(sidecar_path(path), body)
     except Exception:  # noqa: BLE001
         pass
 

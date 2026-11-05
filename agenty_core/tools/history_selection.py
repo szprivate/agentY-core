@@ -127,11 +127,12 @@ def _join(dirs: dict, ftype: str, subfolder: str, filename: str) -> str:
 
 
 def read_sidecar(path: str) -> dict:
-    """The ``.agenty.json`` beside *path*, or {}."""
+    """The ``.agenty.json`` of *path* (in ``agent_metadata`` beside it, or the old one right beside it), or {}."""
     if not path:
         return {}
     try:
-        f = Path(str(path) + SIDECAR_SUFFIX)
+        from agenty_core.utils.provenance import sidecar_path
+        f = sidecar_path(path)
         if not f.is_file():
             return {}
         data = json.loads(f.read_text(encoding="utf-8"))

@@ -1,5 +1,6 @@
 """worldlabs_marble offline: every HTTP call is a stub, nothing is billed."""
 
+from agenty_core.utils.provenance import sidecar_path
 import io
 import json
 import math
@@ -152,7 +153,7 @@ class CreateTests(Base):
         self.assertIn("viewer", out)
         wj = json.loads((Path(out["world_dir"]) / "world.json").read_text())
         self.assertEqual((wj["status"], wj["world_id"], wj["provider"]), ("ready", "w_1", "worldlabs-marble"))
-        side = json.loads(Path(out["splat"] + ".agenty.json").read_text())
+        side = json.loads(sidecar_path(out["splat"]).read_text())
         self.assertEqual(side["provider"], "worldlabs-marble")
         key_headers = {c["headers"]["WLT-Api-Key"] for c in self.calls if c.get("headers") and not c["url"].startswith("https://up/")}
         self.assertEqual(key_headers, {"wl_marble_test"})                          # the Marble key, not the Atlas one

@@ -1,6 +1,7 @@
 """atlas_render offline: the camera-frame conversion with known poses, the request Atlas gets, the files,
 the upscale workflow (ComfyUI client mocked) and the resume path."""
 
+from agenty_core.utils.provenance import sidecar_path
 import json
 import math
 import tempfile
@@ -203,7 +204,7 @@ class RenderTests(Base):
         self.assertFalse(body["enhancePrompt"])
         png = Path(out["path"])
         self.assertTrue(png.exists() and png.parent.name == "renders" and png.name == "render_000.png")
-        self.assertTrue(Path(str(png) + ".agenty.json").exists())
+        self.assertTrue(sidecar_path(png).exists())
         self.assertEqual(self.published, [str(png)])
         self.assertEqual(out["size"], [1280, 720])
         self.assertIn("camera_mesh_frame", out)
