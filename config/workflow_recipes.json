@@ -954,7 +954,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/63 members",
               "min_instances": 0,
@@ -1043,7 +1043,7 @@
           ],
           "custom_nodes": [
             "VHS_LoadImagePath",
-            "bEpicSendToViewer"
+            "ImageViewerSend"
           ]
         },
         {
@@ -1330,7 +1330,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/12 members",
               "min_instances": 0,
@@ -1411,7 +1411,7 @@
             "VHS_SelectImages",
             "bEpicGetPath",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -13930,7 +13930,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/23 members",
               "min_instances": 0,
@@ -14387,7 +14387,7 @@
             "QwenMultiangleCameraNode",
             "VHS_LoadImagePath",
             "bEpicGetPath",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -22865,7 +22865,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/38 members",
               "min_instances": 0,
@@ -23548,7 +23548,7 @@
             "UltralyticsDetectorProvider",
             "VHS_LoadImagePath",
             "bEpicCrop",
-            "bEpicSendToViewer"
+            "ImageViewerSend"
           ]
         },
         {
@@ -25938,7 +25938,7 @@
                 "ReferenceLatent (x2)",
                 "SetNode (x8)",
                 "bEpicGetPath (x8)",
-                "bEpicSendToViewer",
+                "ImageViewerSend",
                 "bepicSetPath",
                 "easy cleanGpuUsed"
               ]
@@ -26396,7 +26396,7 @@
               "distinct_instances": [
                 {
                   "feeds_into": [
-                    "bEpicSendToViewer",
+                    "ImageViewerSend",
                     "save_output"
                   ],
                   "fed_by": [
@@ -26601,7 +26601,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "all members (1/1)",
               "min_instances": 1,
@@ -26982,7 +26982,7 @@
             },
             {
               "from_role": "vae_decode",
-              "to_role": "bEpicSendToViewer",
+              "to_role": "ImageViewerSend",
               "data_type": "IMAGE",
               "frequency": "all members (1/1)",
               "invariant": true
@@ -27047,7 +27047,7 @@
               },
               {
                 "data_type": "IMAGE",
-                "role": "bEpicSendToViewer"
+                "role": "ImageViewerSend"
               },
               {
                 "data_type": "IMAGE",
@@ -27086,7 +27086,7 @@
           ],
           "custom_nodes": [
             "bEpicGetPath",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -34173,7 +34173,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/7 members",
               "min_instances": 0,
@@ -34523,7 +34523,7 @@
             "bEpicGetPath",
             "bEpicReformat",
             "bEpicRetime",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bEpic_convertFPS",
             "bEpic_imageSave",
             "bepicSetPath",
@@ -36928,7 +36928,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/7 members",
               "min_instances": 0,
@@ -37190,7 +37190,7 @@
             "AgentYRefNote",
             "ImageBatchMulti",
             "VHS_VideoCombine",
-            "bEpicSendToViewer"
+            "ImageViewerSend"
           ]
         },
         {
@@ -38381,7 +38381,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/7 members",
               "min_instances": 0,
@@ -39267,7 +39267,7 @@
             "VHS_VideoInfo",
             "bEpicGetPath",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -39379,7 +39379,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/6 members",
               "min_instances": 0,
@@ -39963,7 +39963,7 @@
             "VHS_VideoCombine",
             "bEpicGetPath",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath",
             "bepicVaceKeyframeReplacer"
           ]
@@ -41332,7 +41332,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/3 members",
               "min_instances": 0,
@@ -41721,7 +41721,7 @@
               },
               {
                 "data_type": "IMAGE",
-                "role": "bEpicSendToViewer"
+                "role": "ImageViewerSend"
               },
               {
                 "data_type": "IMAGE",
@@ -41756,7 +41756,7 @@
             "bEpicGetPath",
             "bEpicMerge",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -56289,7 +56289,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/2 members",
               "min_instances": 0,
@@ -56385,7 +56385,7 @@
               },
               {
                 "data_type": "IMAGE",
-                "role": "bEpicSendToViewer"
+                "role": "ImageViewerSend"
               },
               {
                 "data_type": "IMAGE",
@@ -56424,7 +56424,7 @@
             "VHS_SelectImages",
             "bEpicGetPath",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -67671,7 +67671,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/6 members",
               "min_instances": 0,
@@ -67791,7 +67791,7 @@
             "VHS_VideoCombine",
             "bEpicGetPath",
             "bEpicReformat",
-            "bEpicSendToViewer",
+            "ImageViewerSend",
             "bepicSetPath"
           ]
         },
@@ -71937,7 +71937,7 @@
             {
               "name": "morning_people_character_sheet",
               "title": null,
-              "description": "[API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> bEpicSendToViewer. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round."
+              "description": "[API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> ImageViewerSend. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round."
             },
             {
               "name": "template_character_portrait_relighting",
@@ -71961,7 +71961,7 @@
               "generate a multi-pose character sheet"
             ]
           },
-          "description": "Upload a portrait of your character and create multiple cinematic lighting conditions while maintaining character consistency. | Upload your character and generate 360 turnaround views for full body and close ups. | [API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> bEpicSendToViewer. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.",
+          "description": "Upload a portrait of your character and create multiple cinematic lighting conditions while maintaining character consistency. | Upload your character and generate 360 turnaround views for full body and close ups. | [API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> ImageViewerSend. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.",
           "description_source": "catalog",
           "node_clusters": [],
           "required_node_roles": [],
@@ -72023,7 +72023,7 @@
             {
               "role": "unclassified node role",
               "role_key": "other",
-              "node_class": "bEpicSendToViewer",
+              "node_class": "ImageViewerSend",
               "utility": false,
               "frequency": "1/3 members",
               "min_instances": 0,
@@ -72081,7 +72081,7 @@
           ],
           "custom_nodes": [
             "AgentYImageCollector",
-            "bEpicSendToViewer"
+            "ImageViewerSend"
           ]
         },
         {

@@ -3,7 +3,7 @@
 Two panels keep a history the user can pick from, and the agentY-comfyuiConnect
 page code reads both (``web/agent_history_selection.js``):
 
-* the **bEpic viewer's history strip** - snapshots Ctrl-selected, the two pinned
+* the **ComfyUI Image Viewer's history strip** - snapshots Ctrl-selected, the two pinned
   in a compare, or one older snapshot clicked open. Each comes with its file (or
   ComfyUI's filename/subfolder/type for it), its kind, the label and group its
   sender gave it, the run (``prompt_id``) that made it and its agentY ``#tag``.
@@ -273,7 +273,7 @@ def resolve(selection: Optional[dict], *, dirs: Optional[dict] = None,
         if viewer and viewer.get("items"):
             got = _viewer_items(viewer, d)
             items += got
-            panels.append({"panel": "bEpic viewer history",
+            panels.append({"panel": "ComfyUI Image Viewer history",
                            "tab": str(viewer.get("tab_label") or viewer.get("tab") or ""),
                            "how": str(viewer.get("mode") or ""),
                            "count": int(viewer.get("count") or len(got))})
@@ -345,8 +345,8 @@ def describe_lines(resolved: dict, cap: int = BLOCK_ITEMS) -> tuple[str, str]:
 
 @tool
 def get_history_selection() -> str:
-    """Read what the user has picked in a history panel right now: the bEpic
-    viewer's history strip (Ctrl-selected snapshots, two pinned in a compare, or
+    """Read what the user has picked in a history panel right now: the ComfyUI Image
+    Viewer's history strip (Ctrl-selected snapshots, two pinned in a compare, or
     one older snapshot clicked open) and ComfyUI's Media Assets / queue sidebar.
 
     Use when the user points at renders rather than nodes - "the selected
@@ -385,7 +385,7 @@ def get_history_selection() -> str:
     res = resolve(r.get("selection"))
     out = {"status": "ok", **res}
     if not res.get("items"):
-        out["hint"] = ("Nothing is picked in a history panel. In the bEpic viewer: Ctrl+click "
+        out["hint"] = ("Nothing is picked in a history panel. In the ComfyUI Image Viewer: Ctrl+click "
                        "thumbnails, or click one to open it; in ComfyUI's assets sidebar: select "
                        "the outputs.")
     return json.dumps(out)

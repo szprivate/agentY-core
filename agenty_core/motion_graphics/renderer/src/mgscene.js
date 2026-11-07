@@ -1,10 +1,10 @@
 // mgscene.js - the motion-graphics scene model: the one piece of code the render
-// (Remotion) and the bEpic viewer's editor share, so a preview is the render.
+// (Remotion) and the ComfyUI Image Viewer's editor share, so a preview is the render.
 //
 // Plain ES module, no dependencies, no DOM: it runs in node, in the browser and
 // inside Remotion's webpack. CANONICAL COPY: agentY-core
 // (agenty_core/motion_graphics/renderer/src/mgscene.js). The viewer
-// (ComfyUI-ImageViewer/js/bEpicViewer_mgScene.js) carries a byte-identical copy;
+// (ComfyUI-ImageViewer/js/imageViewer_mgScene.js) carries a byte-identical copy;
 // both repos run the same golden vectors (tests/golden.json) against it, and the
 // viewer's test compares the two files when the sibling checkout is there.
 //

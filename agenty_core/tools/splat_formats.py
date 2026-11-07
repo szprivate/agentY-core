@@ -5,7 +5,7 @@
   2 and 3 are read and version 3 is written. Version 4 (zstd streams) is refused with a pointer to the PLY export.
   The reader/writer here do NOT change the axes: what is in the file comes out in the PLY. Marble's SPZ are in
   its "marble_raw_opencv" frame (x right, y DOWN, z forward) - the same Y-down frame as a 3DGS PLY and as the
-  splats ``train_splat`` saves, which the bEpic viewer (Spark) turns upright with its 180 degree turn about X.
+  splats ``train_splat`` saves, which the ComfyUI Image Viewer (Spark) turns upright with its 180 degree turn about X.
   (Niantic's own CLI flips y and z when it converts to or from PLY because it keeps SPZ in RUB; Marble's files
   are documented as raw OpenCV, so nothing is flipped here.)
 * **PLY**: the usual 3DGS vertex layout (x y z, f_dc_*, f_rest_*, opacity, scale_*, rot_*), binary little-endian,

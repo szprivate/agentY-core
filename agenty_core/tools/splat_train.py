@@ -8,8 +8,8 @@ it. A folder that already is a Nerfstudio (``transforms.json``) or COLMAP (``spa
 
 Training takes minutes to half an hour, so it runs as a background process: ``train_splat`` starts it and
 waits up to ``wait_s``; ``splat_training_status`` checks on it later. When Brush is done the splat is cleaned
-(huge and near-camera "floaters" removed), saved in the axes splat viewers expect (Y down, the bEpic viewer
-turns it upright), with a lighter colour-only copy, a preview picture, and opened in the bEpic viewer.
+(huge and near-camera "floaters" removed), saved in the axes splat viewers expect (Y down, the ComfyUI Image Viewer
+turns it upright), with a lighter colour-only copy, a preview picture, and opened in the ComfyUI Image Viewer.
 
 Brush is downloaded once (pinned release, checksum verified) into ``<app>/tools/brush/`` unless
 ``BRUSH_PATH`` points at a ``brush_app`` binary.
@@ -551,7 +551,7 @@ def _publish(path: Path) -> None:
 
 
 def open_splat_in_viewer(splat: Path, job: Optional[dict] = None, focus: bool = True) -> dict:
-    """Open a splat in the bEpic viewer's 3D view, looking through the first training camera."""
+    """Open a splat in the ComfyUI Image Viewer's 3D view, looking through the first training camera."""
     from agenty_core.tools.previz_shot import camera_item, matrix_to_euler, model_item
     items = [model_item(str(splat), f"Splat: {Path(splat).stem}")]
     active = None
@@ -566,11 +566,11 @@ def open_splat_in_viewer(splat: Path, job: Optional[dict] = None, focus: bool = 
     scene = {"version": 1, "items": items, "activeCamera": active, "fps": 24.0, "length": 1, "lengthSet": True}
     try:
         from agenty_core.utils.comfyui_client import get_client
-        res = get_client().post("/bepic/previz_shot", json_data={
+        res = get_client().post("/imageviewer/previz_shot", json_data={
             "scene": scene, "name": f"splat_{Path(splat).stem}", "focus": bool(focus), "add_node": False})
         return {"tab": (res or {}).get("key"), "scene_file": (res or {}).get("scene_file")}
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"could not open it in the bEpic viewer: {exc}"}
+        return {"error": f"could not open it in the ComfyUI Image Viewer: {exc}"}
 
 
 def _status(jd: Path, job: dict, wait_s: float, open_in_viewer: bool) -> str:
@@ -602,7 +602,7 @@ def _report(jd: Path, job: dict) -> dict:
             "preview": job.get("preview"), "splats": job.get("splats"), "dropped_floaters": job.get("dropped_floaters"),
             "steps": job["steps"], "train_s": int((job.get("finished") or time.time()) - job.get("started", time.time())),
             "viewer": job.get("viewer"), "folder": str(jd),
-            "note": "The .ply is a standard 3DGS file (Y down): it opens in the bEpic viewer, SuperSplat, Spark, "
+            "note": "The .ply is a standard 3DGS file (Y down): it opens in the ComfyUI Image Viewer, SuperSplat, Spark, "
                     "Unreal/Unity splat plugins. _lite is colour-only and about 4x smaller."}
 
 
@@ -655,7 +655,7 @@ def train_splat(source: str, name: str = "", steps: int = 30000, max_splats: int
         sh_degree: view-dependent colour detail, 0-3 (3 = shiny surfaces look right; 0 = 4x smaller).
         wait_s: how long this call waits for the result before returning "running".
         free_vram: ask ComfyUI to unload its models first (training shares the GPU).
-        open_in_viewer: open the result in the bEpic viewer's 3D view when done.
+        open_in_viewer: open the result in the ComfyUI Image Viewer's 3D view when done.
         output_dir: save under this folder instead of ComfyUI's output/3d_scenes/splats.
 
     Returns:
@@ -678,7 +678,7 @@ def splat_training_status(name: str, wait_s: int = 0, open_in_viewer: bool = Tru
     Args:
         name: the splat's name (as train_splat returned it in "job").
         wait_s: wait up to this many seconds for it to finish.
-        open_in_viewer: open the result in the bEpic viewer when it finishes here.
+        open_in_viewer: open the result in the ComfyUI Image Viewer when it finishes here.
         output_dir: where the splat lives, if not ComfyUI's output/3d_scenes/splats.
 
     Returns:

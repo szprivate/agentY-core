@@ -1,4 +1,4 @@
-"""On-disk formats of LoRA training: the contract between the tools, the runner and the bEpic viewer.
+"""On-disk formats of LoRA training: the contract between the tools, the runner and the ComfyUI Image Viewer.
 
 Everything lives under ComfyUI's output folder, in ``agent/``:
 

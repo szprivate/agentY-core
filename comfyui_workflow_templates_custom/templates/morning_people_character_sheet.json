@@ -18,9 +18,9 @@
         0
       ]
     },
-    "class_type": "bEpicSendToViewer",
+    "class_type": "ImageViewerSend",
     "_meta": {
-      "title": "bEpic Send To Image Viewer"
+      "title": "Send To Image Viewer"
     }
   },
   "307": {

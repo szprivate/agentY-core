@@ -16,7 +16,7 @@ Docs (2026-10-30): https://atlas-beta.worldlabs.ai/docs/posed-images-to-splats a
   the world.json frames are stored in, so a world frame goes in as it is. A pose from somewhere else (the
   viewer, the mesh frame) is turned into this frame by ``atlas_render`` / ``mesh_pose_to_camera`` first.
 * The splat comes back in the same world frame (measured on the promo's interior2 world, 2026-10-30: SPZ v2,
-  2,000,000 splats, SH degree 0, Y up, it lines up with the input views rendered through their cameras; ~17 min). The bEpic viewer (Spark) turns every splat 180 degrees about X
+  2,000,000 splats, SH degree 0, Y up, it lines up with the input views rendered through their cameras; ~17 min). The ComfyUI Image Viewer (Spark) turns every splat 180 degrees about X
   (it expects the 3DGS / OpenCV Y-down convention), so the PLY written next to the SPZ is turned that way
   (``splat_train.flip_x``) and the viewer shows it upright - as it does a ``train_splat`` PLY.
 
@@ -375,7 +375,7 @@ def atlas_views_to_splat(world: str, frames: str = "", exclude: str = "", check_
         name: file name of the splat (default <world>_posed_splat).
         dry_run: spend nothing: return the views it would send, the consistency check and the price.
         confirm_cost: the user has seen the price and agreed.
-        open_in_viewer: open the result in the bEpic viewer's 3D view.
+        open_in_viewer: open the result in the ComfyUI Image Viewer's 3D view.
         timeout_s: how long to wait; on timeout the error carries operation_id for atlas_fetch.
         output_dir: where the world lives, if not ComfyUI's output/3d_scenes/atlas.
 

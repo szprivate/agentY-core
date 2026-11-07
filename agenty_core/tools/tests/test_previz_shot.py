@@ -135,7 +135,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["path"], "D:/o/s.mp4")
         body = c.post.call_args.kwargs["json_data"]
-        self.assertEqual(c.post.call_args.args[0], "/bepic/previz_shot")
+        self.assertEqual(c.post.call_args.args[0], "/imageviewer/previz_shot")
         self.assertEqual(body["render"]["camera"], "shotcam")
         self.assertEqual(body["scene"]["length"], 121)
 

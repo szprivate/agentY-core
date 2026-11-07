@@ -1,7 +1,7 @@
-"""Load files into the bEpic viewer (ComfyUI-ImageViewer) on the user's request.
+"""Load files into the ComfyUI Image Viewer (ComfyUI-ImageViewer) on the user's request.
 
 "Show me clip 3 in the viewer", "open these frames side by side", "open the edit".
-One call to the viewer's ``POST /bepic/push`` (reached through ComfyUI's HTTP API,
+One call to the viewer's ``POST /imageviewer/push`` (reached through ComfyUI's HTTP API,
 like every other core tool), which files the media in a tab, can bring the viewer
 up, select or play the first item and open the Edit panel on a cut.
 
@@ -73,10 +73,10 @@ def open_in_viewer(
     }
     try:
         from agenty_core.utils.comfyui_client import get_client
-        res = get_client().post("/bepic/push", json_data=body)
+        res = get_client().post("/imageviewer/push", json_data=body)
     except Exception as exc:  # noqa: BLE001
         if "404" in str(exc):
-            return {"error": "the bEpic viewer is not installed in ComfyUI, or is too old for "
+            return {"error": "the ComfyUI Image Viewer is not installed in ComfyUI, or is too old for "
                              "show_in_viewer (update ComfyUI-ImageViewer)."}
         return {"error": f"could not reach the viewer through ComfyUI: {exc}"}
     return res if isinstance(res, dict) else {"error": f"unexpected answer from the viewer: {res!r}"}
@@ -92,7 +92,7 @@ def show_in_viewer(
     play: bool = False,
     tab_name: str = "",
 ) -> str:
-    """Show files in the bEpic viewer, when the user asks to see them there.
+    """Show files in the ComfyUI Image Viewer, when the user asks to see them there.
 
     Use it for "show me clip 3 in the viewer", "open these frames side by side",
     "open the edit". Not for files the user did not ask to look at: generated

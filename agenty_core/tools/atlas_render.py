@@ -6,8 +6,8 @@ background or environment can be shot again and again from different angles and 
 place: first frames / references for LTX 2.5 i2v, Layout-To-Render or MiniMax H3 r2v.
 
 Cameras (the *mesh frame* is ``world.glb``'s own: the first picture's camera is the origin, looking
-down -Z, Y up, metres as Atlas scales them; this is also what ``render_camera_move`` and the bEpic
-viewer's 3D view use):
+down -Z, Y up, metres as Atlas scales them; this is also what ``render_camera_move`` and the ComfyUI Image
+Viewer's 3D view use):
 
 * relative move: ``{"forward": m, "right": m, "up": m, "yaw": deg, "pitch": deg, "roll": deg}`` from
   the first picture's camera;
@@ -495,7 +495,7 @@ def world_scene(wd: Path, world: dict) -> dict:
 
 @tool
 def atlas_open_in_viewer(world: str, focus: bool = True, output_dir: str = "") -> str:
-    """Open an Atlas world in the bEpic viewer's 3D view, looking through a 16:9 camera at the first
+    """Open an Atlas world in the ComfyUI Image Viewer's 3D view, looking through a 16:9 camera at the first
     picture's viewpoint, so the user can navigate (Alt + mouse) and press "Render with Atlas" in the
     Previz panel. Use when the user wants to pick a camera themselves.
 
@@ -517,11 +517,11 @@ def _open_in_viewer(world, focus, output_dir):
         scene = world_scene(wd, w)
         from agenty_core.utils.comfyui_client import get_client
         try:
-            job = get_client().post("/bepic/previz_shot", json_data={
+            job = get_client().post("/imageviewer/previz_shot", json_data={
                 "scene": scene, "name": f"atlas_{w['name']}", "focus": bool(focus), "add_node": False})
         except Exception as exc:  # noqa: BLE001
             if "404" in str(exc):
-                return wl._err("the bEpic viewer is not installed in ComfyUI, or is too old for previz shots "
+                return wl._err("the ComfyUI Image Viewer is not installed in ComfyUI, or is too old for previz shots "
                                "(update ComfyUI-ImageViewer and restart ComfyUI)", "api")
             return wl._err(f"could not reach the viewer through ComfyUI: {exc}", "api")
         return json.dumps({"status": "ok", "tab": (job or {}).get("key"), "scene_file": (job or {}).get("scene_file"),

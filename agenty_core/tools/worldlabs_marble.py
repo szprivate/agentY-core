@@ -410,7 +410,7 @@ def _open_viewer(path: Path) -> dict:
         from agenty_core.tools.splat_train import open_splat_in_viewer
         return open_splat_in_viewer(path, None)
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"could not open it in the bEpic viewer: {exc}"}
+        return {"error": f"could not open it in the ComfyUI Image Viewer: {exc}"}
 
 
 def _summary(wd: Path, world: dict, extra: Optional[dict] = None) -> str:
@@ -485,7 +485,7 @@ def marble_create_world(name: str, images: Optional[list] = None, atlas_world: s
     world; several = a multi-image world (4 pictures, 8 with ``reconstruct_images``). ``prompt`` is optional
     text that steers it (without one World Labs captions the picture). The result is a splat that needs no
     training: SPZ files (full resolution about 2 M splats, 500k, 100k), a collider mesh and a panorama.
-    The SPZ is saved raw (OpenCV axes, Y down, like train_splat's .ply) and opened in the bEpic viewer.
+    The SPZ is saved raw (OpenCV axes, Y down, like train_splat's .ply) and opened in the ComfyUI Image Viewer.
 
     Args:
         name: folder name, saved under output/3d_scenes/marble/<name>/ (default <atlas_world>_marble).
@@ -671,7 +671,7 @@ def marble_export(name: str, format: str = "spz", resolution: str = "full", coll
     SPZ comes at full (about 2 M splats), 500k and 100k. PLY (uncompressed, for other splat software) comes
     from World Labs' own export at full, 500k, 150k, 100k; if that is unavailable the SPZ is converted here.
     Files are raw: OpenCV axes (x right, y down, z forward), the same Y-down frame as train_splat's .ply, which
-    the bEpic viewer turns upright. Other tools: a DCC that wants OpenGL axes negates Y and Z.
+    the ComfyUI Image Viewer turns upright. Other tools: a DCC that wants OpenGL axes negates Y and Z.
 
     Args:
         name: the Marble world (folder name under output/3d_scenes/marble).
@@ -680,7 +680,7 @@ def marble_export(name: str, format: str = "spz", resolution: str = "full", coll
         collider_mesh: also download the coarse physics mesh (collider.glb, 100-200k triangles).
         metric: ply only: apply Marble's metric scale and ground alignment (metres, floor at y = 0).
         refresh: download again even if the file is already there (also renews expired links).
-        open_in_viewer: open the result in the bEpic viewer's 3D view.
+        open_in_viewer: open the result in the ComfyUI Image Viewer's 3D view.
         timeout_s: how long to wait for a still-running creation.
         output_dir: where the world lives, if not ComfyUI's output/3d_scenes/marble.
 
