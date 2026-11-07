@@ -333,6 +333,37 @@ def recorded_deps(path) -> dict:
     return deps if isinstance(deps, dict) else {}
 
 
+# Files nothing says anything about (a plate from a camera): asked once per version of
+# the file, not at every look. Finding that out can mean ffprobe on a 4 GB video.
+_unknown_lock = threading.Lock()
+_unknown: dict = {}
+_UNKNOWN_MAX = 4096
+
+
+def _file_key(path):
+    try:
+        st = os.stat(str(path))
+    except OSError:
+        return None
+    return (str(path), st.st_size, st.st_mtime_ns)
+
+
+def _known_unknown(path) -> bool:
+    k = _file_key(path)
+    with _unknown_lock:
+        return k is not None and k in _unknown
+
+
+def _mark_unknown(path) -> None:
+    k = _file_key(path)
+    if k is None:
+        return
+    with _unknown_lock:
+        if len(_unknown) >= _UNKNOWN_MAX:
+            _unknown.clear()
+        _unknown[k] = True
+
+
 def deps_of(path, *, learn: bool = True) -> dict:
     """The dependency record of *path*: from its sidecar, else worked out from the
     graph stored with it or embedded in it (and, with *learn*, written back so the
@@ -340,12 +371,15 @@ def deps_of(path, *, learn: bool = True) -> dict:
     have = recorded_deps(path)
     if have:
         return have
+    if _known_unknown(path):
+        return {}
     try:
         from agenty_core.utils import provenance as pv
         got = pv.provenance_of(path, use_history=False)
     except Exception:  # noqa: BLE001
         return {}
     if not got.get("found") or not isinstance(got.get("graph"), dict):
+        _mark_unknown(path)
         return {}
     deps = analyze(got["graph"], str(got.get("output_node") or ""), out_path=str(path))
     if learn:
@@ -545,7 +579,11 @@ def prompts_of(path) -> list[dict]:
     try:
         from agenty_core.utils import provenance as pv
         from agenty_core.tools.regenerate import param_index
+        if _known_unknown(path):
+            return []
         got = pv.provenance_of(path, use_history=False)
+        if not got.get("found"):
+            _mark_unknown(path)
     except Exception:  # noqa: BLE001
         return []
     g = got.get("graph") if got.get("found") else None
@@ -578,7 +616,10 @@ def prompts_of(path) -> list[dict]:
     return out[:_PROMPTS_PER_FILE]
 
 
-def graph(root, up: int = 4, down: int = 4, limit: int = 200) -> dict:
+GRAPH_SECONDS = 15.0     # graph() stops walking after this and says "truncated"
+
+
+def graph(root, up: int = 4, down: int = 4, limit: int = 200, seconds: float = GRAPH_SECONDS) -> dict:
     """The dependency graph around *root*: ``{"root", "nodes", "edges", "truncated"}``.
 
     ``nodes``: ``{"id" (path), "file", "kind", "created", "exists", "stale", "root", "prompts"}``
@@ -590,6 +631,20 @@ def graph(root, up: int = 4, down: int = 4, limit: int = 200) -> dict:
     edges: dict = {}
     memo: dict = {}
     truncated = False
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    known: dict = {}
+
+    def deps(p: str) -> dict:          # each file read once per call
+        if p not in known:
+            known[p] = deps_of(p)
+        return known[p]
+
+    def late() -> bool:
+        nonlocal truncated
+        if time.monotonic() > deadline:
+            truncated = True
+            return True
+        return False
 
     def add(p: str, **kw) -> bool:
         nonlocal truncated
@@ -605,39 +660,51 @@ def graph(root, up: int = 4, down: int = 4, limit: int = 200) -> dict:
 
     if not root:
         return {"root": "", "nodes": [], "edges": [], "truncated": False}
-    d = deps_of(root)
+    d = deps(root)
     add(root, kind=d.get("kind", ""))
-    # Up: what root was made from, and what that was made from.
+    # Up: what root was made from, and what that was made from. A file is walked from
+    # once, however many ways lead to it (a shared reference, a staged copy, a cycle).
+    walked = {root}
     frontier = [root]
     for _ in range(max(0, up)):
         nxt = []
         for p in frontier:
-            dp = deps_of(p) if p != root else d
+            if late():
+                break
+            dp = deps(p)
             for i in dp.get("inputs") or []:
                 src = str(i.get("path") or "")
-                if not src or not add(src, kind=deps_of(src).get("kind", "") or "source"):
+                if not src or not add(src, kind=deps(src).get("kind", "") or "source"):
                     continue
                 edges[(src, p)] = {"from": src, "to": p, "kind": dp.get("kind", ""),
                                    "label": dp.get("pass_class") or dp.get("kind", "")}
-                nxt.append(src)
+                if src not in walked:
+                    walked.add(src)
+                    nxt.append(src)
         frontier = nxt
     # Down: what was made from root, and from that.
+    walked = {root}
     frontier = [root]
     for _ in range(max(0, down)):
         nxt = []
         for p in frontier:
+            if late():
+                break
             for i in derived_of(p):
                 q = str(i.get("path") or "")
                 if not q or not add(q, kind=i.get("kind", ""), created=i.get("created", "")):
                     continue
                 edges[(p, q)] = {"from": p, "to": q, "kind": i.get("kind", ""),
                                  "label": i.get("workflow") or i.get("kind", "")}
-                nxt.append(q)
+                if q not in walked:
+                    walked.add(q)
+                    nxt.append(q)
         frontier = nxt
     for p, n in nodes.items():
         n["root"] = p == root
-        n["stale"] = stale_reason(p, memo) if n["exists"] else ""
-        pr = prompts_of(p) if n["exists"] else []
+        busy = late()
+        n["stale"] = stale_reason(p, memo) if n["exists"] and not busy else ""
+        pr = prompts_of(p) if n["exists"] and not busy else []
         if pr:
             n["prompts"] = pr
     return {"root": root, "nodes": list(nodes.values()), "edges": list(edges.values()), "truncated": truncated}

@@ -169,6 +169,34 @@ class Deps(unittest.TestCase):
         m = self.make("mask_00001.mp4", mask_graph("person"))
         self.assertEqual([x["text"] for x in dp.prompts_of(m)], ["person"])
 
+    def test_a_plate_nothing_is_known_about_is_probed_once(self):
+        self.make("depth_00001.mp4", depth_graph())
+        self.make("mask_00001.mp4", mask_graph())
+        seen = []
+        real = pv.provenance_of
+
+        def counted(path, **kw):
+            seen.append(os.path.basename(str(path)))
+            return real(path, **kw)
+        pv.provenance_of = counted
+        try:
+            dp.graph(self.plate)
+            dp.graph(self.out / "depth_00001.mp4")
+            dp.graph(self.out / "mask_00001.mp4")
+        finally:
+            pv.provenance_of = real
+        self.assertLessEqual(seen.count("plate.mp4"), 1, seen)
+        # A new version of the plate is asked about again.
+        time.sleep(0.01)
+        self.plate.write_bytes(b"plate-v2" * 1000)
+        self.assertFalse(dp._known_unknown(self.plate))  # noqa: SLF001
+
+    def test_a_slow_graph_stops_and_says_so(self):
+        self.make("depth_00001.mp4", depth_graph())
+        g = dp.graph(self.plate, seconds=0)
+        self.assertTrue(g["truncated"])
+        self.assertTrue(any(n["root"] for n in g["nodes"]))
+
     def test_classify(self):
         self.assertEqual(dp.kind_of_class("DWPreprocessor"), "pose")
         self.assertEqual(dp.kind_of_class("CannyEdgePreprocessor"), "edges")
