@@ -149,6 +149,26 @@ class Deps(unittest.TestCase):
         self.assertEqual(edges, {(str(self.plate.resolve()), str(depth.resolve())),
                                  (str(depth.resolve()), str(r.resolve()))})
 
+    def test_prompts_come_with_the_file_that_was_made_from_them(self):
+        self.make("depth_00001.mp4", depth_graph())
+        g = render_graph("depth_00001.mp4")
+        g["5"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 1], "text": "a kitchen at dawn, warm light"}}
+        g["6"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 1], "text": "blurry"}}
+        g["3"]["inputs"].update({"positive": ["5", 0], "negative": ["6", 0]})
+        # A second output in the same graph, with a prompt of its own that is not this file's.
+        g["7"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 1], "text": "another shot"}}
+        g["8"] = {"class_type": "KSampler", "inputs": {"model": ["2", 0], "positive": ["7", 0], "seed": 1}}
+        g["9"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "other"}}
+        r = self.make("render_00001.png", g, node="4")
+        self.assertEqual([(x["role"], x["text"]) for x in dp.prompts_of(r)],
+                         [("positive", "a kitchen at dawn, warm light"), ("negative", "blurry")])
+        ids = {n["id"]: n for n in dp.graph(r)["nodes"]}
+        self.assertEqual(len(ids[str(r.resolve())]["prompts"]), 2)
+        self.assertNotIn("prompts", ids[str(self.plate.resolve())])
+        # A pass's own text (SAM3's subject) is its prompt too.
+        m = self.make("mask_00001.mp4", mask_graph("person"))
+        self.assertEqual([x["text"] for x in dp.prompts_of(m)], ["person"])
+
     def test_classify(self):
         self.assertEqual(dp.kind_of_class("DWPreprocessor"), "pose")
         self.assertEqual(dp.kind_of_class("CannyEdgePreprocessor"), "edges")
