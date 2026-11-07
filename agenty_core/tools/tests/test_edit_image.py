@@ -18,13 +18,15 @@ from agenty_core.tools import edit_image as ei
 
 _HERE = Path(__file__).resolve()
 VIEWER = Path(os.environ.get("IMAGE_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
+# The viewer's Python modules: in src/ in newer checkouts, at the checkout root in older ones.
+VIEWER_PY = VIEWER / "src" if (VIEWER / "src" / "__init__.py").is_file() else VIEWER
 
 
 def _viewer(mod):
     name = "image_viewer_paint_for_core_tests"
     if name not in sys.modules:
         pkg = types.ModuleType(name)
-        pkg.__path__ = [str(VIEWER)]
+        pkg.__path__ = [str(VIEWER_PY)]
         sys.modules[name] = pkg
     return importlib.import_module(f"{name}.{mod}")
 
@@ -84,7 +86,7 @@ class Arguments(Base):
         self.assertEqual(got["error"], "change 2 (explode): unknown op")
 
 
-@unittest.skipUnless((VIEWER / "paint_routes.py").is_file(), "needs the viewer checkout (IMAGE_VIEWER_DIR)")
+@unittest.skipUnless((VIEWER_PY / "paint_routes.py").is_file(), "needs the viewer checkout (IMAGE_VIEWER_DIR)")
 class RoundTrip(Base):
     def setUp(self):
         super().setUp()
