@@ -15,7 +15,7 @@ So "a world" here is built on our side: posed RGBD views become a textured depth
 (one GLB, in the first picture's camera frame: the camera at the origin looking down -Z,
 exactly what ``render_camera_move(model=...)`` expects). ``atlas_expand_world`` asks Atlas to
 invent more views at new cameras and grows the same mesh. Nothing here is a splat: Atlas
-returns images, depth EXRs and (splats2Mesh only) a GLB, all of which the bEpic viewer
+returns images, depth EXRs and (splats2Mesh only) a GLB, all of which the ComfyUI Image Viewer
 already loads. The exception is ``posedImages2Splats`` (``atlas_views_to_splat``), which
 returns a splat built from the world's posed views.
 
@@ -874,7 +874,7 @@ def atlas_create_world(name: str, prompt: str = "", image_paths: Optional[list] 
     with only a ``prompt`` it first paints a world-like image with depth (atlasTextToImage). The
     posed views become a textured depth mesh, ``world.glb``, in the first picture's camera frame
     (camera at the origin looking down -Z) - ready for ``render_camera_move(model=<glb>)`` and the
-    bEpic viewer's 3D tab. Several pictures given together must show the SAME place with
+    ComfyUI Image Viewer's 3D tab. Several pictures given together must show the SAME place with
     overlapping views (Atlas reconstructs them together); unrelated pictures need separate worlds.
     Billed to the user's World Labs credits (``WLT_API_KEY``); a few seconds to minutes.
 

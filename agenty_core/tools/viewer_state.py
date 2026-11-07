@@ -1,7 +1,7 @@
-"""What the bEpic viewer is showing, and the marks the user drew on it.
+"""What the ComfyUI Image Viewer is showing, and the marks the user drew on it.
 
 The viewer (ComfyUI-ImageViewer) answers from its own JS state
-(``window.bEpicViewerApi.viewerState()`` / ``.annotations()``), the same docked,
+(``window.imageViewerApi.viewerState()`` / ``.annotations()``), the same docked,
 full screen or popped out; the agentY-comfyuiConnect page relays it
 (``web/agent_viewer_state.js``):
 
@@ -10,8 +10,8 @@ full screen or popped out; the agentY-comfyuiConnect page relays it
   (:func:`describe_lines`, kept small on purpose: no tab list, no camera matrix);
 * live, mid-turn: :func:`get_viewer_state` (``GET /agent/viewer_state``) and
   :func:`get_viewer_annotations` (``GET /agent/viewer_annotations`` for the item
-  on screen; the viewer's own ``GET /bepic/video_annotations?describe=1`` for
-  the marks saved beside any other file, ``POST /bepic/annotation_mask`` for a
+  on screen; the viewer's own ``GET /imageviewer/video_annotations?describe=1`` for
+  the marks saved beside any other file, ``POST /imageviewer/annotation_mask`` for a
   mask of the drawn regions).
 
 The text of a mark is what the USER wrote on the picture: data about the image,
@@ -228,7 +228,7 @@ def _ask(path: str, params: dict | None = None):
 
 @tool
 def get_viewer_state() -> str:
-    """Read what the bEpic viewer is showing right now: whether it is open, docked,
+    """Read what the ComfyUI Image Viewer is showing right now: whether it is open, docked,
     full screen or popped out; the active tab and the tab list; the item on screen
     (path, kind image/video/model, the run's prompt_id, label, #tag, colour tag);
     for a clip or a sequence the current frame, fps, timecode, the in/out range the
@@ -247,7 +247,7 @@ def get_viewer_state() -> str:
     speed and loop. Use those numbers; never work source frames out yourself. (A selected
     clip's ``in`` / ``out`` are the whole clip's seconds of its file, not the marks.)
 
-    Requires ComfyUI open in a browser with agentY-comfyuiConnect and the bEpic viewer.
+    Requires ComfyUI open in a browser with agentY-comfyuiConnect and the ComfyUI Image Viewer.
 
     Returns JSON: ``{status, state}``; ``state.open`` false while the viewer is closed.
     """
@@ -296,7 +296,7 @@ def read_state() -> str:
 def _mask(body: dict) -> dict:
     from agenty_core.utils.comfyui_client import get_client
     try:
-        r = get_client().post("/bepic/annotation_mask", json_data=body)
+        r = get_client().post("/imageviewer/annotation_mask", json_data=body)
     except Exception as e:  # noqa: BLE001
         return {"error": _err(e, "annotation-mask")}
     if not isinstance(r, dict):
@@ -306,7 +306,7 @@ def _mask(body: dict) -> dict:
 
 @tool
 def get_viewer_annotations(path: str = "", as_mask: bool = False, frame: int = -1) -> str:
-    """Read the marks the user drew with the bEpic viewer's Annotation tool - texts,
+    """Read the marks the user drew with the ComfyUI Image Viewer's Annotation tool - texts,
     arrows, boxes, freehand strokes - in words and normalised coordinates (0..1 of
     the picture; x right, y down), grouped per frame range on a clip (frame, end,
     timecodes), with each text as a note. The user does NOT have to press "Send to
@@ -335,7 +335,7 @@ def get_viewer_annotations(path: str = "", as_mask: bool = False, frame: int = -
             params["frame"] = str(fr)
         try:
             from agenty_core.utils.comfyui_client import get_client
-            doc = get_client().get("/bepic/video_annotations?" + urlencode(params))
+            doc = get_client().get("/imageviewer/video_annotations?" + urlencode(params))
         except Exception as e:  # noqa: BLE001
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status == 403 or "403" in str(e):
@@ -382,6 +382,6 @@ def get_viewer_annotations(path: str = "", as_mask: bool = False, frame: int = -
     if out.get("count"):
         out["note"] = USER_NOTES
     else:
-        out["hint"] = ("No annotations on this item. In the bEpic viewer the Annotation tool "
+        out["hint"] = ("No annotations on this item. In the ComfyUI Image Viewer the Annotation tool "
                        "(the pen in the tool bar) draws them.")
     return json.dumps(out, ensure_ascii=False)

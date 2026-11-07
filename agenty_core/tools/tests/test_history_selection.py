@@ -83,9 +83,9 @@ class Resolve(unittest.TestCase):
         items = [{"source": "viewer", "path": f"D:/o/{i}.png", "kind": "image"} for i in range(20)]
         where, lines = hs.describe_lines(
             {"count": 20, "items": items,
-             "panels": [{"panel": "bEpic viewer history", "tab": "agentY", "how": "multi", "count": 20}]},
+             "panels": [{"panel": "ComfyUI Image Viewer history", "tab": "agentY", "how": "multi", "count": 20}]},
             cap=5)
-        self.assertEqual(where, 'bEpic viewer history, tab "agentY" (selected)')
+        self.assertEqual(where, 'ComfyUI Image Viewer history, tab "agentY" (selected)')
         rows = lines.splitlines()
         self.assertEqual(len(rows), 6)
         self.assertIn("15 more", rows[-1])

@@ -1,4 +1,4 @@
-"""What the bEpic viewer shows and the marks on it, read by the agent.
+"""What the ComfyUI Image Viewer shows and the marks on it, read by the agent.
 
 ``describe_lines`` is what the agentY host puts at the top of a turn - kept small
 (a budget, enforced here); ``get_viewer_state`` / ``get_viewer_annotations`` read
@@ -74,10 +74,10 @@ class Lines(unittest.TestCase):
 
     def test_a_picture_in_paint_names_edit_image(self):
         st = dict(QUIET, paint={"open": True, "name": "board", "w": 1920, "h": 1080, "layers": 4, "active": "Sky",
-                                "selection": True, "dirty": True, "path": "D:/out/bepic/paint/board_v001.ora"})
+                                "selection": True, "dirty": True, "path": "D:/out/imageviewer/paint/board_v001.ora"})
         line = vs.describe_lines(st).splitlines()[-1]
         self.assertEqual(line, 'paint=board 1920x1080 layers=4 active=Sky selection unsaved '
-                               'file=D:/out/bepic/paint/board_v001.ora - read or change it with edit_image')
+                               'file=D:/out/imageviewer/paint/board_v001.ora - read or change it with edit_image')
         st["paint"] = {"open": True, "empty": True}
         self.assertEqual(vs.describe_lines(st).splitlines()[-1], "paint=empty (no picture open in Paint)")
 
@@ -162,7 +162,7 @@ class Tools(unittest.TestCase):
         q = parse_qs(urlparse(self.gets[0]).query)
         self.assertEqual((q["raw"], q["frame"]), (["1"], ["12"]))
         path, body = self.posts[0]
-        self.assertEqual(path, "/bepic/annotation_mask")
+        self.assertEqual(path, "/imageviewer/annotation_mask")
         self.assertEqual((body["items"], body["width"], body["height"], body["frame"]), (raw, 640, 360, 12))
         self.assertNotIn("path", body)                 # the size is known: no file to read
         self.assertNotIn("items", out)                 # the raw marks are not repeated to the agent
@@ -174,10 +174,10 @@ class Tools(unittest.TestCase):
         with self._patch(doc):
             out = json.loads(vs.get_viewer_annotations(path="D:/out/b.png", as_mask=True))
         u = urlparse(self.gets[0])
-        self.assertEqual(u.path, "/bepic/video_annotations")
+        self.assertEqual(u.path, "/imageviewer/video_annotations")
         self.assertEqual(parse_qs(u.query), {"path": ["D:/out/b.png"], "describe": ["1"]})
         self.assertEqual((out["from"], out["count"]), ("file", 1))
-        self.assertEqual(self.posts[0], ("/bepic/annotation_mask", {"path": "D:/out/b.png"}))
+        self.assertEqual(self.posts[0], ("/imageviewer/annotation_mask", {"path": "D:/out/b.png"}))
 
     def test_a_file_the_viewer_may_not_read_is_said_plainly(self):
         def refuse(path):

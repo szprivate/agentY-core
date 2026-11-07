@@ -1511,7 +1511,7 @@
     "templates": [
       {
         "name": "morning_people_character_sheet",
-        "description": "[API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> bEpicSendToViewer. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.",
+        "description": "[API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> ImageViewerSend. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.",
         "models": [],
         "io": {
           "inputs": [],

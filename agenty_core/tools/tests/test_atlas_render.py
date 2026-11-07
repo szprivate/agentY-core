@@ -283,7 +283,7 @@ class RenderTests(Base):
         with mock.patch("agenty_core.utils.comfyui_client.get_client", lambda: Client()):
             out = json.loads(r.atlas_open_in_viewer("court", output_dir=self.tmp.name))
         self.assertEqual(out["status"], "ok", out)
-        self.assertEqual(posted["path"], "/bepic/previz_shot")
+        self.assertEqual(posted["path"], "/imageviewer/previz_shot")
         items = posted["body"]["scene"]["items"]
         self.assertEqual([i["kind"] for i in items], ["model", "camera"])
         self.assertTrue(items[0]["src"]["path"].endswith("world.glb"))

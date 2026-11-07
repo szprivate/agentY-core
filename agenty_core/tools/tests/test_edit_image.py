@@ -1,7 +1,7 @@
-"""edit_image: read and change a picture in layers in the bEpic viewer's Paint tab through POST /bepic/paint/doc.
+"""edit_image: read and change a picture in layers in the ComfyUI Image Viewer's Paint tab through POST /imageviewer/paint/doc.
 
 ComfyUI is mocked. The round trip runs the viewer's own paint_routes / paint_ops (the checkout beside this one,
-or BEPIC_VIEWER_DIR) behind the mocked route, so a layer added here is read back from the .ora file.
+or IMAGE_VIEWER_DIR) behind the mocked route, so a layer added here is read back from the .ora file.
 """
 import importlib
 import json
@@ -17,11 +17,11 @@ from unittest import mock
 from agenty_core.tools import edit_image as ei
 
 _HERE = Path(__file__).resolve()
-VIEWER = Path(os.environ.get("BEPIC_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
+VIEWER = Path(os.environ.get("IMAGE_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
 
 
 def _viewer(mod):
-    name = "bepic_viewer_paint_for_core_tests"
+    name = "image_viewer_paint_for_core_tests"
     if name not in sys.modules:
         pkg = types.ModuleType(name)
         pkg.__path__ = [str(VIEWER)]
@@ -84,7 +84,7 @@ class Arguments(Base):
         self.assertEqual(got["error"], "change 2 (explode): unknown op")
 
 
-@unittest.skipUnless((VIEWER / "paint_routes.py").is_file(), "needs the viewer checkout (BEPIC_VIEWER_DIR)")
+@unittest.skipUnless((VIEWER / "paint_routes.py").is_file(), "needs the viewer checkout (IMAGE_VIEWER_DIR)")
 class RoundTrip(Base):
     def setUp(self):
         super().setUp()

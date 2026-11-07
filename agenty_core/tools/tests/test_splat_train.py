@@ -214,7 +214,7 @@ class JobTests(unittest.TestCase):
             self.assertEqual(out["viewer"]["tab"], "tab1")
             calls = [c.args[0] for c in client.post.call_args_list]
             self.assertIn("/free", calls)                                   # VRAM freed first
-            self.assertIn("/bepic/previz_shot", calls)
+            self.assertIn("/imageviewer/previz_shot", calls)
             scene = client.post.call_args_list[-1].kwargs["json_data"]["scene"]
             self.assertTrue(scene["items"][0]["src"]["path"].endswith("room_lite.ply"))
             job = json.loads((Path(d) / "splats" / "room" / "job.json").read_text())

@@ -27,7 +27,7 @@ class ShowInViewerTests(unittest.TestCase):
         out, c = run({"paths": ["clip3.mp4"]}, {"ok": True, "shown": 1, "refused": [], "opened": True})
         (route,) = c.post.call_args.args
         body = c.post.call_args.kwargs["json_data"]
-        self.assertEqual(route, "/bepic/push")
+        self.assertEqual(route, "/imageviewer/push")
         self.assertEqual(body["paths"], [os.path.abspath("clip3.mp4")])
         self.assertEqual(body["group"], "agentY")
         self.assertNotIn("tab_name", body)

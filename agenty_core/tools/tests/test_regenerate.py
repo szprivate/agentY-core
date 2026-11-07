@@ -514,7 +514,7 @@ class Takes(Base):
         out = json.loads(rg.swap_in_takes([{"from_file": str(a), "file": str(b), "version": 2, "note": "night"}],
                                           otio=str(self.tmp / "cut.otio"), retime=True))
         args, kwargs = self.client.post.call_args
-        self.assertEqual(args[0], "/bepic/take")
+        self.assertEqual(args[0], "/imageviewer/take")
         self.assertEqual(kwargs["json_data"], {"otio": str(self.tmp / "cut.otio"),
                                                "takes": [{"from_file": str(a), "file": str(b), "version": 2, "note": "night"}],
                                                "retime": True})

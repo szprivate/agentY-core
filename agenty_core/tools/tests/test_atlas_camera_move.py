@@ -168,7 +168,7 @@ class RunTests(Base):
         orig = json.loads((Path(self.tmp.name) / "cabin" / "world.json").read_text())
         self.assertEqual(len(orig["frames"]), 1)                                   # the original is untouched
         path, body = self.client.posts[0]
-        self.assertEqual(path, "/bepic/previz_shot")
+        self.assertEqual(path, "/imageviewer/previz_shot")
         scene = body["scene"]
         self.assertEqual(scene["length"], 49)
         self.assertEqual(len(scene["items"][1]["tracks"]["position"]), 49)

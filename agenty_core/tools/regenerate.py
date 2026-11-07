@@ -968,7 +968,7 @@ def regenerate_from_source(paths: list, changes: list | None = None, new_seed: b
 
 @tool
 def swap_in_takes(takes: list, otio: str = "", retime: bool = False) -> str:
-    """Put new versions of shots into the bEpic viewer's cut as takes (the original stays
+    """Put new versions of shots into the ComfyUI Image Viewer's cut as takes (the original stays
     one click away). Needs ComfyUI open with the viewer.
 
     Args:
@@ -1007,7 +1007,7 @@ def swap_in_takes(takes: list, otio: str = "", retime: bool = False) -> str:
     from agenty_core.utils import canvas_scope as _cs
     from agenty_core.utils.comfyui_client import get_client
     cid = _cs.client_id()
-    route = "/bepic/take" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    route = "/imageviewer/take" + (("?" + urlencode({"client_id": cid})) if cid else "")
     try:
         r = get_client().post(route, json_data=body)
     except Exception as e:  # noqa: BLE001

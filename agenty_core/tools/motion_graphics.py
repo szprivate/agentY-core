@@ -3,7 +3,7 @@
 The agent does NOT write React for motion graphics any more. It writes a scene
 description (``*.mgscene.json``, format in ``agenty_core/motion_graphics`` and the
 ``motion-graphics-scene`` skill); one generic Remotion composition renders any
-scene, and the bEpic viewer edits the same file (layers, timeline, keyframes,
+scene, and the ComfyUI Image Viewer edits the same file (layers, timeline, keyframes,
 curves) so the user and the agent change one thing. The viewer's preview and the
 render share one module, so what the editor shows is what comes out.
 
@@ -35,7 +35,7 @@ _opened: set = set()
 
 
 def _auto_open(path: str) -> Optional[dict]:
-    """Show the scene in the bEpic viewer (POST /bepic/push -> its Motion tab). Never raises, never repeats."""
+    """Show the scene in the ComfyUI Image Viewer (POST /imageviewer/push -> its Motion tab). Never raises, never repeats."""
     if not AUTO_OPEN:
         return None
     key = os.path.normcase(os.path.abspath(path))

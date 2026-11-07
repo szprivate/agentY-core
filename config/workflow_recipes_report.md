@@ -1325,7 +1325,7 @@
     - sampling: KSampler, KSamplerSelect, SamplerCustomAdvanced
     - decoding: VAEDecode (x2)
     - output: PreviewImage, SaveImage (x8)
-    - other operations: ByteDanceSeedreamNode, CFGNorm (x2), EmptyFlux2LatentImage, Flux2ProImageNode, Flux2Scheduler, FluxKontextMaxImageNode, FluxKontextProImageNode, GeminiImage2Node, GeminiImageNode, GetNode (x22), Image Load, ImageScaleToTotalPixels, ModelSamplingAuraFlow (x2), PrimitiveStringMultiline (x2), RandomNoise, ReferenceLatent (x2), SetNode (x8), bEpicGetPath (x8), bEpicSendToViewer, bepicSetPath, easy cleanGpuUsed
+    - other operations: ByteDanceSeedreamNode, CFGNorm (x2), EmptyFlux2LatentImage, Flux2ProImageNode, Flux2Scheduler, FluxKontextMaxImageNode, FluxKontextProImageNode, GeminiImage2Node, GeminiImageNode, GetNode (x22), Image Load, ImageScaleToTotalPixels, ModelSamplingAuraFlow (x2), PrimitiveStringMultiline (x2), RandomNoise, ReferenceLatent (x2), SetNode (x8), bEpicGetPath (x8), ImageViewerSend, bepicSetPath, easy cleanGpuUsed
 - paired/multiple required: GetNode x22, SaveImage x8, SetNode x8, bEpicGetPath x8, CFGNorm x2, CLIPLoader x2, CLIPTextEncode x2, ModelSamplingAuraFlow x2, ReferenceLatent x2, TextEncodeQwenImageEditPlus x2, UNETLoader x2, VAEDecode x2, VAELoader x2
 - unresolved nodes: GetNode, Image Load, SetNode, easy cleanGpuUsed
 
@@ -1793,7 +1793,7 @@
     - templates_ohneis_i2v
 - node clusters (required structure):
     - (none resolved)
-- optional roles: LoadImage, AgentYRefNote, OpenAIChatConfig, OpenAIChatNode, AgentYImageCollector, SaveImage, bEpicSendToViewer, BatchImagesNode, ByteDanceSeedreamNodeV2, CLIPLoader, CLIPTextEncode, ConditioningZeroOut
+- optional roles: LoadImage, AgentYRefNote, OpenAIChatConfig, OpenAIChatNode, AgentYImageCollector, SaveImage, ImageViewerSend, BatchImagesNode, ByteDanceSeedreamNodeV2, CLIPLoader, CLIPTextEncode, ConditioningZeroOut
 - unresolved nodes: MarkdownNote, PrimitiveNode
 
 ## API / Partner Nodes - Image to Video / WAN  (`api_partner_nodes_image_to_video__wan`)  -  3 workflow(s)  -  source: official
@@ -1904,7 +1904,7 @@
     - video_wan_vace_outpainting
 - node clusters (required structure):
     - model loading: VAELoader
-- optional roles: GetNode, SetNode, bEpicReformat, String, bEpicSendToViewer, AIO_Preprocessor, CLIPTextEncode, DiffusionModelLoaderKJ, DiffusionModelSelector, GetVideoComponents, Image Load, KSamplerAdvanced
+- optional roles: GetNode, SetNode, bEpicReformat, String, ImageViewerSend, AIO_Preprocessor, CLIPTextEncode, DiffusionModelLoaderKJ, DiffusionModelSelector, GetVideoComponents, Image Load, KSamplerAdvanced
 - unresolved nodes: GetNode, Image Load, Int, SetNode, String, easy cleanGpuUsed, easy mathInt
 
 ## Video to Video / WAN  (`video_to_video__wan`)  -  5 workflow(s)  -  source: official
@@ -1958,7 +1958,7 @@
     - decoding: VAEDecode
     - other operations: ModelSamplingSD3
 - paired/multiple required: CLIPTextEncode x2
-- optional roles: GetNode, SetNode, bEpicReformat, String, bEpicSendToViewer, DWPreprocessor, GetVideoComponents, Image Load, KSamplerAdvanced, LoraLoaderModelOnly, MarkdownNote, PreviewImage
+- optional roles: GetNode, SetNode, bEpicReformat, String, ImageViewerSend, DWPreprocessor, GetVideoComponents, Image Load, KSamplerAdvanced, LoraLoaderModelOnly, MarkdownNote, PreviewImage
 - unresolved nodes: GetNode, Image Load, MarkdownNote, SetNode, String, easy cleanGpuUsed
 
 ## Video to Video / SAM3  (`video_to_video__sam3`)  -  2 workflow(s)  -  source: official
@@ -3182,14 +3182,14 @@
 - execution: api (API nodes: GeminiImage2Node, OpenAIGPTImageNodeV2)
 - when to use: Use to generate a multi-pose character sheet.
 - example request: "build an image workflow"
-- description: Upload a portrait of your character and create multiple cinematic lighting conditions while maintaining character consistency. | Upload your character and generate 360 turnaround views for full body and close ups. | [API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> bEpicSendToViewer. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.
+- description: Upload a portrait of your character and create multiple cinematic lighting conditions while maintaining character consistency. | Upload your character and generate 360 turnaround views for full body and close ups. | [API] Character reference sheet via OpenAI GPT Image 2.5, driven by a reference photo. LoadImage (VHS, absolute path) -> OpenAIGPTImageNodeV2 model.images.image_1 + prompt -> ImageViewerSend. Prompt arrives on the agentY text/hook wire; filename_prefix from the hook. Wrapped in the agentY hook pipeline (18 extract characters -> 8 sweep prompts -> 135 human review, loop break 133) so it can be re-run per round.
 - member workflows:
     - morning_people_character_sheet
     - template_character_portrait_relighting
     - templates-character_sheet
 - node clusters (required structure):
     - (none resolved)
-- optional roles: GeminiImage2Node, SaveImage, AgentYImageCollector, ImageStitch, LoadImage, OpenAIGPTImageNodeV2, bEpicSendToViewer
+- optional roles: GeminiImage2Node, SaveImage, AgentYImageCollector, ImageStitch, LoadImage, OpenAIGPTImageNodeV2, ImageViewerSend
 - unresolved nodes: Reroute
 
 ## API / Partner Nodes - Character / Nano-Banana  (`api_partner_nodes_character__nano_banana`)  -  2 workflow(s)  -  source: custom

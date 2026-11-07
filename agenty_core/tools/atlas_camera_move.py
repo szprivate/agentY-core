@@ -12,7 +12,7 @@ So the move is made on our side, in two steps:
    paints them, a few per task, each task conditioned on the nearest views of the world INCLUDING the ones
    painted by the previous tasks (each batch is added to the world with its depth), so the keyframes agree.
 2. **Fill.** Every video frame is rendered through the grown world's depth mesh (textured with the painted
-   keyframes) in the bEpic viewer, along the exact same camera path. At a keyframe the picture is Atlas's;
+   keyframes) in the ComfyUI Image Viewer, along the exact same camera path. At a keyframe the picture is Atlas's;
    in between it is those pictures reprojected - temporally stable by construction (no per-frame generation).
 
 Cost: World Labs publishes no per-task price for Atlas ("see the rate card in the platform"; 1,000 credits per
@@ -347,10 +347,10 @@ def _viewer_render(scene: dict, name: str, cfg: dict, add_to_canvas: bool, timeo
     body = {"scene": scene, "name": name, "focus": True, "add_node": bool(add_to_canvas),
             "render": {**cfg, "camera": ps.CAMERA_ID, "useCameraRes": True}}
     try:
-        job = ps._client().post("/bepic/previz_shot", json_data=body)
+        job = ps._client().post("/imageviewer/previz_shot", json_data=body)
     except Exception as exc:  # noqa: BLE001
         if "404" in str(exc):
-            raise AtlasError("the bEpic viewer is not installed in ComfyUI, or too old for previz shots", "dependency")
+            raise AtlasError("the ComfyUI Image Viewer is not installed in ComfyUI, or too old for previz shots", "dependency")
         raise AtlasError(f"could not reach the viewer through ComfyUI: {exc}", "dependency")
     if not isinstance(job, dict) or "id" not in job:
         raise AtlasError(f"unexpected answer from the viewer: {job!r}", "dependency")
@@ -358,7 +358,7 @@ def _viewer_render(scene: dict, name: str, cfg: dict, add_to_canvas: bool, timeo
     while time.time() < t0 + float(timeout_s):
         wl._sleep(2.0)
         try:
-            state = ps._client().get("/bepic/previz_shot", params={"id": job["id"]})
+            state = ps._client().get("/imageviewer/previz_shot", params={"id": job["id"]})
         except Exception as exc:  # noqa: BLE001
             logger.warning("previz shot poll failed: %s", exc)
             continue
@@ -367,7 +367,7 @@ def _viewer_render(scene: dict, name: str, cfg: dict, add_to_canvas: bool, timeo
     if state.get("state") == "error":
         raise AtlasError(state.get("message") or "the viewer could not render the shot", "dependency")
     if state.get("state") != "done":
-        raise AtlasError("timed out waiting for the viewer to render (is the bEpic viewer open in a browser tab?); "
+        raise AtlasError("timed out waiting for the viewer to render (is the ComfyUI Image Viewer open in a browser tab?); "
                          "the painted views are saved, run the same call again to render only the video",
                          "timeout")
     return state
@@ -534,7 +534,7 @@ def atlas_render_camera_move(name: str, world: str, moves: Optional[list[dict]] 
 
     Atlas has no video mode, so this paints keyframes along the path with atlasGenerate (a few per task, each
     task conditioned on the earlier ones and added to the world) and then renders every frame through the
-    grown world in the bEpic viewer (the browser tab must be open). Use render_camera_move through the mesh
+    grown world in the ComfyUI Image Viewer (the browser tab must be open). Use render_camera_move through the mesh
     or a splat as the free preview first; use this when the shot is the deliverable.
 
     Args:

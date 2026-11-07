@@ -1,11 +1,11 @@
-"""Read and change a picture in layers in the bEpic viewer's Paint tab: ``edit_image``.
+"""Read and change a picture in layers in the ComfyUI Image Viewer's Paint tab: ``edit_image``.
 
 "Put the logo in the top right corner", "make the sky warmer", "add a title", "mask the
 background out", "put the inpainted result back as a layer". The picture is the one open in
 Paint (the viewer's state names it) or any other: an ``.ora`` (Paint's own file, layers kept),
 a ``.psd`` or a plain picture (which becomes a new ``.ora`` the first time it is changed).
 
-The viewer does the work (``POST /bepic/paint/doc``, reached through ComfyUI's HTTP API like
+The viewer does the work (``POST /imageviewer/paint/doc``, reached through ComfyUI's HTTP API like
 every other core tool): it changes the document the way the Paint tab would, saves it, and tells
 the open tab, which takes the change in as ONE undo step. Never write the .ora by hand
 (run_script): the tab would not see the change and its next save would drop it.
@@ -79,7 +79,7 @@ def _clean_ops(ops):
 
 @tool
 def edit_image(doc: str = "", ops: list | None = None) -> str:
-    """Read the picture open in the bEpic viewer's Paint tab (or any .ora / .psd / picture), and
+    """Read the picture open in the ComfyUI Image Viewer's Paint tab (or any .ora / .psd / picture), and
     change it in LAYERS: add a picture or a colour as a layer, add an adjustment layer, move,
     hide, blend, mask, select, fill, heal, blur, crop, resize, add text.
 
@@ -140,7 +140,7 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
     from urllib.parse import urlencode
     from agenty_core.utils.comfyui_client import get_client
     cid = _cs.client_id()
-    route = "/bepic/paint/doc" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    route = "/imageviewer/paint/doc" + (("?" + urlencode({"client_id": cid})) if cid else "")
     try:
         r = get_client().post(route, json_data={"doc": doc, "ops": ops})
     except Exception as e:  # noqa: BLE001
@@ -156,7 +156,7 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
             return _j({"status": "error", "error": str(said)[:400]})
         if status == 404 or (status is None and "404" in str(e)):
             return _j({"status": "error", "error": (
-                "the viewer in this ComfyUI predates Paint (no /bepic/paint/doc route) - update "
+                "the viewer in this ComfyUI predates Paint (no /imageviewer/paint/doc route) - update "
                 "ComfyUI-ImageViewer under <ComfyUI>/custom_nodes/ and restart ComfyUI.")})
         return _j({"status": "error", "error": f"could not reach ComfyUI ({str(e)[:160]}). Is it running?"})
     if not isinstance(r, dict) or r.get("error"):

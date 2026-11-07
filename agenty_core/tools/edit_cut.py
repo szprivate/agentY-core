@@ -1,8 +1,8 @@
-"""Read and change a cut in the bEpic viewer's Edit panel: ``edit_cut``.
+"""Read and change a cut in the ComfyUI Image Viewer's Edit panel: ``edit_cut``.
 
 "Cut the voice-over into the edit", "put the music under shots 3 to 5", "trim the last
 shot", "take clip 4 out". The cut is the ``.otio`` the Edit panel has open (the viewer's
-state names it) or any other one. The viewer does the work (``POST /bepic/cut``,
+state names it) or any other one. The viewer does the work (``POST /imageviewer/cut``,
 reached through ComfyUI's HTTP API like every other core tool): it changes the cut the
 way the panel would, saves it, and tells the open Edit panels, which take the new cut in
 as one undo step - so a change made here is never lost to the panel's next save, and is
@@ -239,7 +239,7 @@ MARKED_NOTE = ("pieces: one per clip under the marked in/out. src_in/src_out are
 
 
 def _marked_of(r: dict, start: int, end: int) -> dict:
-    """The ``marked`` part of a /bepic/cut answer, for the agent (or why there is none)."""
+    """The ``marked`` part of a /imageviewer/cut answer, for the agent (or why there is none)."""
     m = r.get("marked") if isinstance(r, dict) else None
     if not isinstance(m, dict):
         return {"error": ("the viewer in this ComfyUI does not map a marked range to its sources yet - update "
@@ -259,7 +259,7 @@ def _marked_of(r: dict, start: int, end: int) -> dict:
 
 def marked_sources(otio: str, start: int, end: int) -> dict:
     """The marked in/out (*start*..*end*, film frames of the cut in *otio*) in the sources: the
-    viewer's ``timeline_io.source_map`` through ``POST /bepic/cut`` (a read; nothing is written).
+    viewer's ``timeline_io.source_map`` through ``POST /imageviewer/cut`` (a read; nothing is written).
     ``{"start", "end", "frames", "fps", "start_s", "end_s", "pieces": [...], "note"}`` or
     ``{"error"}``."""
     from urllib.parse import urlencode
@@ -269,7 +269,7 @@ def marked_sources(otio: str, start: int, end: int) -> dict:
     if why:
         return {"error": why}
     cid = _cs.client_id()
-    route = "/bepic/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    route = "/imageviewer/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
     try:
         r = get_client().post(route, json_data={"otio": otio, "ops": [],
                                                 "range": {"start": int(start), "end": int(end)}})
@@ -282,7 +282,7 @@ def marked_sources(otio: str, start: int, end: int) -> dict:
 
 @tool
 def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_out: int = -1) -> str:
-    """Read the cut open in the bEpic viewer's Edit panel (or any .otio cut), and change it:
+    """Read the cut open in the ComfyUI Image Viewer's Edit panel (or any .otio cut), and change it:
     lay a voice-over, music or a clip on a track at a time, move or trim a clip, take one out.
 
     The in/out the user MARKED on the cut ("the shot between my marks", "recreate what I
@@ -367,7 +367,7 @@ def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_
     from urllib.parse import urlencode
     from agenty_core.utils.comfyui_client import get_client
     cid = _cs.client_id()
-    route = "/bepic/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
+    route = "/imageviewer/cut" + (("?" + urlencode({"client_id": cid})) if cid else "")
     if any(isinstance(o, dict) and str(o.get("track") or "").strip() for o in ops):
         # Refuse a change to a locked track before sending it (the viewer refuses too).
         try:
@@ -393,7 +393,7 @@ def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_
             if said:
                 return _j({"status": "error", "error": said})
             return _j({"status": "error", "error": (
-                "the viewer in this ComfyUI predates edit_cut (no /bepic/cut route) - update "
+                "the viewer in this ComfyUI predates edit_cut (no /imageviewer/cut route) - update "
                 "ComfyUI-ImageViewer under <ComfyUI>/custom_nodes/ and restart ComfyUI.")})
         if resp is not None:
             try:

@@ -1,4 +1,4 @@
-"""Animate a camera through a 3D scene in the bEpic viewer and render the move.
+"""Animate a camera through a 3D scene in the ComfyUI Image Viewer and render the move.
 
 The step after "picture -> 3D scene" (a bEpic world, or a mesh from MoGe /
 TripoSplat / SHARP): author a keyframed camera, have the viewer play it and write
@@ -6,9 +6,9 @@ the clip. That clip is a camera-accurate layout of the shot, which a video model
 with a control input (Wan Fun Control, LTX IC-LoRA) turns into the finished shot.
 
 The scene is plain JSON in the viewer's previz format (see the viewer's
-``bEpicViewer_scene3d.js``): items with ``tracks`` of ``{f, v, ease}`` keys, rotations
+``imageViewer_scene3d.js``): items with ``tracks`` of ``{f, v, ease}`` keys, rotations
 in degrees, XYZ order, a camera looking down -Z. One call to the viewer's
-``POST /bepic/previz_shot`` (through ComfyUI's HTTP API) opens it and renders; the
+``POST /imageviewer/previz_shot`` (through ComfyUI's HTTP API) opens it and renders; the
 page does the drawing, so the browser with the viewer has to be open.
 
 Camera moves are written relative to where the picture's own camera stood (the
@@ -798,7 +798,7 @@ def render_camera_move(
     atlas_world: str = "",
     check: bool = True,
 ) -> str:
-    """Fly a camera through a 3D scene in the bEpic viewer and render the move to a clip.
+    """Fly a camera through a 3D scene in the ComfyUI Image Viewer and render the move to a clip.
 
     Use it after a picture became a 3D scene (a bEpic world made with world_create and
     world_scene_model, or a mesh file). The clip is a camera-accurate layout of the new
@@ -930,10 +930,10 @@ def render_camera_move(
         if render:
             body["render"] = {**render_cfg, "camera": CAMERA_ID, "useCameraRes": True}
         try:
-            job = _client().post("/bepic/previz_shot", json_data=body)
+            job = _client().post("/imageviewer/previz_shot", json_data=body)
         except Exception as exc:  # noqa: BLE001
             if "404" in str(exc):
-                return _error("the bEpic viewer is not installed in ComfyUI, or is too old for previz shots "
+                return _error("the ComfyUI Image Viewer is not installed in ComfyUI, or is too old for previz shots "
                               "(update ComfyUI-ImageViewer and restart ComfyUI)")
             return _error(f"could not reach the viewer through ComfyUI: {exc}")
         if not isinstance(job, dict) or "id" not in job:
@@ -946,7 +946,7 @@ def render_camera_move(
         while time.time() < deadline:
             time.sleep(2.0)
             try:
-                state = _client().get("/bepic/previz_shot", params={"id": job["id"]})
+                state = _client().get("/imageviewer/previz_shot", params={"id": job["id"]})
             except Exception as exc:  # noqa: BLE001
                 logger.warning("previz shot poll failed: %s", exc)
                 continue
@@ -959,7 +959,7 @@ def render_camera_move(
             return json.dumps(res)
         if state.get("state") == "error":
             return _error(state.get("message") or "the viewer could not render the shot")
-        return _error("timed out waiting for the viewer to render (is the bEpic viewer open in a browser "
+        return _error("timed out waiting for the viewer to render (is the ComfyUI Image Viewer open in a browser "
                       f"tab? last state: {state.get('state') or 'unknown'}, "
                       f"{state.get('done', 0)} frames done)")
     except ValueError as exc:

@@ -1,7 +1,7 @@
-"""edit_cut: read and change the cut in the bEpic viewer's Edit panel through POST /bepic/cut.
+"""edit_cut: read and change the cut in the ComfyUI Image Viewer's Edit panel through POST /imageviewer/cut.
 
 ComfyUI is mocked. The round trip runs the viewer's own timeline_io (the checkout beside this one,
-or BEPIC_VIEWER_DIR) behind the mocked route, so a voice-over added at 8 s is read back from the
+or IMAGE_VIEWER_DIR) behind the mocked route, so a voice-over added at 8 s is read back from the
 .otio file at 8 s on A2.
 """
 import importlib
@@ -18,11 +18,11 @@ from unittest import mock
 from agenty_core.tools import edit_cut as ec
 
 _HERE = Path(__file__).resolve()
-VIEWER = Path(os.environ.get("BEPIC_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
+VIEWER = Path(os.environ.get("IMAGE_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
 
 
 def _viewer_tio():
-    name = "bepic_viewer_tio_for_core_tests"
+    name = "image_viewer_tio_for_core_tests"
     if name not in sys.modules:
         pkg = types.ModuleType(name)
         pkg.__path__ = [str(VIEWER)]
@@ -114,7 +114,7 @@ class Reading(Base):
         with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)):
             out = json.loads(ec.edit_cut())
         args, kwargs = self.client.post.call_args
-        self.assertEqual(args[0], "/bepic/cut")
+        self.assertEqual(args[0], "/imageviewer/cut")
         self.assertEqual(kwargs["json_data"], {"otio": "W:/x/cut1.otio", "ops": []})
         self.assertEqual((out["status"], out["otio"], out["length"]), ("ok", "W:/x/cut1.otio", 14.0))
         self.assertNotIn("said", out)
@@ -194,7 +194,7 @@ class Changing(Base):
         with mock.patch("agenty_core.utils.canvas_scope.client_id", return_value="tab 1"):
             out = json.loads(ec.edit_cut("W:/c.otio", op))           # one op as a dict is a list of one
         args, kwargs = self.client.post.call_args
-        self.assertEqual(args[0], "/bepic/cut?client_id=tab+1")
+        self.assertEqual(args[0], "/imageviewer/cut?client_id=tab+1")
         self.assertEqual(kwargs["json_data"]["ops"], [op])
         self.assertEqual((out["said"], out["pushed"]), (["added vo on A2 at 8.0s for 6.0s"], True))
         json.loads(ec.edit_cut("W:/c.otio", json.dumps([op])))      # and as JSON text
@@ -249,7 +249,7 @@ class Changing(Base):
 
 @unittest.skipUnless((VIEWER / "timeline_io.py").is_file(), "needs the ComfyUI-ImageViewer checkout")
 class RoundTrip(Base):
-    """edit_cut -> (POST /bepic/cut, done here by the viewer's timeline_io) -> the .otio -> edit_cut."""
+    """edit_cut -> (POST /imageviewer/cut, done here by the viewer's timeline_io) -> the .otio -> edit_cut."""
 
     def setUp(self):
         super().setUp()
@@ -267,7 +267,7 @@ class RoundTrip(Base):
         self.client.post.side_effect = self.route
 
     def route(self, path, json_data=None, **_):
-        """What viewer_api._bepic_cut does, minus the fence and the push."""
+        """What viewer_api._imageviewer_cut does, minus the fence and the push."""
         body = json_data or {}
         if body.get("ops"):
             edit, said = self.tio.change(body["otio"], body["ops"], "", lambda p: True, {self.vo: 12.0})
