@@ -531,10 +531,58 @@ def existing_for_graph(graph: dict, rts: dict | None = None) -> list[dict]:
     return out
 
 
+_PROMPT_CHARS = 4000
+_PROMPTS_PER_FILE = 6
+
+
+def prompts_of(path) -> list[dict]:
+    """The prompts typed into the graph that made *path*: ``[{"role", "text", "node", "class"}]``.
+
+    ``role`` is ``positive``, ``negative`` or ``text`` (a text node wired to no sampler).
+    Only the nodes upstream of the file's own output node count, so a graph with several
+    outputs gives each file its own prompts. Read from the graph stored with the file (its
+    provenance sidecar, else the graph embedded in it); ``[]`` when there is none."""
+    try:
+        from agenty_core.utils import provenance as pv
+        from agenty_core.tools.regenerate import param_index
+        got = pv.provenance_of(path, use_history=False)
+    except Exception:  # noqa: BLE001
+        return []
+    g = got.get("graph") if got.get("found") else None
+    if not isinstance(g, dict) or not g:
+        return []
+    out_node = str(got.get("output_node") or "")
+    near = set(upstream(g, out_node)) if out_node in g else None
+    try:
+        entries = param_index(g)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict] = []
+    seen: set = set()
+    for e in entries:
+        if e.get("group") != "prompt" or (near is not None and e.get("node") not in near):
+            continue
+        text = e.get("value")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text = text.strip()
+        role = str(e.get("label") or "text")
+        if (role, text) in seen:
+            continue
+        seen.add((role, text))
+        if len(text) > _PROMPT_CHARS:
+            text = text[: _PROMPT_CHARS - 1] + "…"
+        out.append({"role": role, "text": text, "node": str(e.get("node") or ""), "class": str(e.get("class") or "")})
+    order = {"positive": 0, "text": 1, "negative": 2}
+    out.sort(key=lambda x: order.get(x["role"], 1))
+    return out[:_PROMPTS_PER_FILE]
+
+
 def graph(root, up: int = 4, down: int = 4, limit: int = 200) -> dict:
     """The dependency graph around *root*: ``{"root", "nodes", "edges", "truncated"}``.
 
-    ``nodes``: ``{"id" (path), "file", "kind", "created", "exists", "stale", "root"}``;
+    ``nodes``: ``{"id" (path), "file", "kind", "created", "exists", "stale", "root", "prompts"}``
+    (``prompts``: :func:`prompts_of`, only on files that have any);
     ``edges``: ``{"from" (input), "to" (output), "kind", "label"}``, pointing from what
     was read to what was made."""
     root = str(Path(str(root)).resolve()) if root else ""
@@ -589,6 +637,9 @@ def graph(root, up: int = 4, down: int = 4, limit: int = 200) -> dict:
     for p, n in nodes.items():
         n["root"] = p == root
         n["stale"] = stale_reason(p, memo) if n["exists"] else ""
+        pr = prompts_of(p) if n["exists"] else []
+        if pr:
+            n["prompts"] = pr
     return {"root": root, "nodes": list(nodes.values()), "edges": list(edges.values()), "truncated": truncated}
 
 
