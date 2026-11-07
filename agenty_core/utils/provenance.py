@@ -276,15 +276,33 @@ def write(path, graph: dict, *, prompt_id: str = "", output_node: str = "", outp
         }
         if derived_from:
             prov["derived_from"] = _redact_walk(copy.deepcopy(derived_from))
+        deps = _deps_for(p, red, str(output_node or ""))
+        if deps:
+            prov["deps"] = deps
         with SIDECAR_LOCK:
             sc = sidecar_path(p)
             existing = _read_json(sc) if sc.is_file() else None
             doc = existing if isinstance(existing, dict) else {}
             doc["provenance"] = prov
             write_json(sc, doc)
+        if deps:
+            try:
+                from agenty_core.utils import dependencies
+                dependencies.index_inputs(p, deps, workflow=str(workflow_file or ""), created=prov["created"])
+            except Exception:  # noqa: BLE001
+                pass
         return True
     except Exception:  # noqa: BLE001 - provenance is never worth failing a run
         return False
+
+
+def _deps_for(path: Path, graph: dict, output_node: str) -> dict:
+    """What *path* was made from (``provenance.deps``; see :mod:`agenty_core.utils.dependencies`)."""
+    try:
+        from agenty_core.utils import dependencies
+        return dependencies.analyze(graph, output_node, out_path=str(path))
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # ── capture at the end of a run ──────────────────────────────────────────────
