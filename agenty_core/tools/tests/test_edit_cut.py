@@ -19,13 +19,15 @@ from agenty_core.tools import edit_cut as ec
 
 _HERE = Path(__file__).resolve()
 VIEWER = Path(os.environ.get("IMAGE_VIEWER_DIR") or (_HERE.parents[3].parent / "ComfyUI-ImageViewer"))
+# The viewer's Python modules: in src/ in newer checkouts, at the checkout root in older ones.
+VIEWER_PY = VIEWER / "src" if (VIEWER / "src" / "__init__.py").is_file() else VIEWER
 
 
 def _viewer_tio():
     name = "image_viewer_tio_for_core_tests"
     if name not in sys.modules:
         pkg = types.ModuleType(name)
-        pkg.__path__ = [str(VIEWER)]
+        pkg.__path__ = [str(VIEWER_PY)]
         sys.modules[name] = pkg
     return importlib.import_module(name + ".timeline_io")
 
@@ -247,7 +249,7 @@ class Changing(Base):
         self.assertEqual(json.loads(ec.edit_cut("W:/c.otio", "not json"))["status"], "error")
 
 
-@unittest.skipUnless((VIEWER / "timeline_io.py").is_file(), "needs the ComfyUI-ImageViewer checkout")
+@unittest.skipUnless((VIEWER_PY / "timeline_io.py").is_file(), "needs the ComfyUI-ImageViewer checkout")
 class RoundTrip(Base):
     """edit_cut -> (POST /imageviewer/cut, done here by the viewer's timeline_io) -> the .otio -> edit_cut."""
 
