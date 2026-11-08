@@ -118,6 +118,10 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
               "mask": "selection", "mask_file": <white = shown>, "above"/"below": <layer>, "into": <group>}`` -
               a picture as a layer (centred unless x/y); no file: an empty / colour layer (``color``).
               ``into`` puts a new layer at the top of that group (also on add_adjustment, add_text, shape).
+              A picture from a file comes in as a SMART layer: it keeps the whole original, so a later
+              transform / distort / resize redraws it from that at full resolution. ``"smart": false`` for a
+              plain one. Painting into a smart layer (fill, clear, filter, heal, gradient) makes it plain (``said``
+              says so); ``{"op": "rasterize", "layer": ..}`` does that on purpose.
             ``{"op": "add_adjustment", "type": "levels|curves|brightness_contrast|exposure|hue_saturation|grade|invert|threshold", "params": {..}}``
             ``{"op": "set_layer", "layer": 2, "name", "visible", "opacity" (0-100), "blend", "x", "y", "locked",
               "clip": true|false, "lock_alpha": true|false, "collapsed" (a group), "style": {..}|null, "filters": [..]|null}``
@@ -161,7 +165,8 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
 
     Returns JSON ``{status, doc, written, outline: {w, h, layer_count, layers: [{layer, name, kind
     (pixel|adjustment|text|group), visible, opacity, blend?, x?, y?, w?, h?, type?, params?, mask?, active?,
-    locked?, in_group?, layers_inside?, clipped?, mask_density?, mask_feather?, style?, lock_alpha?, filters?}], selection, paths?, guides?},
+    locked?, in_group?, layers_inside?, clipped?, mask_density?, mask_feather?, style?, lock_alpha?, filters?,
+    smart? ({source: [w, h], scale: [x %, y %], corners})}], selection, paths?, guides?},
     said, pushed}`` - ``doc`` is where the document now is (a new .ora for a picture / .psd).
     """
     from agenty_core.utils import canvas_scope as _cs
