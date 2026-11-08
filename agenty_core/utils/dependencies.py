@@ -728,3 +728,65 @@ def reindex(folder, recursive: bool = False) -> int:
         except Exception:  # noqa: BLE001
             continue
     return n
+
+
+# ── backfill: older files ────────────────────────────────────────────────────
+
+def backfill(folders, state_path, *, pause: float = 0.02, stop=None, log=None) -> dict:
+    """Record the dependencies of every older file under *folders* (recursively):
+    each media file with a stored or embedded graph and no record yet gets one, and
+    its inputs learn what was made from them. For files made before this existed.
+
+    *state_path* (JSON) keeps, per folder, when its last walk STARTED; a later walk
+    looks only at files changed since, so a plate nothing is known about is probed
+    once, not at every start. *pause* seconds between files keeps it in the
+    background; *stop* (a callable) ends it early, and the folder is walked again
+    next time. ``{"looked", "recorded", "folders": {folder: "done" | "stopped" | "missing"}}``."""
+    import json as _json
+    state_file = Path(str(state_path))
+    try:
+        state = _json.loads(state_file.read_text(encoding="utf-8"))
+        state = state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        state = {}
+    looked = recorded = 0
+    result: dict = {}
+    for folder in folders or []:
+        if not folder:
+            continue
+        base = Path(str(folder))
+        key = str(base.resolve()) if base.exists() else str(base)
+        if not base.is_dir():
+            result[key] = "missing"
+            continue
+        since = float(state.get(key) or 0)
+        started = time.time()
+        stopped = False
+        for p in base.rglob("*"):
+            if stop and stop():
+                stopped = True
+                break
+            try:
+                if "agent_metadata" in p.parts or p.suffix.lower() not in _MEDIA_EXT or not p.is_file():
+                    continue
+                if since and p.stat().st_mtime < since:
+                    continue
+                looked += 1
+                if not recorded_deps(p) and deps_of(p, learn=True):
+                    recorded += 1
+            except Exception:  # noqa: BLE001 - one unreadable file never ends the walk
+                continue
+            if pause:
+                time.sleep(pause)
+        result[key] = "stopped" if stopped else "done"
+        if not stopped:
+            state[key] = started
+            try:
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text(_json.dumps(state, indent=1), encoding="utf-8")
+            except OSError:
+                pass
+        if log:
+            log(f"dependencies backfill: {key}: {result[key]}, {looked} looked at, {recorded} recorded")
+    return {"looked": looked, "recorded": recorded, "folders": result}
+

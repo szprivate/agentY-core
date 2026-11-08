@@ -197,6 +197,29 @@ class Deps(unittest.TestCase):
         self.assertTrue(g["truncated"])
         self.assertTrue(any(n["root"] for n in g["nodes"]))
 
+    def test_backfill_records_older_files_once(self):
+        # An older render: its graph is stored, but nothing was recorded from it.
+        self.make("depth_00001.mp4", depth_graph())
+        sc = pv.sidecar_path(self.out / "depth_00001.mp4")
+        doc = json.loads(sc.read_text())
+        doc["provenance"].pop("deps")
+        sc.write_text(json.dumps(doc))
+        dp.derived_path(self.plate).unlink()
+        self.assertEqual(dp.derived_of(self.plate), [])
+        state = self.tmp / "state.json"
+        got = dp.backfill([str(self.out), str(self.inp), str(self.tmp / "nope")], state, pause=0)
+        self.assertEqual(got["recorded"], 1)
+        self.assertEqual([os.path.basename(i["path"]) for i in dp.derived_of(self.plate)], ["depth_00001.mp4"])
+        self.assertIn("missing", got["folders"].values())
+        # The next walk looks only at what changed since.
+        again = dp.backfill([str(self.out), str(self.inp)], state, pause=0)
+        self.assertEqual(again["looked"], 0)
+        # Stopped early: the folder is not marked done.
+        state.unlink()
+        cut = dp.backfill([str(self.out)], state, pause=0, stop=lambda: True)
+        self.assertEqual(list(cut["folders"].values()), ["stopped"])
+        self.assertFalse(state.exists())
+
     def test_classify(self):
         self.assertEqual(dp.kind_of_class("DWPreprocessor"), "pose")
         self.assertEqual(dp.kind_of_class("CannyEdgePreprocessor"), "edges")
