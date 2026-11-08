@@ -28,6 +28,10 @@ A file is identified by its :func:`fingerprint` (size + hash of its first and la
 MiB), not by its path: the copy agentY stages into ComfyUI's input dir is the same
 file as the output it came from.
 
+The viewer (ComfyUI-ImageViewer) has a COPY of this module, ``src/deps_graph.py``, so its
+Dependencies tab works without the agentY host; its ``tests/test_deps_parity.py`` runs both on
+the same files. Change one, change the other.
+
 Everything is best effort: nothing in here raises into a run.
 """
 
