@@ -114,16 +114,40 @@ def show_in_viewer(
             film), so the user sees the edit shot by shot. Needs a film with an
             ``.otio`` beside it. ``"paint"`` opens the pictures in Paint (layers, a brush,
             masks - change them with edit_image); an ``.ora`` / ``.psd`` always opens there.
-            Empty for none.
+            ``"layer"`` puts each picture as a NEW LAYER on top of the picture open in Paint,
+            scaled to its canvas (what a generation made for that picture should do; the
+            picture's unsaved changes are kept and it is saved). Empty for none.
         play: Also start playing the first item (ignored with panel ``"edit"``).
         tab_name: Old name of ``group``; used when ``group`` is empty.
 
     Returns:
-        JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``cuts`` (``.otio`` cuts opened in the Edit panel), ``paint`` (pictures opened in Paint), ``refused`` (paths the viewer
+        JSON: ``shown`` (how many items were loaded), ``motion`` (scenes opened in the Motion panel), ``cuts`` (``.otio`` cuts opened in the Edit panel), ``paint`` (pictures opened in Paint), ``paint_layers`` (pictures put as layers, panel ``"layer"``), ``refused`` (paths the viewer
         may not open or that are not media), ``opened`` (viewer brought up),
         ``edit`` (Edit panel opened), ``notes`` and ``error`` when it failed.
     """
+    if str(panel or "").strip().lower() in ("layer", "layers", "paint_layer"):
+        return _as_layers(paths, label)
     res = open_in_viewer(paths, tab_name, group, label, focus, play, panel)
     if "error" not in res and not res.get("shown") and not res.get("motion") and not res.get("cuts") and not res.get("paint"):
         res["error"] = "nothing was shown: none of the paths is a media file the viewer may open"
     return json.dumps(res)
+
+
+def _as_layers(paths, label: str = "") -> str:
+    """show_in_viewer(panel="layer"): the pictures as new layers of the picture open in Paint (edit_image)."""
+    from agenty_core.tools.edit_image import PICTURE_EXTS, edit_image
+    if isinstance(paths, (str, os.PathLike)):
+        paths = [paths]
+    files = [os.path.abspath(str(p)) for p in (paths or []) if str(p or "").strip()]
+    pics = [f for f in files if os.path.splitext(f)[1].lower() in PICTURE_EXTS]
+    refused = [f for f in files if f not in pics]
+    if not pics:
+        return json.dumps({"error": "panel='layer' takes pictures (png, jpg, webp, exr ...)", "refused": refused})
+    ops = [{"op": "add_layer", "file": f, "fit": "canvas",
+            "name": (label if label and len(pics) == 1 else os.path.splitext(os.path.basename(f))[0])[:60]}
+           for f in pics]
+    got = json.loads(edit_image(ops=ops))
+    if got.get("status") != "ok":
+        return json.dumps({"error": got.get("error") or "the pictures were not put into Paint", "refused": refused})
+    return json.dumps({"paint_layers": len(pics), "doc": got.get("doc"), "said": got.get("said", []),
+                       "refused": refused, "layers": len((got.get("outline") or {}).get("layers") or [])})
