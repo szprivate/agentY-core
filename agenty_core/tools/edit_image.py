@@ -81,7 +81,8 @@ def _clean_ops(ops):
 def edit_image(doc: str = "", ops: list | None = None) -> str:
     """Read the picture open in the ComfyUI Image Viewer's Paint tab (or any .ora / .psd / picture), and
     change it in LAYERS: add a picture or a colour as a layer, add an adjustment layer, move,
-    hide, blend, mask, select, fill, heal, blur, crop, resize, add text.
+    hide, blend, mask, select, fill, heal, blur, crop, resize, add text; group layers, clip them,
+    give them styles and smart filters; pen paths, shapes, gradients, perspective, guides.
 
     Use it to put generated pixels back where the user is painting (generative fill, remove an
     object, background removal, outpaint, upscale - the Paint tab asks you with the paths), and
@@ -96,16 +97,30 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
             by name, or "active". Colours are "#rrggbb" or [r, g, b]. Pixels, top-left origin.
             ``{"op": "add_layer", "file": <picture>, "name": "", "fit": "none|canvas|contain|cover",
               "x": .., "y": .., "w": .., "h": .., "opacity": 100, "blend": "normal",
-              "mask": "selection", "mask_file": <white = shown>, "above"/"below": <layer>}`` -
+              "mask": "selection", "mask_file": <white = shown>, "above"/"below": <layer>, "into": <group>}`` -
               a picture as a layer (centred unless x/y); no file: an empty / colour layer (``color``).
+              ``into`` puts a new layer at the top of that group (also on add_adjustment, add_text, shape).
             ``{"op": "add_adjustment", "type": "levels|curves|brightness_contrast|exposure|hue_saturation|grade|invert|threshold", "params": {..}}``
-            ``{"op": "set_layer", "layer": 2, "name", "visible", "opacity" (0-100), "blend", "x", "y", "locked"}``
-              blend: normal multiply screen overlay darken lighten difference add color_dodge color_burn soft_light hard_light.
+            ``{"op": "set_layer", "layer": 2, "name", "visible", "opacity" (0-100), "blend", "x", "y", "locked",
+              "clip": true|false, "lock_alpha": true|false, "collapsed" (a group), "style": {..}|null, "filters": [..]|null}``
+              blend: normal multiply screen overlay darken lighten difference add color_dodge color_burn soft_light hard_light
+              (a group also pass_through). ``clip``: clipped to the nearest unclipped layer under it.
+              ``style`` (pixel layer; merged into what it has, an effect given as null is taken off, null takes all off):
+              ``{"shadow": {"color", "opacity" 0-1, "angle", "distance", "size"}, "glow": {"color", "opacity", "size"},
+              "stroke": {"color", "opacity", "size"}, "overlay": {"color", "opacity"}}`` (each also ``"on"``).
+              ``filters`` (pixel layer): smart filters kept as settings, the whole list in order -
+              ``[{"type": "blur", "params": {"radius"}}, {"type": "sharpen", "params": {"radius", "amount"}},
+              {"type": <adjustment type>, "params": {..}}, ..]`` (each may have ``"on": false``); null takes them off.
             ``{"op": "remove_layer" | "duplicate_layer" | "merge_down", "layer": ..}``, ``{"op": "flatten"}``,
-            ``{"op": "move_layer", "layer": .., "to": "top|bottom|up|down|<number>"}``
+            ``{"op": "move_layer", "layer": .., "to": "top|bottom|up|down|<number>", "into": <group>|"none"}``
+            ``{"op": "group", "layers": [..] (or "layer"), "name", "blend": "pass_through", "opacity"}`` -
+              the layers into a new group; ``{"op": "ungroup" | "merge_group", "layer": <group>}``
             ``{"op": "select", "mode": "rect|ellipse|polygon|all|none|invert|layer|file", "x", "y", "w", "h",
               "points": [[x, y], ..], "file": <mask>, "combine": "replace|add|subtract|intersect", "feather": px}``
-            ``{"op": "mask", "layer": .., "from": "selection|file|all|invert|on|off|remove", "file": <mask>}``
+              Also changing the selection: ``"mode": "expand|contract|smooth|border", "by": px``, and
+              ``"mode": "color_range", "color": .., "fuzziness": 1-255, "sample": "picture|layer", "layer"``.
+            ``{"op": "mask", "layer": .., "from": "selection|file|all|invert|on|off|remove|settings", "file": <mask>}``
+              ``settings``: ``"density"`` (0-100) and / or ``"feather"`` (px), kept on the mask, not baked in.
             ``{"op": "fill", "layer": .., "color": ..}`` / ``{"op": "clear", "layer": ..}`` (inside the selection, or all)
             ``{"op": "heal", "layer": ..}`` - fill the selection from its surroundings (no AI)
             ``{"op": "filter", "layer": .., "type": "blur|sharpen|<adjustment type>", "radius", "amount", "params"}`` (baked into the pixels)
@@ -114,9 +129,21 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
             ``{"op": "transform", "layer": .., "flip": "h|v", "rotate": 90|180|270, "scale": 0.5}``
             ``{"op": "add_text", "text": "..", "font": "Arial", "size": 64, "color": "#ffffff", "bold", "italic",
               "align": "left|center|right", "x", "y"}``
+            ``{"op": "path", "points": [[x, y] | [x, y, in_x, in_y, out_x, out_y], ..], "name", "closed": true,
+              "do": "keep|select|fill|stroke|mask|remove", "layer", "color", "width", "combine", "feather"}`` -
+              a pen path (bezier handles absolute), kept in the .ora by name; or ``"path": <name>`` to use one kept.
+            ``{"op": "shape", "kind": "rect|rounded|ellipse|polygon|line", "box": [x, y, w, h] (a line: "from", "to"),
+              "fill": .., "stroke": .., "width", "radius" (rounded), "sides" (polygon), "name", "as_path": false}`` -
+              a new layer (or a kept path with as_path)
+            ``{"op": "gradient", "layer": .., "type": "linear|radial|angle|reflected|diamond", "from": [x, y], "to": [x, y],
+              "colors": [.., ..] or "stops": [{"t": 0-1, "color"}], "reverse", "opacity"}`` (inside the selection, or all)
+            ``{"op": "distort", "layer": .., "corners": [[x, y] x4]}`` - the layer's corners (top left, top right,
+              bottom right, bottom left) put there: perspective / distort; convex only
+            ``{"op": "guides", "add": [{"axis": "x|y", "pos"}], "remove": [..], "clear": true}``
 
-    Returns JSON ``{status, doc, written, outline: {w, h, layer_count, layers: [{layer, name, kind,
-    visible, opacity, blend?, x?, y?, w?, h?, type?, params?, mask?, active?, locked?}], selection},
+    Returns JSON ``{status, doc, written, outline: {w, h, layer_count, layers: [{layer, name, kind
+    (pixel|adjustment|text|group), visible, opacity, blend?, x?, y?, w?, h?, type?, params?, mask?, active?,
+    locked?, in_group?, layers_inside?, clipped?, mask_density?, mask_feather?, style?, lock_alpha?, filters?}], selection, paths?, guides?},
     said, pushed}`` - ``doc`` is where the document now is (a new .ora for a picture / .psd).
     """
     from agenty_core.utils import canvas_scope as _cs
