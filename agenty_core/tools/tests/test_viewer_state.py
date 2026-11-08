@@ -78,6 +78,11 @@ class Lines(unittest.TestCase):
         line = vs.describe_lines(st).splitlines()[-1]
         self.assertEqual(line, 'paint=board 1920x1080 layers=4 active=Sky selection unsaved '
                                'file=D:/out/imageviewer/paint/board_v001.ora - read or change it with edit_image')
+        # A newer viewer: the selection's box, and the agent works on the unsaved picture as it is.
+        st["paint"].update(token="ab" * 16, selection_box={"x": 10, "y": 20, "w": 300, "h": 200})
+        line = vs.describe_lines(st).splitlines()[-1]
+        self.assertIn("selection=300x200@10,20 unsaved (edit_image works on it as it is and saves it)", line)
+        self.assertNotIn("ab" * 16, line)            # the token is not for the line
         st["paint"] = {"open": True, "empty": True}
         self.assertEqual(vs.describe_lines(st).splitlines()[-1], "paint=empty (no picture open in Paint)")
 

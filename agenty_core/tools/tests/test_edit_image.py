@@ -59,7 +59,7 @@ class Arguments(Base):
         self.assertEqual(body["ops"], [{"op": "flatten"}])
         self.assertTrue(got["pushed"] and got["written"])
 
-    def test_the_open_picture_is_taken_from_the_viewer_unless_it_has_unsaved_changes(self):
+    def test_an_older_viewer_is_refused_while_the_picture_has_unsaved_changes(self):
         state = {"status": "ok", "state": {"paint": {"open": True, "path": "D:/o/p.ora", "dirty": True}}}
         with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)):
             got = json.loads(ei.edit_image(ops=[{"op": "flatten"}]))
@@ -71,6 +71,28 @@ class Arguments(Base):
             got = json.loads(ei.edit_image())
         self.assertEqual(got["status"], "ok")
         self.assertEqual(self.client.post.call_args.kwargs["json_data"]["doc"], "D:/o/p.ora")
+
+    def test_the_open_picture_is_worked_on_live_unsaved_or_not(self):
+        tok = "ab" * 16
+        # Unsaved, and a new canvas with no file at all: the tab's session, the page asked first (sync).
+        state = {"status": "ok", "state": {"paint": {"open": True, "dirty": True, "token": tok, "w": 1920, "h": 1080}}}
+        self.client.post.return_value = {"path": "D:/o/paint_v001.ora", "outline": {"w": 1920}, "written": True,
+                                         "said": ["added a layer"], "token": tok}
+        with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)):
+            got = json.loads(ei.edit_image(ops=[{"op": "add_layer", "file": "D:/o/gen.png", "fit": "canvas"}]))
+        self.assertEqual(got["status"], "ok", got)
+        body = self.client.post.call_args.kwargs["json_data"]
+        self.assertEqual(body["doc"], tok)
+        self.assertTrue(body["sync"])
+        self.assertTrue(got["live"] and got["written"])
+        self.assertEqual(got["doc"], "D:/o/paint_v001.ora")
+        # Reading it: live too, no path needed.
+        self.client.post.return_value = {"path": None, "outline": {"w": 1920, "h": 1080}}
+        with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)):
+            got = json.loads(ei.edit_image())
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(got["doc"], "")
+        self.assertEqual(got["outline"]["h"], 1080)
 
     def test_nothing_open(self):
         state = {"status": "ok", "state": {}}

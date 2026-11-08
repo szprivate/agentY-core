@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from agenty_core._compat import tool
 
@@ -25,6 +26,8 @@ PAINT_EXTS = (".ora", ".psd")
 PICTURE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".tga", ".gif", ".exr", ".hdr", ".dpx")
 #: Ops that name a file the viewer reads.
 _FILE_KEYS = ("file", "mask_file")
+#: A Paint session's token, as the viewer's state names it.
+_TOKEN = re.compile(r"[0-9a-f]{32}")
 
 
 def _j(obj) -> str:
@@ -36,27 +39,35 @@ def _guard(path: str) -> str:
     return refuse_read(path, "edit_image")
 
 
-def _open_doc() -> tuple[str, str]:
-    """``(the picture open in Paint, why not)``. Refuses while it has unsaved changes."""
+def _open_doc() -> tuple[str, str, bool]:
+    """``(the picture open in Paint, why not, live)``.
+
+    A viewer that names the tab's session (``token``) is worked on LIVE: the viewer asks the page for what it
+    has not saved before the change and saves the result, so an unsaved picture - a new canvas too - needs no
+    saving first. An older viewer (no token) is refused while the picture has unsaved changes.
+    """
     from agenty_core.tools.viewer_state import read_state
     try:
         got = json.loads(read_state())
     except Exception as e:  # noqa: BLE001
-        return "", f"the viewer's state could not be read ({e})"
+        return "", f"the viewer's state could not be read ({e})", False
     if got.get("status") != "ok":
-        return "", got.get("error") or "the viewer's state could not be read"
+        return "", got.get("error") or "the viewer's state could not be read", False
     p = (got.get("state") or {}).get("paint") or {}
     if not p.get("open"):
-        return "", "no picture is open in the viewer's Paint tab - pass doc= (an .ora, .psd or picture path)"
+        return "", "no picture is open in the viewer's Paint tab - pass doc= (an .ora, .psd or picture path)", False
     if p.get("empty"):
-        return "", "the Paint tab has no picture in it yet - pass doc=, or show_in_viewer(paths=[...], panel='paint') first"
+        return "", "the Paint tab has no picture in it yet - pass doc=, or show_in_viewer(paths=[...], panel='paint') first", False
+    tok = str(p.get("token") or "")
+    if _TOKEN.fullmatch(tok):
+        return tok, "", True
     if p.get("dirty"):
-        return "", ("the picture in Paint has changes the user has not saved - ask the user to save it "
-                    "(Ctrl+S in Paint) first, so that nothing of theirs is lost")
+        return "", ("the picture in Paint has changes the user has not saved, and this viewer is too old to hand "
+                    "them over - ask the user to save it (Ctrl+S in Paint) first, or update ComfyUI-ImageViewer"), False
     doc = p.get("path") or p.get("source") or ""
     if not doc:
-        return "", "the picture in Paint has no file yet - ask the user to save it (Ctrl+S in Paint), or pass doc="
-    return str(doc), ""
+        return "", "the picture in Paint has no file yet - ask the user to save it (Ctrl+S in Paint), or pass doc=", False
+    return str(doc), "", False
 
 
 def _clean_ops(ops):
@@ -89,9 +100,16 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
     for "put the logo top right", "warm up the sky", "add a title". The viewer saves the change
     and the open Paint tab shows it at once (one Ctrl+Z undoes it). Never write the .ora yourself.
 
+    The picture open in Paint (doc="") is worked on as it is ON SCREEN, unsaved changes included,
+    and saved with the change - never ask the user to save first. A picture you GENERATE for it
+    (an image edit of the whole picture, a fill) goes back as a NEW LAYER: ``add_layer`` with
+    ``file`` and ``fit: "canvas"`` (or x / y / w / h of the selection's box, ``mask: "selection"``).
+    Generate at the canvas's size (the viewer line says ``paint=<name> <w>x<h>``).
+
     Args:
-        doc: The .ora / .psd / picture path; "" for the picture open in Paint. A plain picture or
-            a .psd is never overwritten: the first change makes a new .ora (its path is returned).
+        doc: The .ora / .psd / picture path; "" for the picture open in Paint (live, as above). A
+            plain picture or a .psd is never overwritten: the first change makes a new .ora (its
+            path is returned).
         ops: Leave empty to READ the document (its size, layers from the top, selection box). To
             change it, a list (all done, or none). Layers are named by number from 1 at the TOP,
             by name, or "active". Colours are "#rrggbb" or [r, g, b]. Pixels, top-left origin.
@@ -151,16 +169,18 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
     if err:
         return _j({"status": "error", "error": err})
     doc = str(doc or "").strip()
+    live = False
     if not doc:
         if _cs.detached():
             return _j({"status": "error", "error": _cs.NO_CANVAS + " Pass doc= (the .ora / .psd / picture path)."})
-        doc, why = _open_doc()
+        doc, why, live = _open_doc()
         if not doc:
             return _j({"status": "error", "error": why})
-    ext = os.path.splitext(doc)[1].lower()
-    if ext not in PAINT_EXTS + PICTURE_EXTS:
-        return _j({"status": "error", "error": f"{os.path.basename(doc)} is not an .ora, .psd or picture"})
-    for path in [doc] + [str(o.get(k)) for o in ops if isinstance(o, dict) for k in _FILE_KEYS if o.get(k)]:
+    if not live:
+        ext = os.path.splitext(doc)[1].lower()
+        if ext not in PAINT_EXTS + PICTURE_EXTS:
+            return _j({"status": "error", "error": f"{os.path.basename(doc)} is not an .ora, .psd or picture"})
+    for path in ([] if live else [doc]) + [str(o.get(k)) for o in ops if isinstance(o, dict) for k in _FILE_KEYS if o.get(k)]:
         why = _guard(path)
         if why:
             return _j({"status": "error", "error": why})
@@ -169,7 +189,7 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
     cid = _cs.client_id()
     route = "/imageviewer/paint/doc" + (("?" + urlencode({"client_id": cid})) if cid else "")
     try:
-        r = get_client().post(route, json_data={"doc": doc, "ops": ops})
+        r = get_client().post(route, json_data={"doc": doc, "ops": ops, **({"sync": True} if live else {})})
     except Exception as e:  # noqa: BLE001
         resp = getattr(e, "response", None)
         status = getattr(resp, "status_code", None)
@@ -188,7 +208,10 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
         return _j({"status": "error", "error": f"could not reach ComfyUI ({str(e)[:160]}). Is it running?"})
     if not isinstance(r, dict) or r.get("error"):
         return _j({"status": "error", "error": str((r or {}).get("error") if isinstance(r, dict) else r)[:400]})
-    out = {"status": "ok", "doc": r.get("path") or doc, "outline": r.get("outline") or {}}
+    out = {"status": "ok", "doc": r.get("path") or ("" if live else doc), "outline": r.get("outline") or {}}
+    if live:
+        # The tab's own picture, as it is on screen (unsaved changes included); saved when changed.
+        out["live"] = True
     if ops:
         out["written"] = bool(r.get("written"))
         out["said"] = [str(s)[:200] for s in (r.get("said") or [])][:60]

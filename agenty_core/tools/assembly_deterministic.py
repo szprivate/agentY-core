@@ -165,6 +165,75 @@ def coerce_dim(v):
     return None
 
 
+def _dim_spec(spec) -> tuple:
+    """``(min, max, step)`` of an INT input spec (each None when not said)."""
+    o = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+    return o.get("min"), o.get("max"), o.get("step")
+
+
+def _fit_dims(w: int, h: int, wspec, hspec) -> tuple:
+    """*w* x *h* held to the inputs' range and step, the shape kept as near as the range lets it."""
+    (w0, w1, ws), (h0, h1, hs) = _dim_spec(wspec), _dim_spec(hspec)
+    k = min([1.0] + [hi / v for hi, v in ((w1, w), (h1, h)) if hi and v > hi])
+    if k == 1.0:                          # nothing too big: grow what is too small, if that fits
+        up = max([1.0] + [lo / v for lo, v in ((w0, w), (h0, h)) if lo and v < lo])
+        if not ((w1 and w * up > w1) or (h1 and h * up > h1)):
+            k = up
+
+    def snap(v, lo, hi, step):
+        step = step if isinstance(step, (int, float)) and step > 1 else 1
+        v = int(round(v / step) * step)
+        if lo is not None:
+            v = max(int(lo), v)
+        if hi is not None:
+            v = min(int(hi), v)
+        return v
+    return snap(w * k, w0, w1, ws), snap(h * k, h0, h1, hs)
+
+
+def set_size_inputs(node: dict, w: int, h: int, required: dict | None = None,
+                    optional: dict | None = None) -> list[str]:
+    """Make *node* produce a *w* x *h* picture. Returns what it changed.
+
+    Two conventions: plain ``width`` / ``height`` literals, and a size PRESET with a
+    ``Custom`` option beside ``custom_width`` / ``custom_height`` (or ``width`` /
+    ``height``) - the partner nodes' way (gpt-image's ``model.size``), often inside a
+    dynamic combo (dotted names). A preset is set to ``Custom`` and the custom size to
+    *w* x *h*, held to the inputs' own min / max / step with the shape kept. Wires are
+    left alone. Before this only the plain pair was set, so an edit of a 1920x1080
+    picture came back at the template's fixed 2160x3840.
+    """
+    ins = node.get("inputs") or {}
+    sub_req, sub_opt = dynamic_sub_specs(node, required or {}, optional)
+    specs = {**(optional or {}), **(required or {}), **sub_opt, **sub_req}
+    done: list[str] = []
+    for name in list(ins):
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in ("size", "size_preset", "resolution", "aspect_ratio"):
+            continue
+        opts = combo_options(specs.get(name)) or []
+        custom = next((o for o in opts if isinstance(o, str) and o.lower() == "custom"), None)
+        if not custom or isinstance(ins.get(name), list):
+            continue
+        pre = name[: -len(leaf)]
+        pair = next(((pre + a, pre + b) for a, b in (("custom_width", "custom_height"), ("width", "height"))
+                     if (pre + a) in specs or (pre + a) in ins), None)
+        if not pair:
+            continue
+        cw, ch = _fit_dims(w, h, specs.get(pair[0]), specs.get(pair[1]))
+        ins[name] = custom
+        ins[pair[0]], ins[pair[1]] = cw, ch
+        done.append(f"{name} = {custom!r}, {pair[0]} x {pair[1]} = {cw} x {ch}")
+    touched = {k for d in done for k in d.split() if k in ins}
+    if not touched & {"width", "height"} and any(k in ins and not isinstance(ins[k], list) for k in ("width", "height")):
+        cw, ch = _fit_dims(w, h, specs.get("width"), specs.get("height"))
+        for k, v in (("width", cw), ("height", ch)):
+            if k in ins and not isinstance(ins[k], list):
+                ins[k] = v
+        done.append(f"width x height = {cw} x {ch}")
+    return done
+
+
 def combo_options(spec):
     """Return the option list for a ComfyUI combo input spec, handling both the
     ``['COMBO', {'options': [...]}]`` and legacy ``[[opt1, opt2, ...], {...}]`` formats."""

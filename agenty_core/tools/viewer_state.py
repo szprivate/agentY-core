@@ -160,10 +160,13 @@ def describe_lines(state: dict | None) -> str:
                 bits.append(f"layers={p['layers']}")
             if p.get("active"):
                 bits.append(f"active={_q(p['active'])}")
-            if p.get("selection"):
+            b = p.get("selection_box") or {}
+            if p.get("selection") and all(isinstance(b.get(k), int) for k in ("x", "y", "w", "h")):
+                bits.append(f"selection={b['w']}x{b['h']}@{b['x']},{b['y']}")
+            elif p.get("selection"):
                 bits.append("selection")
             if p.get("dirty"):
-                bits.append("unsaved")
+                bits.append("unsaved" + (" (edit_image works on it as it is and saves it)" if p.get("token") else ""))
             where = p.get("path") or p.get("source") or ""
             if where:
                 bits.append(f"file={_short(where)}")

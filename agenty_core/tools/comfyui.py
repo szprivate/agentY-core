@@ -42,6 +42,7 @@ from agenty_core.tools.assembly_deterministic import (
     undeclared_wires as _undeclared_wires,
     is_v3_schema as _is_v3_schema,
     rebind_placeholder_images as _rebind_placeholder_images,
+    set_size_inputs as _set_size_inputs,
     strip_annotation_nodes as _strip_annotation_nodes,
     strip_reroute_nodes as _strip_reroute_nodes,
 )
@@ -5204,6 +5205,38 @@ def _agent_output_prefix(class_type: str = "", path_or_prefix: str = "") -> str:
     return f"{_AGENT_SUBFOLDER}/{bucket}/{stem}"
 
 
+#: A snapshot of the viewer's Paint tab (paint_routes.snapshot): <name>_<date>_<time>_picture.png.
+_PAINT_SNAPSHOT_RE = re.compile(r"_\d{8}_\d{6}_picture\.png$", re.I)
+
+
+def _paint_canvas_size(input_nodes: list) -> tuple | None:
+    """``(w, h)`` of the first input that is a Paint snapshot, else None."""
+    for inp in input_nodes:
+        if not isinstance(inp, dict):
+            continue
+        f = str(inp.get("filename") or inp.get("path") or "")
+        if not _PAINT_SNAPSHOT_RE.search(f.replace("\\", "/")):
+            continue
+        cands = [f]
+        try:
+            from agenty_core.tools.image_io import comfy_input_dir  # noqa: PLC0415 - import cycle
+            root = comfy_input_dir()
+            if root:
+                base = f.replace("\\", "/").rsplit("/", 1)[-1]
+                cands += [os.path.join(root, f), os.path.join(root, base), os.path.join(root, "paint", base)]
+        except Exception:  # noqa: BLE001
+            pass
+        for c in cands:
+            if c and os.path.isfile(c):
+                try:
+                    from PIL import Image  # noqa: PLC0415
+                    with Image.open(c) as im:
+                        return int(im.size[0]), int(im.size[1])
+                except Exception:  # noqa: BLE001
+                    break
+    return None
+
+
 @tool
 def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
     """Apply a brainbriefing to a loaded workflow template in one atomic step.
@@ -5484,11 +5517,31 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
     # ── 4. Resolution ─────────────────────────────────────────────────────────
     res_w = _coerce_dim(bb.get("resolution_width"))
     res_h = _coerce_dim(bb.get("resolution_height"))
+    if not (res_w and res_h):
+        # A picture from the viewer's Paint tab (its snapshot) is edited at its own
+        # size: the result goes back onto that canvas as a layer.
+        canvas = _paint_canvas_size(bb.get("input_nodes") or [])
+        if canvas:
+            res_w, res_h = canvas
+            applied.append(f"resolution {res_w}x{res_h} taken from the Paint canvas")
     if res_w or res_h:
+        _oi4 = {}
+        try:
+            _oi4 = _get_object_info() or {}
+        except Exception:  # noqa: BLE001
+            pass
         for nid, node in workflow.items():
             if not isinstance(node, dict):
                 continue
             inputs = node.get("inputs", {})
+            spec = (_oi4.get(node.get("class_type", "")) or {}).get("input") or {}
+            if res_w and res_h:
+                # Plain width / height, and a size preset with a Custom option
+                # (gpt-image's model.size + model.custom_width / custom_height).
+                for note in _set_size_inputs(node, int(res_w), int(res_h),
+                                             spec.get("required") or {}, spec.get("optional")):
+                    applied.append(f"Node {nid}: {note}")
+                continue
             changed = False
             if res_w and "width" in inputs and not isinstance(inputs["width"], list):
                 inputs["width"] = int(res_w)

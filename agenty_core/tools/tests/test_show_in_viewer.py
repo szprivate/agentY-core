@@ -63,6 +63,25 @@ class ShowInViewerTests(unittest.TestCase):
         self.assertEqual(out["cuts"], ["D:/out/edit.otio"])
         self.assertEqual(c.post.call_args.kwargs["json_data"]["panel"], "edit")
 
+    def test_panel_layer_puts_pictures_as_layers_of_the_open_paint_picture(self):
+        tok = "cd" * 16
+        state = {"status": "ok", "state": {"paint": {"open": True, "dirty": True, "token": tok}}}
+        with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)), \
+             mock.patch("agenty_core.utils.canvas_scope.detached", return_value=False), \
+             mock.patch("agenty_core.utils.canvas_scope.client_id", return_value=""), \
+             mock.patch("agenty_core.utils.path_guard.refuse_read", return_value=""):
+            out, c = run({"paths": ["gen_00001_.png", "notes.txt"], "panel": "layer"},
+                         {"path": "D:/o/p.ora", "outline": {"layers": [{}, {}]}, "written": True, "said": ["added"]})
+        (route,) = c.post.call_args.args
+        body = c.post.call_args.kwargs["json_data"]
+        self.assertTrue(route.startswith("/imageviewer/paint/doc"))
+        self.assertEqual(body["doc"], tok)
+        self.assertTrue(body["sync"])
+        self.assertEqual(body["ops"], [{"op": "add_layer", "file": os.path.abspath("gen_00001_.png"), "fit": "canvas", "name": "gen_00001_"}])
+        self.assertEqual(out["paint_layers"], 1)
+        self.assertEqual(out["refused"], [os.path.abspath("notes.txt")])
+        self.assertNotIn("error", out)
+
     def test_old_viewer_404(self):
         out, _ = run({"paths": ["a.png"]}, exc=RuntimeError("404 Not Found"))
         self.assertIn("too old", out["error"])
