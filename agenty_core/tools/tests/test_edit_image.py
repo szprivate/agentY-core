@@ -94,6 +94,22 @@ class Arguments(Base):
         self.assertEqual(got["doc"], "")
         self.assertEqual(got["outline"]["h"], 1080)
 
+    def test_a_read_with_snapshot_hands_over_the_picture_and_the_selection(self):
+        self.client.post.return_value = {"path": "D:/o/a.ora", "outline": {"w": 8},
+                                         "snapshot": {"picture": "D:/in/paint/a_picture.png", "selection": "D:/in/paint/a_mask.png",
+                                                      "box": {"x": 1, "y": 2, "w": 3, "h": 4}, "w": 8, "h": 8, "path": "x"}}
+        got = json.loads(ei.edit_image(doc="D:/o/a.ora", snapshot=True))
+        self.assertTrue(self.client.post.call_args.kwargs["json_data"]["snapshot"])
+        self.assertEqual(got["snapshot"]["selection"], "D:/in/paint/a_mask.png")
+        self.assertEqual(got["snapshot"]["box"], {"x": 1, "y": 2, "w": 3, "h": 4})
+        # An older viewer answers without one; with ops it is not asked for.
+        self.client.post.return_value = {"path": "D:/o/a.ora", "outline": {}}
+        self.assertIn("snapshot_error", json.loads(ei.edit_image(doc="D:/o/a.ora", snapshot=True)))
+        self.client.post.return_value = {"path": "D:/o/a.ora", "outline": {}, "said": ["x"]}
+        got = json.loads(ei.edit_image(doc="D:/o/a.ora", ops=[{"op": "flatten"}], snapshot=True))
+        self.assertNotIn("snapshot", self.client.post.call_args.kwargs["json_data"])
+        self.assertIn("snapshot_error", got)
+
     def test_nothing_open(self):
         state = {"status": "ok", "state": {}}
         with mock.patch("agenty_core.tools.viewer_state.read_state", return_value=json.dumps(state)):

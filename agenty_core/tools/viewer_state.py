@@ -189,6 +189,15 @@ def describe_lines(state: dict | None) -> str:
                          + (f" clips={e['clips']}" if isinstance(e.get("clips"), int) else "")
                          + " - read or change it with edit_cut")
 
+    src = e.get("source") if isinstance(e.get("source"), dict) else None
+    if src and src.get("file"):
+        # The Source monitor (Resolve's): what an insert / overwrite from the source puts into the cut.
+        span = (f" in={_num(src['in'])} out={_num(src['out'])}" if isinstance(src.get("in"), (int, float))
+                and isinstance(src.get("out"), (int, float)) else " (no in/out marked)")
+        lines.append(f"source={_q(src.get('name') or src['file'])}{span}"
+                     + (f" playhead={_num(e['playhead'])}" if isinstance(e.get("playhead"), (int, float)) else "")
+                     + " - edit_cut insert / overwrite puts it into the cut")
+
     v = s.get("view") or {}
     bits = []
     if v.get("zoom") not in (None, 1):
@@ -266,11 +275,29 @@ def get_viewer_state() -> str:
         marks = marked_range(state)
         if marks is not None:
             edit["marked"] = marked_sources(str(edit["otio"]), *marks)
+        src = edit.get("source") if isinstance(edit.get("source"), dict) else None
+        if src and src.get("file"):
+            edit["source_note"] = source_note(src, edit.get("playhead"))
         if edit.get("selected"):
             edit["selected_note"] = ("a selected clip's in/out are seconds of its file over the WHOLE clip, "
                                      "not the in/out marked on the timeline"
                                      + (" - edit.marked has those in the sources" if marks is not None else ""))
     return json.dumps(out)
+
+
+def source_note(src: dict, playhead=None) -> str:
+    """How to put what the Source monitor holds into the cut: the edit_cut op, its numbers filled in."""
+    a, b = src.get("in"), src.get("out")
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b > a:
+        part = f'"in": {round(a, 3)}, "length": {round(b - a, 3)}'
+    elif isinstance(a, (int, float)):
+        part = f'"in": {round(a, 3)} (no out marked: give "length")'
+    else:
+        part = '"in": 0, "length": <seconds> (nothing marked in the source)'
+    at = round(playhead, 3) if isinstance(playhead, (int, float)) else "<seconds of the film>"
+    return ("the Source monitor's file, in / out and head are seconds of that file. Put the marked part into "
+            f'the cut with edit_cut ops=[{{"op": "insert" (moves what follows on) or "overwrite" (lays it over), '
+            f'"file": {json.dumps(src.get("file"))}, {part}, "at": {at} (the timeline playhead)}}]')
 
 
 def read_state() -> str:

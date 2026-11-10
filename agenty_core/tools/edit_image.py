@@ -89,7 +89,7 @@ def _clean_ops(ops):
 
 
 @tool
-def edit_image(doc: str = "", ops: list | None = None) -> str:
+def edit_image(doc: str = "", ops: list | None = None, snapshot: bool = False) -> str:
     """Read the picture open in the ComfyUI Image Viewer's Paint tab (or any .ora / .psd / picture), and
     change it in LAYERS: add a picture or a colour as a layer, add an adjustment layer, move,
     hide, blend, mask, select, fill, heal, blur, crop, resize, add text; group layers, clip them,
@@ -141,8 +141,10 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
               "points": [[x, y], ..], "file": <mask>, "combine": "replace|add|subtract|intersect", "feather": px}``
               Also changing the selection: ``"mode": "expand|contract|smooth|border", "by": px``, and
               ``"mode": "color_range", "color": .., "fuzziness": 1-255, "sample": "picture|layer", "layer"``.
-            ``{"op": "mask", "layer": .., "from": "selection|file|all|invert|on|off|remove|settings", "file": <mask>}``
+            ``{"op": "mask", "layer": .., "from": "selection|file|layer|all|invert|on|off|remove|settings", "file": <mask>}``
               ``settings``: ``"density"`` (0-100) and / or ``"feather"`` (px), kept on the mask, not baked in.
+              ``layer``: ``"source": <pixel layer>`` becomes the mask (its brightness where it is opaque, as
+              dropping a layer on another in Layers does); the source layer goes, unless ``"keep": true``.
             ``{"op": "fill", "layer": .., "color": ..}`` / ``{"op": "clear", "layer": ..}`` (inside the selection, or all)
             ``{"op": "heal", "layer": ..}`` - fill the selection from its surroundings (no AI)
             ``{"op": "filter", "layer": .., "type": "blur|sharpen|<adjustment type>", "radius", "amount", "params"}`` (baked into the pixels)
@@ -162,6 +164,13 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
             ``{"op": "distort", "layer": .., "corners": [[x, y] x4]}`` - the layer's corners (top left, top right,
               bottom right, bottom left) put there: perspective / distort; convex only
             ``{"op": "guides", "add": [{"axis": "x|y", "pos"}], "remove": [..], "clear": true}``
+
+        snapshot: With no ops: also write the picture AS IT LOOKS and the selection (white = selected) as
+            PNGs in ComfyUI's input folder - ``snapshot: {picture, selection (null: nothing selected), box, w, h}``.
+            Use it when the user asks in chat for a generative fill, a removal, an extend of the picture
+            open in Paint ("fill the selection with a cat"): run the inpaint / outpaint workflow on those
+            files, then put the result back with ``add_layer`` ``mask: "selection"`` - as when they press
+            Generate.
 
     Returns JSON ``{status, doc, written, outline: {w, h, layer_count, layers: [{layer, name, kind
     (pixel|adjustment|text|group), visible, opacity, blend?, x?, y?, w?, h?, type?, params?, mask?, active?,
@@ -194,7 +203,8 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
     cid = _cs.client_id()
     route = "/imageviewer/paint/doc" + (("?" + urlencode({"client_id": cid})) if cid else "")
     try:
-        r = get_client().post(route, json_data={"doc": doc, "ops": ops, **({"sync": True} if live else {})})
+        r = get_client().post(route, json_data={"doc": doc, "ops": ops, **({"sync": True} if live else {}),
+                                                **({"snapshot": True} if snapshot and not ops else {})})
     except Exception as e:  # noqa: BLE001
         resp = getattr(e, "response", None)
         status = getattr(resp, "status_code", None)
@@ -221,6 +231,15 @@ def edit_image(doc: str = "", ops: list | None = None) -> str:
         out["written"] = bool(r.get("written"))
         out["said"] = [str(s)[:200] for s in (r.get("said") or [])][:60]
         out["pushed"] = bool(r.get("token"))
+    if snapshot and not ops:
+        snap = r.get("snapshot")
+        if isinstance(snap, dict) and snap.get("picture"):
+            out["snapshot"] = {k: snap.get(k) for k in ("picture", "selection", "box", "w", "h")}
+        else:
+            out["snapshot_error"] = ("the viewer in this ComfyUI does not hand over a snapshot yet - update "
+                                     "ComfyUI-ImageViewer under <ComfyUI>/custom_nodes/ and restart ComfyUI")
+    elif snapshot:
+        out["snapshot_error"] = "snapshot is for a read (no ops); read again after the change"
     if r.get("notes"):
         out["notes"] = [str(n)[:200] for n in r["notes"]][:10]
     return _j(out)

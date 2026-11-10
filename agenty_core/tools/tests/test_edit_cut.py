@@ -340,6 +340,31 @@ class RoundTrip(Base):
         self.assertEqual([(c["at"], c["length"]) for c in a2["clips"]], [(2.0, 4.25), (6.25, 3.0)])
         self.assertEqual(out["length"], 14.0)
 
+    def test_insert_from_the_source_markers_a_dissolve_a_retime_and_the_master(self):
+        if not hasattr(self.tio, "_ops"):
+            self.skipTest("the viewer checkout predates insert / markers / mix")
+        out = json.loads(ec.edit_cut(self.otio, [
+            {"op": "insert", "file": self.shot2, "in": 4.0, "length": 2.0, "at": 3.0},
+            {"op": "add_marker", "at": 1.0, "name": "hand", "note": "fix the fingers", "color": "red"},
+            {"op": "set", "track": "V1", "clip": 4, "transition": 1.0, "transition_look": {"type": "dip"}},
+            {"op": "set", "track": "V1", "clip": 2, "speed": 2.0},
+            {"op": "mix", "track": "master", "gain_db": -6}]))
+        self.assertEqual(out["status"], "ok", out)
+        v1, = [t for t in out["tracks"] if t["track"] == "V1"]
+        self.assertEqual([(c["name"], c["at"], c["length"]) for c in v1["clips"]],
+                         [("shot_01", 0.0, 3.0), ("shot_02", 3.0, 1.0), ("shot_01", 4.0, 5.0), ("shot_02", 8.0, 10.0)])
+        self.assertEqual(v1["clips"][1]["speed"], 2.0)
+        self.assertEqual((v1["clips"][3]["dissolve"], v1["clips"][3]["dissolve_look"]), (1.0, {"type": "dip", "color": "#000000"}))
+        self.assertEqual(out["markers"], [{"marker": 1, "at": 1.0, "name": "hand", "note": "fix the fingers", "color": "red"}])
+        self.assertEqual(out["master"], {"fader_db": -6.0})
+        back = json.loads(ec.edit_cut(self.otio))
+        self.assertEqual(back["markers"], out["markers"])
+        self.assertEqual(back["master"], out["master"])
+        out = json.loads(ec.edit_cut(self.otio, [{"op": "remove_marker", "marker": 1},
+                                                 {"op": "mix", "track": "master", "gain_db": 0, "mute": True}]))
+        self.assertNotIn("markers", out)
+        self.assertEqual(out["master"], {"muted": True})
+
 
 if __name__ == "__main__":
     unittest.main()

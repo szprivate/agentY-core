@@ -86,6 +86,14 @@ class Lines(unittest.TestCase):
         st["paint"] = {"open": True, "empty": True}
         self.assertEqual(vs.describe_lines(st).splitlines()[-1], "paint=empty (no picture open in Paint)")
 
+    def test_the_source_monitor_names_the_insert(self):
+        st = dict(QUIET, edit={"open": True, "cut": "c", "otio": "D:/o/c.otio", "playhead": 12.5,
+                               "source": {"file": "D:/in/take3.mp4", "name": "take3", "in": 1.5, "out": 4.0, "head": 2}})
+        self.assertIn("source=take3 in=1.5 out=4 playhead=12.5 - edit_cut insert / overwrite", vs.describe_lines(st))
+        note = vs.source_note(st["edit"]["source"], 12.5)
+        self.assertIn('"file": "D:/in/take3.mp4", "in": 1.5, "length": 2.5, "at": 12.5', note)
+        self.assertIn("give \"length\"", vs.source_note({"file": "a.mp4", "in": 1.0, "out": None}))
+
     def test_a_contact_sheet_of_many_is_one_short_line(self):
         st = dict(QUIET, compare={"mode": "contact", "items": 12, "shown": 12, "indices": list(range(12)),
                                   "grid": [4, 3], "a": {"index": 0, "path": "D:/o/a.mp4"},
