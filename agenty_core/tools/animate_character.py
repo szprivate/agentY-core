@@ -25,7 +25,9 @@ Actions:
 * ``lipsync``      the mouth's blendshapes keyed from a sound or a film's sound (``media_path``);
 * ``layer_add`` / ``layer_list``                                    animation layers;
 * ``constrain`` / ``remove_constraint`` / ``list_constraints`` / ``bake_constraints``   constraints;
-* ``pose_list`` / ``pose_save`` / ``pose_apply`` / ``pose_delete`` / ``flip_pose``     the pose library.
+* ``pose_list`` / ``pose_save`` / ``pose_apply`` / ``pose_delete`` / ``flip_pose``     the pose library;
+* ``pose``         one pose keyed on one frame, from named poses and joints in words (``options``), or from a
+                  prompt through Kimodo; ``pose_presets`` lists the named poses and the parts and moves.
 
 Humanoids only for ``motion`` / ``inbetween`` / ``clean_feet``. UniRig and Kimodo run on
 the ComfyUI machine (set up with the viewer's scripts/rig/install_rig_tools.py).
@@ -45,8 +47,8 @@ logger = logging.getLogger("agenty_core.animate_character")
 ACTIONS = ("rig", "autorig", "motion", "inbetween", "clean_feet", "export", "remove_rig",
            "restyle", "video_motion", "lipsync",
            "layer_add", "layer_list", "constrain", "remove_constraint", "list_constraints", "bake_constraints",
-           "pose_list", "pose_save", "pose_apply", "pose_delete", "flip_pose")
-TAKES = ("motion", "inbetween", "restyle", "video_motion")          # what can go onto a new animation layer
+           "pose_list", "pose_save", "pose_apply", "pose_delete", "flip_pose", "pose", "pose_presets")
+TAKES = ("motion", "inbetween", "restyle", "video_motion", "pose")          # what can go onto a new animation layer
 STRENGTHS = ("loose", "medium", "close")
 CONSTRAINTS = ("parent", "point", "orient", "aim", "scale")
 # Extra fields an action passes through from ``options`` (as the viewer's page reads them).
@@ -59,6 +61,7 @@ OPTION_KEYS = {
     "list_constraints": ("item",),
     "bake_constraints": ("items", "remove"),
     "pose_apply": ("blend", "mirror", "key"),
+    "pose": ("preset", "joints", "hips", "mirror", "ground"),
 }
 
 
@@ -103,6 +106,15 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
             body["feet"] = bool(feet)
             if prompt:
                 body["prompt"] = str(prompt).strip()
+    if action == "pose":
+        if not (options.get("preset") or options.get("joints") or str(prompt or "").strip()):
+            raise ValueError("pose needs options.preset (e.g. [\"sit\", \"arms_crossed\"]), options.joints, or a prompt")
+        if prompt:
+            body["prompt"] = str(prompt).strip()
+        if from_frame is not None:
+            body["frame"] = int(from_frame)
+        if seed is not None:
+            body["seed"] = int(seed)
     if action == "constrain" and options.get("type", "parent") not in CONSTRAINTS:
         raise ValueError(f"options.type is one of: {', '.join(CONSTRAINTS)}")
     if action == "constrain" and not (options.get("driven") and options.get("targets")):
@@ -167,11 +179,13 @@ def animate_character(
         action: "rig" (controls on a skinned model), "autorig" (UniRig skeleton + skin for a model without
             one, then controls), "motion" (motion from `prompt`, keyed on the controls), "inbetween" (fill the
             frames between the keyed poses in the range; the keys are hit), "clean_feet" (pin standing feet,
-            keep them above the floor), "export" (FBX or Alembic by the export rule), "remove_rig".
+            keep them above the floor), "export" (FBX or Alembic by the export rule), "remove_rig",
+            "pose" (ONE pose keyed on one frame - see options; humanoids), "pose_presets" (the named poses,
+            parts and moves "pose" knows), plus restyle, video_motion, lipsync, layers, constraints, the pose library.
         model: The model item's name or id; empty = the selected one (or the only one).
         prompt: For "motion": what the character does, in plain sentences, one per segment
             ("A person walks forward. Then waves with the right hand."). Optional for "inbetween".
-        from_frame: First frame (motion: where it starts, default the playhead; inbetween / clean_feet /
+        from_frame: First frame (pose: the frame keyed; motion: where it starts, default the playhead; inbetween / clean_feet /
             export: the range, default the keyed range or the whole shot).
         to_frame: Last frame.
         seed: For repeatable results (motion, inbetween, autorig).
@@ -191,7 +205,18 @@ def animate_character(
             (Kimodo clean-up); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
             weight; constrain: type (parent | point | orient | aim | scale), driven (item name/id), targets (list),
             maintain_offset, weights, skip, aim; remove_constraint: driven, constraint; list_constraints: item;
-            bake_constraints: items, remove; pose_apply: blend, mirror, key.
+            bake_constraints: items, remove; pose_apply: blend, mirror, key;
+            pose: preset (a name or a list laid over each other in order: stand, a_pose, t_pose, arms_up,
+            arms_forward, arms_crossed, hands_on_hips, hands_behind_head, wave, point, think, sit, sit_floor,
+            kneel, kneel_both, crouch, lie_back, lie_front), joints ({part: {move: degrees}} laid over the
+            presets; parts hips, spine, chest, neck, head, shoulder, upperArm, lowerArm, hand, upperLeg,
+            lowerLeg, foot, toes, with ".L" / ".R" or none for both sides mirrored; each a turn from the
+            T-pose in its parent's frame - upperArm {down: 90 = hanging, forward, twist inwards},
+            lowerArm {bend}, upperLeg {forward: 90 = level, out, twist}, lowerLeg {bend}, foot {point, turn},
+            spine / chest / neck / head {bend forward, side to its left, twist to its left}, hips {bend, side,
+            turn}), hips ({height: share of standing hips height, offset: [x left, y, z forward] metres}),
+            mirror ("L" or "R": copy that side onto the other), ground (default true: the lowest joint on the
+            floor). With only a prompt (and Kimodo set up) the pose comes from text.
         timeout_seconds: How long to wait for the viewer (auto-rigging and motion take a minute or two).
 
     Returns:

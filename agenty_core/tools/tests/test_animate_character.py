@@ -59,6 +59,17 @@ class AnimateCharacterTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=kw):
                 a.request_body(**kw)
 
+    def test_pose(self):
+        self.assertEqual(a.request_body("pose", model="Hero", from_frame=12, layer=True,
+                                        options={"preset": ["sit", "arms_crossed"], "joints": {"head": {"turn": 20}}, "x": 1}),
+                         {"action": "pose", "model": "Hero", "frame": 12, "preset": ["sit", "arms_crossed"],
+                          "joints": {"head": {"turn": 20}}, "layer": "new"})
+        self.assertEqual(a.request_body("pose", prompt=" A person sits and reads. ", seed=4),
+                         {"action": "pose", "prompt": "A person sits and reads.", "seed": 4})
+        self.assertEqual(a.request_body("pose_presets"), {"action": "pose_presets"})
+        with self.assertRaises(ValueError):
+            a.request_body("pose")
+
     def test_export_and_checks(self):
         self.assertEqual(a.request_body("export", format=".ABC", to_frame=10),
                          {"action": "export", "format": "abc", "to": 10})
