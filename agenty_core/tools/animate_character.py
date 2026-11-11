@@ -26,8 +26,9 @@ Actions:
 * ``layer_add`` / ``layer_list``                                    animation layers;
 * ``constrain`` / ``remove_constraint`` / ``list_constraints`` / ``bake_constraints``   constraints;
 * ``pose_list`` / ``pose_save`` / ``pose_apply`` / ``pose_delete`` / ``flip_pose``     the pose library;
-* ``pose``         one pose keyed on one frame, from named poses and joints in words (``options``), or from a
-                  prompt through Kimodo; ``pose_presets`` lists the named poses and the parts and moves.
+* ``pose``         one pose keyed on one frame, from named poses and joints in words (``options``), from a
+                  picture of a person (``media_path``; SAM 3D Body in ComfyUI, or MediaPipe), or from a
+                  prompt through Kimodo; joint limits and hands / feet on the floor (``options``); ``pose_presets`` lists the named poses and the parts and moves.
 
 Humanoids only for ``motion`` / ``inbetween`` / ``clean_feet``. UniRig and Kimodo run on
 the ComfyUI machine (set up with the viewer's scripts/rig/install_rig_tools.py).
@@ -61,7 +62,7 @@ OPTION_KEYS = {
     "list_constraints": ("item",),
     "bake_constraints": ("items", "remove"),
     "pose_apply": ("blend", "mirror", "key"),
-    "pose": ("preset", "joints", "hips", "mirror", "ground"),
+    "pose": ("preset", "joints", "hips", "mirror", "ground", "contacts", "limits", "facing", "via", "fov"),
 }
 
 
@@ -107,8 +108,13 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
             if prompt:
                 body["prompt"] = str(prompt).strip()
     if action == "pose":
-        if not (options.get("preset") or options.get("joints") or str(prompt or "").strip()):
-            raise ValueError("pose needs options.preset (e.g. [\"sit\", \"arms_crossed\"]), options.joints, or a prompt")
+        if not (options.get("preset") or options.get("joints") or str(prompt or "").strip() or str(media_path or "").strip()):
+            raise ValueError("pose needs options.preset (e.g. [\"sit\", \"arms_crossed\"]), options.joints, "
+                             "media_path (a picture of a person), or a prompt")
+        if str(media_path or "").strip():
+            body["image"] = str(media_path).strip()
+        if options.get("via") not in (None, "auto", "sam3d", "mediapipe"):
+            raise ValueError("options.via is auto, sam3d or mediapipe")
         if prompt:
             body["prompt"] = str(prompt).strip()
         if from_frame is not None:
@@ -196,7 +202,8 @@ def animate_character(
         name: For export: the file's name (default the model's). For layer_add: the layer's name. For
             pose_save / pose_apply / pose_delete: the pose's name.
         media_path: For video_motion: the film (one person, whole body, a still camera). For lipsync: a sound
-            file or a film with sound. A path ComfyUI's machine can read (its input/output folders or allowed ones).
+            file or a film with sound. For pose: a picture of a person (png / jpg ...). A path ComfyUI's
+            machine can read (its input/output folders or allowed ones).
         strength: For restyle: "loose" (the path and timing only), "medium" (also hands and feet), "close"
             (the whole body every third of a second: least change).
         layer: For motion / inbetween / restyle / video_motion: put the result on a new animation layer, so the
@@ -216,7 +223,15 @@ def animate_character(
             spine / chest / neck / head {bend forward, side to its left, twist to its left}, hips {bend, side,
             turn}), hips ({height: share of standing hips height, offset: [x left, y, z forward] metres}),
             mirror ("L" or "R": copy that side onto the other), ground (default true: the lowest joint on the
-            floor). With only a prompt (and Kimodo set up) the pose comes from text.
+            floor), contacts (parts put ON the floor, the first one setting the body's height: "hand.L/R",
+            "foot.L/R", "knee.L/R", or {"part": "right hand", "under": true} = straight below its shoulder /
+            hip - e.g. a plank or a hand on the ground), limits (default true: elbows and knees bend one way
+            only, every joint within a natural range). With media_path = a PICTURE of a person, the whole pose
+            is read off it (the limits and contacts still apply): via "auto" (default: ComfyUI's SAM 3D Body
+            when its weights are in models/detection, else MediaPipe), "sam3d" or "mediapipe"; fov (the
+            picture's vertical field of view in degrees, helps SAM 3D Body); facing "picture" also turns the
+            character as the person is turned (default: it keeps facing where it faced). With only a prompt
+            (and Kimodo set up) the pose comes from text.
         timeout_seconds: How long to wait for the viewer (auto-rigging and motion take a minute or two).
 
     Returns:
