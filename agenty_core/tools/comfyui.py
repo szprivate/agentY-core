@@ -24,6 +24,7 @@ from agenty_core.utils.comfyui_client import get_client, parse_argv_dir_flag
 # share the same robustness).
 from agenty_core.tools.assembly_deterministic import (
     LINK_ONLY_TYPES as _LINK_ONLY_TYPES_SHARED,
+    REROUTE_NODE_CLASSES as _REROUTE_CLASSES,
     _MODEL_EXTS as _MODEL_EXTS_SHARED,
     autowire_dangling_inputs as _autowire_dangling_inputs,
     coerce_dim as _coerce_dim,
@@ -1337,6 +1338,8 @@ def _convert_graph_to_api(workflow: dict) -> dict:
             if not isinstance(connector, dict):
                 continue
             name = connector.get("name", "")
+            if not name and class_type in _REROUTE_CLASSES:
+                name = "input"      # the frontend's Reroute names its socket ""
             link_id = connector.get("link")
             if name and link_id is not None and link_id in link_table:
                 api_inputs[name] = link_table[link_id]
@@ -1436,6 +1439,13 @@ def _convert_graph_to_api(workflow: dict) -> dict:
         api_workflow[nid] = api_node
 
     _inline_primitive_nodes(api_workflow)
+    # What the frontend's graphToPrompt leaves out, this leaves out too: notes are
+    # only text on the canvas, and a Reroute only forwards its input. Kept, they
+    # went into every template registered from a graph (LTX-2.5's VFX workflows
+    # carry nine) and made it fail validation as unknown class_types until the
+    # build step stripped them again.
+    _strip_annotation_nodes(api_workflow)
+    _strip_reroute_nodes(api_workflow)
     return api_workflow
 
 
