@@ -279,6 +279,51 @@ class MeshTests(unittest.TestCase):
         p3, _u3, _t3 = w.frame_mesh((100, 50), K, depth, None, cam, cam, stride=5)
         self.assertTrue(np.isfinite(p3).all())
 
+    def _facing(self, pos, tri):
+        p0, p1, p2 = pos[tri[:, 0]], pos[tri[:, 1]], pos[tri[:, 2]]
+        n = np.cross(p1 - p0, p2 - p0)
+        ray = (p0 + p1 + p2) / 3
+        return np.abs((n * ray).sum(-1)) / (np.linalg.norm(n, axis=-1) * np.linalg.norm(ray, axis=-1))
+
+    def test_a_smeared_silhouette_leaves_no_spikes(self):
+        # A box at 2 m before a wall at 6 m; the depth map smears its right edge into a slope 40 px wide,
+        # which the jump cut lets through as skins along the rays ("spikes").
+        K = {"fx": 1000.0, "fy": 1000.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
+        cam = w.normalize_camera({"extrinsics": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]}, "intrinsics": K})
+        depth = np.full((180, 320), 6.0, "float32")
+        depth[40:140, 100:180] = 2.0
+        depth[40:140, 180:220] = np.linspace(2.0, 6.0, 40, dtype="float32")[None, :]
+        pos0, _u, tri0 = w.frame_mesh((320, 180), K, depth, None, cam, cam, stride=4, clean=False)
+        self.assertGreater(int((self._facing(pos0, tri0) < 0.08).sum()), 20)   # the spikes are there unclean
+        pos, _u, tri = w.frame_mesh((320, 180), K, depth, None, cam, cam, stride=4)
+        self.assertEqual(int((self._facing(pos, tri) < 0.08).sum()), 0)
+        # the box's face and the wall stay
+        z = pos[:, 2]
+        self.assertGreater(int((np.abs(z + 2.0) < 1e-3).sum()), 300)
+        self.assertGreater(int((np.abs(z + 6.0) < 1e-3).sum()), 2000)
+        self.assertGreater(len(tri), 0.7 * len(tri0))
+
+    def test_a_floor_seen_at_a_slant_stays(self):
+        # A camera 1.6 m up looking level: the floor below the horizon, out to ~25 m at the frame's middle.
+        K = {"fx": 250.0, "fy": 250.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
+        cam = w.normalize_camera({"extrinsics": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]}, "intrinsics": K})
+        rows = np.arange(180, dtype="float64") + 0.5 - 90.0
+        depth = np.where(rows > 16, 1.6 * 250.0 / np.maximum(rows, 1e-6), np.nan)[:, None] * np.ones((1, 320))
+        pos0, _u, tri0 = w.frame_mesh((320, 180), K, depth.astype("float32"), None, cam, cam, stride=4, clean=False)
+        pos, _u, tri = w.frame_mesh((320, 180), K, depth.astype("float32"), None, cam, cam, stride=4)
+        self.assertGreater(len(tri), 0.7 * len(tri0))
+        self.assertGreater(float(-pos[:, 2].min()), 12.0)               # the floor 12 m out is still there
+
+    def test_a_small_loose_piece_is_dropped(self):
+        K = {"fx": 100.0, "fy": 100.0, "cx": 100.0, "cy": 50.0, "width": 200, "height": 100}
+        cam = w.normalize_camera({"extrinsics": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1]}, "intrinsics": K})
+        depth = np.full((100, 200), 5.0, "float32")
+        depth[20:80, 20:180] = np.nan                                   # a frame of wall around a hole ...
+        depth[45:53, 95:103] = 3.0                                      # ... with a fleck floating in it
+        pos, _u, tri = w.frame_mesh((200, 100), K, depth, None, cam, cam, stride=2)
+        self.assertFalse(np.any(np.abs(pos[:, 2] + 3.0) < 1e-3))
+        self.assertTrue(np.any(np.abs(pos[:, 2] + 5.0) < 1e-3))
+
     def test_second_camera_lands_in_first_cameras_frame(self):
         K = {"fx": 100.0, "fy": 100.0, "cx": 50.0, "cy": 25.0, "width": 100, "height": 50}
         base = w.normalize_camera({"extrinsics": {"position": [10, 0, 0], "quaternion": [0, 0, 0, 1]}, "intrinsics": K})
