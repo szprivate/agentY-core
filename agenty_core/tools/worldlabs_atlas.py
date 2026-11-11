@@ -534,13 +534,91 @@ def camera_to_api(R, t, K: dict) -> dict:
 # -- depth grid -> textured mesh ----------------------------------------------
 
 
+# Cleaning a view's mesh (Sebastian 2026-11-11: "spikes" at the borders, more with every view added).
+# A depth map smears across a silhouette and at the frame's edge: those samples lie between the near and the
+# far surface, so the jump cut lets them through as long thin triangles pointing along the camera's rays.
+EDGE_REACH_PX = 24      # pixels from a silhouette, a hole or the frame's edge counted as "near an edge"
+EDGE_SPREAD = 0.5       # ...and where the depth within that reach spreads by more than this (a smeared silhouette)
+EDGE_COS = 0.1          # near an edge, a triangle seen at more than ~84 degrees off its face is cut (a floor
+                        # 1.6 m below the camera reaches that 16 m away)
+MIN_COS = 0.035         # anywhere, one seen at more than ~88 degrees (a skin along the rays) is cut
+FRAME_TRIM = 1          # grid cells taken off the frame's edge
+MIN_ISLAND = 48         # pieces of fewer quads than this (or 0.2 % of the view) are dropped
+
+
+def _dilate(mask, r: int):
+    """A boolean grid grown by r cells (a square)."""
+    import numpy as np
+    out = mask.copy()
+    for _ in range(max(0, int(r))):
+        g = out.copy()
+        g[1:, :] |= out[:-1, :]
+        g[:-1, :] |= out[1:, :]
+        g[:, 1:] |= out[:, :-1]
+        g[:, :-1] |= out[:, 1:]
+        out = g
+    return out
+
+
+def _spread(d, ok, r: int):
+    """(max - min) / min of the valid depths within r cells (a square), per cell; 0 where nothing is valid."""
+    import numpy as np
+    hi = np.where(ok, d, -np.inf)
+    lo = np.where(ok, d, np.inf)
+    for _ in range(max(0, int(r))):
+        h2, l2 = hi.copy(), lo.copy()
+        for sl_to, sl_from in (((slice(1, None), slice(None)), (slice(None, -1), slice(None))),
+                               ((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+                               ((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+                               ((slice(None), slice(None, -1)), (slice(None), slice(1, None)))):
+            h2[sl_to] = np.maximum(h2[sl_to], hi[sl_from])
+            l2[sl_to] = np.minimum(l2[sl_to], lo[sl_from])
+        hi, lo = h2, l2
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = (hi - lo) / lo
+    return np.where(np.isfinite(out), out, 0.0)
+
+
+def _label(mask):
+    """Connected pieces of a boolean grid (4-neighbours): (labels, count); 0 is background."""
+    import numpy as np
+    try:
+        from scipy import ndimage
+        lab, n = ndimage.label(mask)
+        return lab, int(n)
+    except Exception:  # noqa: BLE001 - scipy is optional
+        pass
+    h, w = mask.shape
+    lab = np.zeros((h, w), dtype=np.int32)
+    n = 0
+    flat = mask.ravel()
+    lflat = lab.ravel()
+    for start in np.flatnonzero(flat):
+        if lflat[start]:
+            continue
+        n += 1
+        lflat[start] = n
+        stack = [int(start)]
+        while stack:
+            i = stack.pop()
+            y, x = divmod(i, w)
+            for j in ((i - w) if y > 0 else -1, (i + w) if y < h - 1 else -1,
+                      (i - 1) if x > 0 else -1, (i + 1) if x < w - 1 else -1):
+                if j >= 0 and flat[j] and not lflat[j]:
+                    lflat[j] = n
+                    stack.append(j)
+    return lab, n
+
+
 def frame_mesh(image_size, K: dict, depth, conf, cam: dict, base: dict, stride: int = 4,
-               max_jump: float = 0.15, conf_min: float = 0.1, max_depth: float = 0.0):
+               max_jump: float = 0.15, conf_min: float = 0.1, max_depth: float = 0.0, clean: bool = True):
     """Unproject one posed RGBD view into (positions[N,3], uvs[N,2], triangles[M,3]) in the *base* frame
     (the first picture's camera: origin, looking down -Z).
 
     ``depth`` is read as z-depth along the optical axis. Quads whose neighbouring depths jump by more
-    than ``max_jump`` (relative) are cut, so the mesh does not stretch across silhouettes.
+    than ``max_jump`` (relative) are cut, so the mesh does not stretch across silhouettes. With ``clean``
+    the spikes are cut too: triangles seen edge-on near a silhouette, a hole or the frame's edge (smeared
+    depth), a cell off the frame's edge, and small loose pieces.
     """
     import numpy as np
     H, W = depth.shape
@@ -553,6 +631,9 @@ def frame_mesh(image_size, K: dict, depth, conf, cam: dict, base: dict, stride: 
     if conf is not None:
         c = conf[np.ix_(np.minimum(ys, conf.shape[0] - 1), np.minimum(xs, conf.shape[1] - 1))]
         ok &= c >= conf_min
+    if clean and FRAME_TRIM > 0 and min(ok.shape) > 4 * FRAME_TRIM:
+        ok[:FRAME_TRIM, :] = ok[-FRAME_TRIM:, :] = False
+        ok[:, :FRAME_TRIM] = ok[:, -FRAME_TRIM:] = False
     d = np.where(ok, d, 1.0)
     sx, sy = K["width"] / W, K["height"] / H            # depth grid vs. camera grid
     u, v = np.meshgrid((xs + 0.5) * sx, (ys + 0.5) * sy)
@@ -569,8 +650,41 @@ def frame_mesh(image_size, K: dict, depth, conf, cam: dict, base: dict, stride: 
     okq = ok[:-1, :-1] & ok[:-1, 1:] & ok[1:, :-1] & ok[1:, 1:]
     zs = np.stack([d[:-1, :-1], d[:-1, 1:], d[1:, :-1], d[1:, 1:]])
     okq &= (zs.max(0) - zs.min(0)) <= max_jump * zs.min(0)
-    qa, qb, qc, qe = a[okq], b[okq], c_[okq], e[okq]
-    tris = np.concatenate([np.stack([qa, qc, qb], -1), np.stack([qb, qc, qe], -1)])
+    t1 = np.ones(okq.shape, bool)                # which of a quad's two triangles stay
+    t2 = np.ones(okq.shape, bool)
+    if clean and okq.any():
+        # Edges: every cell that is not a kept quad (a cut silhouette, a hole, past the frame), and the frame.
+        reach = max(1, -(-EDGE_REACH_PX // s))
+        edge = ~okq
+        edge[0, :] = edge[-1, :] = True
+        edge[:, 0] = edge[:, -1] = True
+        near = _dilate(edge, reach)
+        # A silhouette the depth map smeared into a slope passes the jump cut step by step: find it by how
+        # far the depth spreads around each sample.
+        wide = _spread(d, ok, reach) > EDGE_SPREAD
+        near |= wide[:-1, :-1] | wide[:-1, 1:] | wide[1:, :-1] | wide[1:, 1:]
+        pc = p_cam.reshape(-1, 3)
+
+        def facing(i0, i1, i2):
+            p0, p1, p2 = pc[i0], pc[i1], pc[i2]
+            n = np.cross(p1 - p0, p2 - p0)
+            ray = (p0 + p1 + p2) / 3.0
+            den = np.linalg.norm(n, axis=-1) * np.linalg.norm(ray, axis=-1)
+            return np.abs((n * ray).sum(-1)) / np.maximum(den, 1e-12)
+
+        lim = np.where(near, EDGE_COS, MIN_COS)
+        t1 = facing(a, c_, b) >= lim
+        t2 = facing(b, c_, e) >= lim
+        okq &= t1 | t2
+        # Small loose pieces: what is left of a spike, or a fleck of smeared depth in the air.
+        lab, n = _label(okq)
+        if n > 1:
+            sizes = np.bincount(lab.ravel(), minlength=n + 1)
+            keep = sizes >= max(MIN_ISLAND, int(0.002 * okq.sum()))
+            keep[0] = False
+            okq &= keep[lab]
+    k1, k2 = okq & t1, okq & t2
+    tris = np.concatenate([np.stack([a[k1], c_[k1], b[k1]], -1), np.stack([b[k2], c_[k2], e[k2]], -1)])
     # keep only the vertices a triangle uses
     used = np.unique(tris)
     remap = -np.ones(gh * gw, dtype=np.int64)
