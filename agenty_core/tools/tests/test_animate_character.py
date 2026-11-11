@@ -34,6 +34,31 @@ class AnimateCharacterTests(unittest.TestCase):
             "action": "motion", "model": "Hero", "prompt": "A person walks.", "feet": True, "from_pose": True,
             "from": 0, "to": 48, "seed": 3})])
 
+    def test_new_actions(self):
+        self.assertEqual(a.request_body("restyle", prompt=" A soldier marches. ", strength="close", layer=True, seed=2),
+                         {"action": "restyle", "prompt": "A soldier marches.", "strength": "close", "feet": True,
+                          "layer": "new", "seed": 2})
+        self.assertEqual(a.request_body("video_motion", media_path="D:/films/dance.mp4", from_frame=10,
+                                        options={"clean": True, "step": 2, "nonsense": 1}),
+                         {"action": "video_motion", "path": "D:/films/dance.mp4", "feet": True, "clean": True, "step": 2,
+                          "from": 10})
+        self.assertEqual(a.request_body("lipsync", model="Hero", media_path="line.wav", options={"lead": 2}),
+                         {"action": "lipsync", "model": "Hero", "path": "line.wav", "lead": 2})
+        self.assertEqual(a.request_body("constrain", options={"type": "aim", "driven": "Head", "targets": ["Ball"]}),
+                         {"action": "constrain", "type": "aim", "driven": "Head", "targets": ["Ball"]})
+        self.assertEqual(a.request_body("layer_add", name="Fixes", options={"mode": "additive"}),
+                         {"action": "layer_add", "name": "Fixes", "mode": "additive"})
+        self.assertEqual(a.request_body("pose_apply", name="Run 1", options={"mirror": True}),
+                         {"action": "pose_apply", "name": "Run 1", "mirror": True})
+        # a layer is only for takes
+        self.assertNotIn("layer", a.request_body("lipsync", media_path="x.wav", layer=True))
+        for kw in ({"action": "restyle"}, {"action": "restyle", "prompt": "x", "strength": "huge"},
+                   {"action": "video_motion"}, {"action": "lipsync"}, {"action": "pose_save"},
+                   {"action": "constrain", "options": {"type": "glue", "driven": "a", "targets": ["b"]}},
+                   {"action": "constrain", "options": {"driven": "a"}}):
+            with self.assertRaises(ValueError, msg=kw):
+                a.request_body(**kw)
+
     def test_export_and_checks(self):
         self.assertEqual(a.request_body("export", format=".ABC", to_frame=10),
                          {"action": "export", "format": "abc", "to": 10})
