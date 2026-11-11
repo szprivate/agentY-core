@@ -1519,5 +1519,180 @@
         }
       }
     ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_vfx_alpha_matte",
+        "description": "LTX-2.5 VFX alpha matte: turns a video into a per-frame alpha matte of its foreground subject (video-to-video IC-LoRA, ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors). Runs fully local on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors) with Gemma text encoders on CPU; the Gemma API text-encode nodes stay unused and an LTX API key is never needed or sent. Clip length must be 8n+1 frames and sides multiples of 32. Input: the source clip in LoadVideo (5001); leave the prompt empty. The LoadImage (2004) is unused and keeps a placeholder. Limits: at most 1920x1088 input and <=121 frames per run (split longer shots). Output (SaveVideo ltx_vfx/alpha_matte) is a greyscale matte video, white = opaque, at about 960x544 (shorter side 544), so scale it back to plate size before compositing. Measured on RTX 5090 32 GB with a 97-frame 854x480 clip: 6.3 min, peak about 28 GB.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot",
+          "gemma4_e2b_it_int8_convrot",
+          "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 2004,
+              "nodeType": "LoadImage",
+              "file": "2875b7cd-5300-462d-8db2-59aac56995c1.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 5001,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 4852,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_vfx_sdr_to_hdr",
+        "description": "LTX-2.5 VFX SDR to HDR: lifts an SDR video to HDR (IC-LoRA ltx-2.5-22b-ic-lora-sdr-to-hdr-1.0.safetensors, prompt conditioning loaded precomputed, so no text encoder runs). Runs fully local on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors); an LTX API key is never needed or sent. Clip length must be 8n+1 frames and sides multiples of 32. Input: the SDR clip in LoadVideo (9102); no prompt. Outputs: an HLG BT.2020 10-bit mp4 (SaveVideo ltx_vfx/sdr_to_hdr_hlg) plus a half-float ACEScg OpenEXR frame sequence in output/ltx_vfx/hdr_exr (LTXVHDRDecodePostprocess, exposure 0). Measured on RTX 5090 32 GB with a 97-frame 854x480 clip: 2.4 min, peak about 31 GB.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 9102,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 9109,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_vfx_reframe_outpaint",
+        "description": "LTX-2.5 VFX reframe / outpaint: extends a video to a new frame size or aspect ratio, generating the missing picture around the original (two-stage, IC-LoRA ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors on the 2.5 transformer). Runs fully local on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors) with Gemma text encoders on CPU; the Gemma API text-encode nodes stay unused and an LTX API key is never needed or sent. Clip length must be 8n+1 frames and sides multiples of 32. Inputs: the source clip in LoadVideo (5368), Target Width (9009, default 1920) and Target Height (9010, default 1088; snapped to a multiple of 64), optional positive prompt (5404) describing the extended scene. Prompt enhancement is off by default (raw prompt is used; the Gemma API enhance_prompt is false). The optional start image LoadImage (2004) is unused and keeps a placeholder. Output: SaveVideo ltx_vfx/reframe. Measured on RTX 5090 32 GB with a 97-frame 854x480 clip to 1920x1088: 9 min, peak about 31 GB.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "gemma4_e2b_it_int8_convrot",
+          "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 2004,
+              "nodeType": "LoadImage",
+              "file": "2875b7cd-5300-462d-8db2-59aac56995c1.png",
+              "mediaType": "image"
+            },
+            {
+              "nodeId": 5368,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 5228,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_vfx_upscale_refine",
+        "description": "LTX-2.5 VFX upscale (refine): tiled video upscale that adds detail while staying close to the source look and colour (IC-LoRA ltx-2.5-22b-ic-lora-refine-details-1.0.safetensors, tiled fusion). Runs fully local on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors) with Gemma text encoders on CPU; the Gemma API text-encode nodes stay unused and an LTX API key is never needed or sent. Clip length must be 8n+1 frames and sides multiples of 32. Input: the clip in LoadVideo (5001); prompt optional. Output size is set on Get Tiling Sizes output_size: FullHD default (1920x1088), 4K and 8K available but need much more time and memory. Output: SaveVideo ltx_vfx/upscale_refine. Measured on RTX 5090 32 GB with a 97-frame 854x480 clip to 1920x1088: 11.5 min, peak about 30 GB. For damaged footage use ltx2_5_vfx_upscale_restore.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot",
+          "gemma4_e2b_it_int8_convrot",
+          "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 5001,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 4852,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_vfx_upscale_restore",
+        "description": "LTX-2.5 VFX upscale (restore): tiled video upscale and restoration for damaged, compressed or archival footage; it cleans artefacts and noticeably shifts colour warmer (IC-LoRA ltx-2.5-22b-ic-lora-restore-1.0.safetensors, tiled fusion). Runs fully local on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors) with Gemma text encoders on CPU; the Gemma API text-encode nodes stay unused and an LTX API key is never needed or sent. Clip length must be 8n+1 frames and sides multiples of 32. Input: the clip in LoadVideo (5001); prompt optional. Output size is set on Get Tiling Sizes output_size: FullHD default (1920x1088), 4K and 8K available but need much more time and memory. Output: SaveVideo ltx_vfx/upscale_restore. Measured on RTX 5090 32 GB with a 97-frame 854x480 clip to 1920x1088: 11 min, peak about 27 GB. For clean footage that should keep its look use ltx2_5_vfx_upscale_refine.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot",
+          "gemma4_e2b_it_int8_convrot",
+          "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 5001,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 4852,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
   }
 ]
