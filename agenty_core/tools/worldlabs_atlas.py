@@ -7,7 +7,7 @@ one-call "make me a world" service. It is a set of view-synthesis tasks, each an
 * ``atlasTextToImage``   prompt -> image (+ optional metric depth and camera)
 * ``images2PosedRGBD``   image(s) -> the same image(s) with an estimated camera and a depth map
 * ``atlasGenerate``      posed RGBD context + new target cameras -> new views (+ optional depth)
-* ``atlasMasked`` / ``atlasChisel``  edit objects / depth-guided generation (not wrapped here)
+* ``atlasChisel``        masked edits / depth-guided generation; see ``atlas_chisel.py`` (``atlasMasked`` not wrapped)
 * ``splats2Mesh``        a Gaussian-splat ``.spz`` -> a GLB mesh
 * ``posedImages2Splats`` posed RGBD views -> a refined Gaussian splat (``.spz``); see ``atlas_splat.py``
 
@@ -774,6 +774,9 @@ def _finish(job: dict, op: dict, output_dir: str = "") -> str:
     if kind == "posed_splat":
         from agenty_core.tools.atlas_splat import finish_splat
         return finish_splat(job, op)
+    if kind == "chisel":
+        from agenty_core.tools.atlas_chisel import finish_chisel
+        return finish_chisel(job, op)
     resp = op.get("response") or {}
     op_id = op.get("id", "")
     usage = _usage_of(op)
