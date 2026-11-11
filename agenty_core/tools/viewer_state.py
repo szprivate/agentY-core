@@ -215,6 +215,19 @@ def describe_lines(state: dict | None) -> str:
         if a.get("on_frame") is not None:
             bit += f" ({a['on_frame']} on this frame)"
         lines.append(bit)
+
+    chars = s.get("characters") or []
+    if chars:
+        def char(c):
+            if not c.get("skeleton"):
+                return f"{c.get('name')} (no skeleton)"
+            if not c.get("rigged"):
+                return f"{c.get('name')} (skeleton, no controls)"
+            k = c.get("keyed_frames")
+            keys = (f", keys {k['first']}-{k['last']} ({k['count']})" if isinstance(k, dict)
+                    else f", keys {','.join(str(x) for x in k)}" if k else "")
+            return f"{c.get('name')} ({'humanoid' if c.get('humanoid') else 'FK'} rig{keys})"
+        lines.append("characters " + "; ".join(char(c) for c in chars[:6]))
     return "\n".join(lines)
 
 
@@ -246,7 +259,8 @@ def get_viewer_state() -> str:
     for a clip or a sequence the current frame, fps, timecode, the in/out range the
     user picked on the timeline, loop and play state; the Edit panel's selected
     clip; a comparison (A/B, wipe); zoom / channel / exposure; the 3D camera (pose,
-    fov) on a 3D tab; and how many annotations the item has.
+    fov) on a 3D tab; the 3D scene's characters (skeleton? rig? humanoid? keyed frames - what
+    animate_character works on); and how many annotations the item has.
 
     Use when the user points at the viewer - "this frame", "the range I marked",
     "the shot I have open", "what I'm looking at" - and the turn's [VIEWER] lines are
