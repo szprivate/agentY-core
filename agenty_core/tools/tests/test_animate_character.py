@@ -69,6 +69,13 @@ class AnimateCharacterTests(unittest.TestCase):
         self.assertEqual(a.request_body("pose_presets"), {"action": "pose_presets"})
         with self.assertRaises(ValueError):
             a.request_body("pose")
+        # On the floor, within the joints' range, or read off a picture.
+        self.assertEqual(a.request_body("pose", options={"joints": {"hips": {"side": -70}}, "contacts": ["hand.R"], "limits": False}),
+                         {"action": "pose", "joints": {"hips": {"side": -70}}, "contacts": ["hand.R"], "limits": False})
+        self.assertEqual(a.request_body("pose", media_path=" D:/refs/dancer.png ", options={"via": "sam3d", "fov": 40, "facing": "picture"}),
+                         {"action": "pose", "image": "D:/refs/dancer.png", "via": "sam3d", "fov": 40, "facing": "picture"})
+        with self.assertRaises(ValueError):
+            a.request_body("pose", media_path="x.png", options={"via": "openpose"})
 
     def test_export_and_checks(self):
         self.assertEqual(a.request_body("export", format=".ABC", to_frame=10),
