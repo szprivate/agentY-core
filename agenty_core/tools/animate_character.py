@@ -21,7 +21,8 @@ Actions:
 * ``remove_rig``;
 * ``restyle``      the character's motion done another way (``prompt`` = the style; Kimodo keeps the path and
                   timing, and as ``strength`` says the hands and feet or the whole body);
-* ``video_motion`` a person's motion from a film (``media_path``; MediaPipe pose), keyed from ``from_frame``;
+* ``video_motion`` a person's motion from a film (``media_path``; SAM 3D Body in ComfyUI, or MediaPipe), keyed
+                  from ``from_frame``;
 * ``lipsync``      the mouth's blendshapes keyed from a sound or a film's sound (``media_path``);
 * ``layer_add`` / ``layer_list``                                    animation layers;
 * ``constrain`` / ``remove_constraint`` / ``list_constraints`` / ``bake_constraints``   constraints;
@@ -54,7 +55,7 @@ STRENGTHS = ("loose", "medium", "close")
 CONSTRAINTS = ("parent", "point", "orient", "aim", "scale")
 # Extra fields an action passes through from ``options`` (as the viewer's page reads them).
 OPTION_KEYS = {
-    "video_motion": ("film_from", "film_to", "step", "smooth", "in_place", "clean"),
+    "video_motion": ("film_from", "film_to", "step", "smooth", "in_place", "clean", "via", "fov"),
     "lipsync": ("start", "seconds", "strength", "lead"),
     "layer_add": ("mode", "weight", "select"),
     "constrain": ("type", "driven", "targets", "maintain_offset", "weights", "skip", "aim"),
@@ -104,6 +105,8 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
             raise ValueError(f"{action} needs media_path: the {'film' if action == 'video_motion' else 'sound (or film)'}")
         body["path"] = str(media_path).strip()
         if action == "video_motion":
+            if options.get("via") not in (None, "auto", "sam3d", "mediapipe"):
+                raise ValueError("options.via is auto, sam3d or mediapipe")
             body["feet"] = bool(feet)
             if prompt:
                 body["prompt"] = str(prompt).strip()
@@ -209,7 +212,8 @@ def animate_character(
         layer: For motion / inbetween / restyle / video_motion: put the result on a new animation layer, so the
             keys under it stay (pose to pose, then AI on top).
         options: Extra fields per action - video_motion: film_from, film_to, step, smooth, in_place, clean
-            (Kimodo clean-up); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
+            (Kimodo clean-up), via ("auto" = SAM 3D Body when ComfyUI has it, else MediaPipe; "sam3d";
+            "mediapipe"; the result says read_with), fov (the camera's vertical field of view in degrees); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
             weight; constrain: type (parent | point | orient | aim | scale), driven (item name/id), targets (list),
             maintain_offset, weights, skip, aim; remove_constraint: driven, constraint; list_constraints: item;
             bake_constraints: items, remove; pose_apply: blend, mirror, key;
