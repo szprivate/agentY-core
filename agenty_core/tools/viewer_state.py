@@ -228,6 +228,26 @@ def describe_lines(state: dict | None) -> str:
                     else f", keys {','.join(str(x) for x in k)}" if k else "")
             return f"{c.get('name')} ({'humanoid' if c.get('humanoid') else 'FK'} rig{keys})"
         lines.append("characters " + "; ".join(char(c) for c in chars[:6]))
+
+    s3 = s.get("scene3d") or {}
+    if s3:
+        bits = [f"{s3.get('length')} frames @ {_num(s3.get('fps'))} fps"] if s3.get("length") else []
+        if s3.get("cameras"):
+            cams = ", ".join(str(c) for c in s3["cameras"][:6])
+            act = s3.get("active_camera")
+            bits.append(f"cameras {cams}" + (f" (looking through {act})" if act else ""))
+        if s3.get("clips"):
+            bits.append("clips " + ", ".join(f"{c.get('name')} {c.get('from')}-{c.get('to')}" + (" muted" if c.get("mute") else "")
+                                             for c in s3["clips"][:8]))
+        if s3.get("anim_layers"):
+            bits.append("anim layers " + ", ".join(f"{l.get('name')} ({l.get('mode')} {_num(l.get('weight'))}"
+                                                    + (", muted" if l.get("mute") else "") + ")" for l in s3["anim_layers"][:6]))
+        if s3.get("display_layers"):
+            bits.append("display layers " + ", ".join(f"{l.get('name')}" + ("" if l.get("visible") else " hidden")
+                                                      + (f" {l.get('mode')}" if l.get("mode") not in (None, "normal") else "")
+                                                      for l in s3["display_layers"][:6]))
+        if bits:
+            lines.append("3d scene " + "; ".join(bits))
     return "\n".join(lines)
 
 
@@ -260,7 +280,7 @@ def get_viewer_state() -> str:
     user picked on the timeline, loop and play state; the Edit panel's selected
     clip; a comparison (A/B, wipe); zoom / channel / exposure; the 3D camera (pose,
     fov) on a 3D tab; the 3D scene's characters (skeleton? rig? humanoid? keyed frames - what
-    animate_character works on); and how many annotations the item has.
+    animate_character works on); the 3D scene's shot, cameras, clips and layers (what animate_scene works on); and how many annotations the item has.
 
     Use when the user points at the viewer - "this frame", "the range I marked",
     "the shot I have open", "what I'm looking at" - and the turn's [VIEWER] lines are

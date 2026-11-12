@@ -18,7 +18,8 @@ Actions:
 * ``inbetween``   the frames between the keyed poses in the range filled in (the keys are
                   the constraints; the two outer ones are kept);
 * ``clean_feet``  the standing feet pinned and kept above the floor, re-keyed;
-* ``export``      FBX (skeleton, skin, keys every frame) or Alembic (the meshes baked);
+* ``export``      FBX (skeleton, skin, keys every frame), Alembic (the meshes baked) or USD;
+* ``add_motion``  a motion file (FBX / GLB / BVH) put on the character's controls;
 * ``remove_rig``;
 * ``restyle``      the character's motion done another way (``prompt`` = the style; Kimodo keeps the path and
                   timing, and as ``strength`` says the hands and feet or the whole body);
@@ -50,7 +51,7 @@ logger = logging.getLogger("agenty_core.animate_character")
 ACTIONS = ("rig", "autorig", "motion", "inbetween", "clean_feet", "export", "remove_rig",
            "restyle", "video_motion", "lipsync",
            "layer_add", "layer_list", "constrain", "remove_constraint", "list_constraints", "bake_constraints",
-           "pose_list", "pose_save", "pose_apply", "pose_delete", "flip_pose", "pose", "pose_presets")
+           "pose_list", "pose_save", "pose_apply", "pose_delete", "flip_pose", "pose", "pose_presets", "add_motion")
 TAKES = ("motion", "inbetween", "restyle", "video_motion", "pose")          # what can go onto a new animation layer
 STRENGTHS = ("loose", "medium", "close")
 CONSTRAINTS = ("parent", "point", "orient", "aim", "scale")
@@ -66,6 +67,9 @@ OPTION_KEYS = {
     "pose_apply": ("blend", "mirror", "key"),
     "pose": ("preset", "joints", "hips", "mirror", "ground", "contacts", "limits", "facing", "via", "fov"),
     "autorig": ("engine", "keep_skeleton"),
+    "motion": ("as_clip",),
+    "add_motion": ("how",),
+    "export": ("live",),
 }
 ENGINES = ("skintokens", "unirig")
 
@@ -103,6 +107,12 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
         if strength not in STRENGTHS:
             raise ValueError(f"strength is one of: {', '.join(STRENGTHS)}")
         body.update(prompt=str(prompt).strip(), strength=strength, feet=bool(feet))
+    if action == "add_motion":
+        if not str(media_path or "").strip():
+            raise ValueError("add_motion needs media_path: a motion file (.fbx / .glb / .bvh) to put on the character")
+        body["path"] = str(media_path).strip()
+        if options.get("how") not in (None, "auto", "restore", "bake"):
+            raise ValueError("options.how is auto, restore or bake")
     if action in ("video_motion", "lipsync"):
         if not str(media_path or "").strip():
             raise ValueError(f"{action} needs media_path: the {'film' if action == 'video_motion' else 'sound (or film)'}")
@@ -141,7 +151,8 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
             body[k] = options[k]
     if action in TAKES and layer:
         body["layer"] = "new"
-    if action in ("motion", "inbetween", "clean_feet", "export", "restyle", "video_motion", "lipsync", "bake_constraints"):
+    if action in ("motion", "inbetween", "clean_feet", "export", "restyle", "video_motion", "lipsync", "bake_constraints",
+                  "add_motion"):
         if from_frame is not None:
             body["from"] = int(from_frame)
         if to_frame is not None:
@@ -159,12 +170,54 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
             raise ValueError("only SkinTokens keeps the model's own skeleton (options.engine: skintokens)")
     if action == "export":
         fmt = str(format or "fbx").lower().lstrip(".")
-        if fmt not in ("fbx", "abc"):
-            raise ValueError("format is fbx or abc")
+        if fmt not in ("fbx", "abc", "usd"):
+            raise ValueError("format is fbx, abc or usd")
         body["format"] = fmt
         if name:
             body["name"] = name
     return body
+
+
+def ask_viewer(body: dict, timeout_seconds: float = 900.0, what: str = "character rigs") -> str:
+    """Hand one request to the open viewer page (POST /imageviewer/rig/agent) and wait for its answer.
+
+    Shared by animate_character and animate_scene: the page does the work on its 3D scene and reports back.
+    Returns the tool's JSON: {"status": "ok", "action", "result", "seconds_taken"} or {"status": "error", "error"}.
+    """
+    t0 = time.time()
+    action = body.get("action")
+    try:
+        ask = _client().post("/imageviewer/rig/agent", json_data=body)
+    except Exception as exc:  # noqa: BLE001
+        if "404" in str(exc):
+            return _error(f"the ComfyUI Image Viewer is not installed, or too old for {what} "
+                          "(update ComfyUI-ImageViewer and restart ComfyUI)")
+        if "400" in str(exc) and "action is one of" in str(exc):
+            return _error(f"this viewer does not know the action {action!r} yet (update ComfyUI-ImageViewer and "
+                          "restart ComfyUI)")
+        return _error(f"could not reach the viewer through ComfyUI: {exc}")
+    if not isinstance(ask, dict) or "id" not in ask:
+        return _error(f"unexpected answer from the viewer: {ask!r}")
+    state = ask
+    deadline = t0 + float(timeout_seconds)
+    while time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            state = _client().get("/imageviewer/rig/agent", params={"id": ask["id"]})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rig request poll failed: %s", exc)
+            continue
+        if state.get("state") in ("done", "error"):
+            break
+        if state.get("state") == "sent" and time.time() - t0 > 30:
+            return _error("no viewer took the request: open the ComfyUI Image Viewer on the 3D scene "
+                          "(the 3D space), then try again")
+    if state.get("state") == "done":
+        return json.dumps({"status": "ok", "action": action, "result": state.get("result") or {},
+                           "seconds_taken": round(time.time() - t0, 1)})
+    if state.get("state") == "error":
+        return _error(state.get("error") or "the viewer could not do it")
+    return _error(f"timed out waiting for the viewer (last state: {state.get('state') or 'unknown'})")
 
 
 @tool
@@ -196,7 +249,9 @@ def animate_character(
         action: "rig" (controls on a skinned model), "autorig" (SkinTokens or UniRig skeleton + skin for a
             model without one, then controls), "motion" (motion from `prompt`, keyed on the controls), "inbetween" (fill the
             frames between the keyed poses in the range; the keys are hit), "clean_feet" (pin standing feet,
-            keep them above the floor), "export" (FBX or Alembic by the export rule), "remove_rig",
+            keep them above the floor), "export" (FBX, Alembic or USD by the export rule), "remove_rig",
+            "add_motion" (a motion file - media_path, .fbx / .glb / .bvh - put on the character's controls from
+            from_frame; options.how "auto" | "restore" | "bake"),
             "pose" (ONE pose keyed on one frame - see options; humanoids), "pose_presets" (the named poses,
             parts and moves "pose" knows), plus restyle, video_motion, lipsync, layers, constraints, the pose library.
         model: The model item's name or id; empty = the selected one (or the only one).
@@ -207,7 +262,8 @@ def animate_character(
         to_frame: Last frame.
         seed: For repeatable results (motion, inbetween, autorig).
         feet: For motion / inbetween: pin the feet where they stand and keep them above the floor (default on).
-        format: For export: "fbx" (skeleton, skin, keys on every frame) or "abc" (Alembic: baked meshes).
+        format: For export: "fbx" (skeleton, skin, keys on every frame), "abc" (Alembic: baked meshes) or "usd"
+            (skeleton, skin and keys as a USD stage; needs usd-core in ComfyUI's Python).
         humanoid: For rig / autorig: humanoid controls (IK legs and arms, COG) when the skeleton reads as one.
         from_pose: For motion: start from the pose the character is in at from_frame (default on).
         name: For export: the file's name (default the model's). For layer_add: the layer's name. For
@@ -224,7 +280,9 @@ def animate_character(
             the user's last choice, else SkinTokens when it is set up), keep_skeleton (SkinTokens only: keep
             the model's own skeleton, new skin weights only); video_motion: film_from, film_to, step, smooth, in_place, clean
             (Kimodo clean-up), via ("auto" = SAM 3D Body when ComfyUI has it, else MediaPipe; "sam3d";
-            "mediapipe"; the result says read_with), fov (the camera's vertical field of view in degrees); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
+            "mediapipe"; the result says read_with), fov (the camera's vertical field of view in degrees); motion: as_clip
+            (true: the take lands as a clip on an "AI takes" track of the Clip Sequencer and the keys stay as they were -
+            then animate_scene turns clips into turntables and renders); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
             weight; constrain: type (parent | point | orient | aim | scale), driven (item name/id), targets (list),
             maintain_offset, weights, skip, aim; remove_constraint: driven, constraint; list_constraints: item;
             bake_constraints: items, remove; pose_apply: blend, mirror, key;
@@ -253,38 +311,9 @@ def animate_character(
         JSON: {"status": "ok", "action", "result": {...}} - e.g. keys and frames written, the exported path,
         whether the rig is humanoid - or {"status": "error", "error"}.
     """
-    t0 = time.time()
     try:
         body = request_body(action, model, prompt, from_frame, to_frame, seed, feet, format, humanoid, from_pose, name,
                             media_path, strength, layer, options)
     except ValueError as exc:
         return _error(str(exc))
-    try:
-        ask = _client().post("/imageviewer/rig/agent", json_data=body)
-    except Exception as exc:  # noqa: BLE001
-        if "404" in str(exc):
-            return _error("the ComfyUI Image Viewer is not installed, or too old for character rigs "
-                          "(update ComfyUI-ImageViewer and restart ComfyUI)")
-        return _error(f"could not reach the viewer through ComfyUI: {exc}")
-    if not isinstance(ask, dict) or "id" not in ask:
-        return _error(f"unexpected answer from the viewer: {ask!r}")
-    state = ask
-    deadline = t0 + float(timeout_seconds)
-    while time.time() < deadline:
-        time.sleep(1.0)
-        try:
-            state = _client().get("/imageviewer/rig/agent", params={"id": ask["id"]})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("rig request poll failed: %s", exc)
-            continue
-        if state.get("state") in ("done", "error"):
-            break
-        if state.get("state") == "sent" and time.time() - t0 > 30:
-            return _error("no viewer took the request: open the ComfyUI Image Viewer on the 3D scene with the "
-                          "character (the 3D space), then try again")
-    if state.get("state") == "done":
-        return json.dumps({"status": "ok", "action": action, "result": state.get("result") or {},
-                           "seconds_taken": round(time.time() - t0, 1)})
-    if state.get("state") == "error":
-        return _error(state.get("error") or "the viewer could not do it")
-    return _error(f"timed out waiting for the viewer (last state: {state.get('state') or 'unknown'})")
+    return ask_viewer(body, timeout_seconds, what="character rigs")
