@@ -81,6 +81,14 @@ class AnimateCharacterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             a.request_body("video_motion", media_path="walk.mp4", options={"via": "openpose"})
 
+    def test_autorig_engine(self):
+        self.assertEqual(a.request_body("autorig", seed=4, options={"engine": "skintokens", "keep_skeleton": True}),
+                         {"action": "autorig", "seed": 4, "humanoid": True, "engine": "skintokens", "keep_skeleton": True})
+        self.assertEqual(a.request_body("autorig"), {"action": "autorig", "humanoid": True})
+        for opts in ({"engine": "rignet"}, {"engine": "unirig", "keep_skeleton": True}):
+            with self.assertRaises(ValueError):
+                a.request_body("autorig", options=opts)
+
     def test_export_and_checks(self):
         self.assertEqual(a.request_body("export", format=".ABC", to_frame=10),
                          {"action": "export", "format": "abc", "to": 10})

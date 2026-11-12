@@ -10,8 +10,9 @@ Actions:
 
 * ``rig``         controls on a skinned model (humanoid FK + IK + COG when it reads as
                   a humanoid, FK only otherwise - creatures, props);
-* ``autorig``     a model with no skeleton gets one (UniRig: skeleton + skin weights,
-                  any character), then controls;
+* ``autorig``     a model with no skeleton gets one (SkinTokens or UniRig: skeleton + skin
+                  weights, any character), then controls; SkinTokens can also keep a skeleton
+                  the model has and only weight the mesh to it (options.keep_skeleton);
 * ``motion``      motion from text (NVIDIA Kimodo), keyed on the controls from ``from_frame``
                   to ``to_frame``, starting where - and as - the character stands;
 * ``inbetween``   the frames between the keyed poses in the range filled in (the keys are
@@ -64,7 +65,9 @@ OPTION_KEYS = {
     "bake_constraints": ("items", "remove"),
     "pose_apply": ("blend", "mirror", "key"),
     "pose": ("preset", "joints", "hips", "mirror", "ground", "contacts", "limits", "facing", "via", "fov"),
+    "autorig": ("engine", "keep_skeleton"),
 }
+ENGINES = ("skintokens", "unirig")
 
 
 def _client():
@@ -149,6 +152,11 @@ def request_body(action, model="", prompt="", from_frame=None, to_frame=None, se
         body["seed"] = int(seed)
     if action in ("rig", "autorig"):
         body["humanoid"] = bool(humanoid)
+    if action == "autorig":
+        if options.get("engine") not in (None, "", *ENGINES):
+            raise ValueError("options.engine is skintokens or unirig")
+        if options.get("keep_skeleton") and options.get("engine") == "unirig":
+            raise ValueError("only SkinTokens keeps the model's own skeleton (options.engine: skintokens)")
     if action == "export":
         fmt = str(format or "fbx").lower().lstrip(".")
         if fmt not in ("fbx", "abc"):
@@ -185,8 +193,8 @@ def animate_character(
     get_viewer_state() lists the scene's characters: id, name, whether each has a skeleton, a rig, and keys.
 
     Args:
-        action: "rig" (controls on a skinned model), "autorig" (UniRig skeleton + skin for a model without
-            one, then controls), "motion" (motion from `prompt`, keyed on the controls), "inbetween" (fill the
+        action: "rig" (controls on a skinned model), "autorig" (SkinTokens or UniRig skeleton + skin for a
+            model without one, then controls), "motion" (motion from `prompt`, keyed on the controls), "inbetween" (fill the
             frames between the keyed poses in the range; the keys are hit), "clean_feet" (pin standing feet,
             keep them above the floor), "export" (FBX or Alembic by the export rule), "remove_rig",
             "pose" (ONE pose keyed on one frame - see options; humanoids), "pose_presets" (the named poses,
@@ -211,7 +219,10 @@ def animate_character(
             (the whole body every third of a second: least change).
         layer: For motion / inbetween / restyle / video_motion: put the result on a new animation layer, so the
             keys under it stay (pose to pose, then AI on top).
-        options: Extra fields per action - video_motion: film_from, film_to, step, smooth, in_place, clean
+        options: Extra fields per action - autorig: engine ("skintokens": cleaner skin weights, needs a
+            14 GB NVIDIA GPU; "unirig": about 8 GB, works on a Mac; default = the one the viewer offers first:
+            the user's last choice, else SkinTokens when it is set up), keep_skeleton (SkinTokens only: keep
+            the model's own skeleton, new skin weights only); video_motion: film_from, film_to, step, smooth, in_place, clean
             (Kimodo clean-up), via ("auto" = SAM 3D Body when ComfyUI has it, else MediaPipe; "sam3d";
             "mediapipe"; the result says read_with), fov (the camera's vertical field of view in degrees); lipsync: start, seconds, strength, lead; layer_add: mode ("override" | "additive"),
             weight; constrain: type (parent | point | orient | aim | scale), driven (item name/id), targets (list),
