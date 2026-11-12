@@ -76,6 +76,10 @@ class AnimateCharacterTests(unittest.TestCase):
                          {"action": "pose", "image": "D:/refs/dancer.png", "via": "sam3d", "fov": 40, "facing": "picture"})
         with self.assertRaises(ValueError):
             a.request_body("pose", media_path="x.png", options={"via": "openpose"})
+        self.assertEqual(a.request_body("video_motion", media_path="D:/films/walk.mp4", options={"via": "sam3d", "fov": 45}),
+                         {"action": "video_motion", "path": "D:/films/walk.mp4", "feet": True, "via": "sam3d", "fov": 45})
+        with self.assertRaises(ValueError):
+            a.request_body("video_motion", media_path="walk.mp4", options={"via": "openpose"})
 
     def test_export_and_checks(self):
         self.assertEqual(a.request_body("export", format=".ABC", to_frame=10),
