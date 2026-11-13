@@ -16,7 +16,8 @@ tried too). Everything is optional; with neither, the tools answer "Deadline not
 Settings (environment or the app's .env): ``DEADLINE_REPOSITORY`` (informational / checked for reachability),
 ``DEADLINE_WEBSERVICE_URL``, ``DEADLINE_PATH``, ``DEADLINE_COMFYUI_PATH`` (ComfyUI install folder on the workers,
 passed to the plugin as an override of the plugin's own per-OS setting), ``DEADLINE_COMFYUI_POOL``,
-``DEADLINE_GROUP``, ``DEADLINE_OUTPUT_DIR`` (a folder the workers can write: a network path), ``DEADLINE_PRIORITY``.
+``DEADLINE_GROUP``, ``DEADLINE_COMP_PYTHON`` / ``DEADLINE_COMP_SCRIPT`` / ``DEADLINE_COMP_POOL`` (comp renders,
+``submit_comp``: the viewer's comp_render.py on the stock CommandLine plugin), ``DEADLINE_OUTPUT_DIR`` (a folder the workers can write: a network path), ``DEADLINE_PRIORITY``.
 
 Inputs the workflow reads (LoadImage files and so on) are copied next to the outputs into ``_inputs/`` and the
 prompt is rewritten to those names; the plugin uploads them into the worker's ComfyUI before the run. No API key
@@ -391,6 +392,79 @@ def submit(workflow, name: str = "", pool: str = "", group: str = "", priority: 
     return {"status": "submitted", "job_id": job_id, "name": name, "pool": pool, "group": group or None,
             "tasks": _count_frames(frames), "output_dir": str(out), "inputs_staged": inputs,
             "workers_in_pool": ps["worker_count"], "workers_online": ps["online_count"],
+            "hint": "follow it with deadline_job_status(job_id)"}
+
+
+COMP_PLUGIN = "CommandLine"
+
+
+def submit_comp(req: dict) -> dict:
+    """A comp's Write nodes as one Deadline job of the stock ``CommandLine`` plugin: every task runs the viewer's
+    ``scripts/comp_render.py`` on its chunk of frames. ``req`` is what the viewer's ``POST /imageviewer/comp_farm``
+    (``comp_pipeline.farm_request``) builds: {comp, writes, frames "a-b", frame_offset, chunk, pool, group, priority,
+    name, python, script, outputs}. Deadline frames are the comp's frames plus ``frame_offset`` (never below 0).
+
+    The interpreter on the workers is ``DEADLINE_COMP_PYTHON`` (a Python with numpy, Pillow, PyAV - ComfyUI's own
+    venv on a farm share), else ``req["python"]`` (this machine's, which only works where the farm sees the same
+    path); the script likewise ``DEADLINE_COMP_SCRIPT``, else ``req["script"]``. The pool is the request's, else
+    ``DEADLINE_COMP_POOL``, else the ComfyUI pool (its machines have ComfyUI's Python); no ComfyUI runs.
+    """
+    _require_configured()
+    if not isinstance(req, dict):
+        raise FarmError("the comp request is not an object", "args")
+    comp = str(req.get("comp") or "").strip()
+    if not comp:
+        raise FarmError("the request names no comp file", "args")
+    frames = str(req.get("frames") or "").strip()
+    if not re.fullmatch(r"\d+(-\d+)?", frames):
+        raise FarmError(f"frames must be a-b with a >= 0, got {frames!r}", "args")
+    python = _cfg("DEADLINE_COMP_PYTHON") or str(req.get("python") or "")
+    script = _cfg("DEADLINE_COMP_SCRIPT") or str(req.get("script") or "")
+    if not python or not script:
+        raise FarmError("no Python or comp_render.py for the workers: set DEADLINE_COMP_PYTHON and "
+                        "DEADLINE_COMP_SCRIPT to paths the farm machines can reach", "config")
+    pool = str(req.get("pool") or "").strip() or _cfg("DEADLINE_COMP_POOL") or comfyui_pool()
+    ps = _pool_status(pool)
+    if not ps["exists"]:
+        raise FarmError(f"Deadline pool '{pool}' does not exist, so the job would never start. " + _setup_hint(pool),
+                        "config", pool=pool)
+    if not ps["workers"]:
+        raise FarmError(f"Deadline pool '{pool}' has no workers, so the job would never start.", "config", pool=pool)
+    offset = max(0, int(req.get("frame_offset") or 0))
+    chunk = max(1, min(1000, int(req.get("chunk") or 10)))
+    pr = req.get("priority")
+    priority = int(pr) if isinstance(pr, (int, float)) and int(pr) >= 0 else int(_cfg("DEADLINE_PRIORITY", "50") or 50)
+    group = str(req.get("group") or "").strip() or _cfg("DEADLINE_GROUP")
+    name = str(req.get("name") or "").strip() or Path(comp).name
+    writes = [str(w) for w in (req.get("writes") or []) if str(w).strip()]
+    args = f'"{script}" "{comp}"' + (f' --writes "{",".join(writes)}"' if writes else "") \
+        + f" --frames <STARTFRAME>-<ENDFRAME> --frame-offset {offset} --quiet"
+    job = {"Plugin": COMP_PLUGIN, "Name": name, "BatchName": "agentY comps", "Pool": pool, "Group": group or "none",
+           "Priority": priority, "Frames": frames, "ChunkSize": chunk, "Comment": "Comp render submitted by agentY"}
+    for i, out in enumerate((req.get("outputs") or [])[:10]):
+        job[f"OutputDirectory{i}"] = str(out)
+    plug = {"Executable": python, "Arguments": args, "Shell": "default", "ShellExecute": "False",
+            "StartupDirectory": str(Path(comp).parent)}
+    tmp = Path(tempfile.mkdtemp(prefix="agenty_deadline_comp_"))
+    try:
+        if _use_ws():
+            body = {"JobInfo": {k: str(v) for k, v in job.items() if v not in (None, "")},
+                    "PluginInfo": {k: str(v) for k, v in plug.items() if v not in (None, "")}, "AuxFiles": [], "IdOnly": True}
+            r = _ws("POST", "/api/jobs", json=body)
+            job_id = str(r.get("_id") if isinstance(r, dict) else str(r).strip().strip('"'))
+        else:
+            ji, pi = tmp / "job_info.job", tmp / "plugin_info.job"
+            _write_info(ji, job)
+            _write_info(pi, plug)
+            job_id = _kv(_dc([ji, pi], timeout=180)).get("JobID") or ""
+        if not job_id:
+            raise FarmError("Deadline accepted no job", "api")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    lo, _, hi = frames.partition("-")
+    tasks = -(-(int(hi or lo) - int(lo) + 1) // chunk)
+    return {"ok": True, "status": "submitted", "job_id": job_id, "name": name, "pool": pool, "group": group or None,
+            "frames": frames, "frame_offset": offset, "chunk": chunk, "tasks": tasks, "outputs": req.get("outputs") or [],
             "hint": "follow it with deadline_job_status(job_id)"}
 
 
