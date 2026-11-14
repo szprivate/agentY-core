@@ -26,7 +26,7 @@ from agenty_core.tools.animate_character import ask_viewer
 # What the page answers (js/imageViewer_previzAgentScene.js SCENE_AGENT_ACTIONS; the viewer's
 # rig_routes.AGENT_ACTIONS lists them too).
 ACTIONS = (
-    "scene_info", "scene_set", "add_model", "add_shape", "add_camera", "set_camera", "turntable", "render", "playblast",
+    "scene_info", "scene_set", "add_model", "add_shape", "remove_item", "item_set", "add_camera", "set_camera", "turntable", "render", "playblast",
     "key_set", "key_delete", "key_list",
     "layer_set", "layer_remove", "layer_merge_down",
     "display_layer_add", "display_layer_set", "display_layer_list",
@@ -41,6 +41,7 @@ ACTIONS = (
 # What each action needs before it is worth sending (the page checks the rest).
 NEEDS = {
     "add_model": ("path",), "set_camera": ("camera",),
+    "item_set": ("item",),
     "key_set": ("item", "prop"), "key_delete": ("item",), "key_list": ("item",),
     "layer_set": ("layer",), "layer_remove": ("layer",), "layer_merge_down": ("layer",),
     "display_layer_add": ("items",), "display_layer_set": ("layer",),
@@ -118,6 +119,8 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             size in m), color "#rrggbb", parent} (a solid stands on its base: y is its bottom; a cylinder's axis
             is Y - rotation [0, 0, 90] for a wheel). A stand-in (a car, a prop) is a "group" with shapes under
             it (their numbers in the group's space), the group keyed with key_set.
+            "remove_item" {item, or items [..]} (deleted, a group with what it holds - a proxy that is no longer
+            needed goes, or it shows in renders); "item_set" {item, visible, name} (hide / show, rename).
             Cameras (Y up: position and look_at are [x, height, z]): "add_camera" {name, position [x,y,z],
             look_at [x,y,z] (or rotation, degrees XYZ), fov,
             resolution [w,h], parent, active (default true)}, "set_camera" {camera, position, look_at or
@@ -137,7 +140,9 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             with a heads-up display, into the History).
             Keys: "key_set" {item, prop (position | rotation | scale | pivot | fov | ikfk | space | attr:<name> |
             bs:<shape>), frame, value, ease (smooth | linear | hold), axis (0-2 or x/y/z: that axis only), keys (a list
-            of {frame, value, ease, axis} instead), layer (an animation layer's name; "base" = the base)} - the value is
+            of {frame, value, ease, axis} instead), layer (an animation layer's name; "base" = the base), replace
+            (true: the channel's old keys from the first frame given to the last go first - use it whenever you
+            key a new move over a channel that was keyed before, or an old key in between stays)} - the value is
             what the item shows with every layer and clip on top; "key_delete" {item, prop, frame / frames (none = all)};
             "key_list" {item, frame} (keys per channel and the values at the frame).
             Animation layers (animate_character layer_add / layer_list make and list them): "layer_set" {layer,
