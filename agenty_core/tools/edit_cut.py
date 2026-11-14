@@ -322,6 +322,136 @@ def marked_sources(otio: str, start: int, end: int) -> dict:
     return _marked_of(r, int(start), int(end))
 
 
+#: Seconds a picture lasts in a new cut when no length is given (the Edit panel's drop does the same).
+STILL_SECONDS = 3.0
+
+#: Seconds a film may take to render in ComfyUI's process before edit_cut stops waiting.
+RENDER_WAIT = 1800
+
+_STILL_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".exr", ".gif"}
+
+
+def _probe(paths: list[str]) -> dict:
+    """The viewer's ``/imageviewer/timeline_probe`` for *paths*: ``{path: {duration, still, width,
+    height, fps} | {error}}``; ``{}`` when the route cannot be reached."""
+    from agenty_core.utils.comfyui_client import get_client
+    try:
+        r = get_client().post("/imageviewer/timeline_probe", json_data={"paths": paths})
+    except Exception:  # noqa: BLE001 - the lengths are then asked for
+        return {}
+    return (r.get("info") or {}) if isinstance(r, dict) else {}
+
+
+def new_cut(op: dict) -> dict:
+    """Start a cut file of its own (``{"op": "new"}``): the viewer's ``POST /imageviewer/timeline``
+    with ``new``, saved where the export rule puts a cut, with ``files`` laid on V1 one after the
+    other (a cut cannot be empty). ``{"otio", "length"}`` or ``{"error"}``."""
+    from agenty_core.utils.comfyui_client import get_client
+    files = op.get("files")
+    if isinstance(files, (str, dict)):
+        files = [files]
+    files = [{"file": f} if isinstance(f, str) else f for f in (files or []) if f]
+    if not files or not all(isinstance(f, dict) and str(f.get("file") or "").strip() for f in files):
+        return {"error": ('new: give "files", the clips the cut starts with, in play order - '
+                          '[path, ...] or [{"file", "in", "length", "transition"}, ...]; a cut cannot be empty')}
+    for f in files:
+        why = _guard(str(f["file"]))
+        if why:
+            return {"error": why}
+    info = _probe([str(f["file"]) for f in files])
+    clips = []
+    for i, f in enumerate(files, 1):
+        path = str(f["file"])
+        got = info.get(path) if isinstance(info.get(path), dict) else {}
+        still = bool(got.get("still")) if got else os.path.splitext(path)[1].lower() in _STILL_EXTS
+        if got.get("error"):
+            return {"error": f"new: clip {i} ({os.path.basename(path)}): {got['error']}"}
+        start = _r(f.get("in"))
+        if f.get("length") is not None:
+            length = _r(f.get("length"))
+        elif still:
+            length = STILL_SECONDS
+        elif float(got.get("duration") or 0) > start:
+            length = round(float(got["duration"]) - start, 3)
+        else:
+            return {"error": f"new: clip {i} ({os.path.basename(path)}): its length is not known - give \"length\""}
+        clip = {"file": path, "in": start, "length": length,
+                "name": str(f.get("name") or os.path.splitext(os.path.basename(path))[0])[:200]}
+        if i > 1 and _r(f.get("transition")) > 0:
+            clip["transition"] = _r(f.get("transition"))
+        clips.append(clip)
+    # The film's size and rate: the first film's, else the first picture's size (the panel's rule
+    # for a first clip, with a film preferred so that stills are fitted into the film's frame).
+    settings = dict(op.get("settings")) if isinstance(op.get("settings"), dict) else {}
+    if not settings:
+        firsts = [info.get(str(f["file"])) or {} for f in files]
+        film = next((g for g in firsts if g.get("fps") and not g.get("still")), None)
+        pic = film or next((g for g in firsts if g.get("width")), None)
+        if pic and pic.get("width") and pic.get("height"):
+            settings.update(width=int(pic["width"]), height=int(pic["height"]))
+        if film:
+            settings["fps"] = float(film["fps"])
+    edit = {"clips": clips, "texts": [], "sound": [], "tracks": []}
+    if settings:
+        edit["settings"] = settings
+    body = {"new": True, "name": str(op.get("name") or "cut")[:120], "edit": edit}
+    if op.get("context"):
+        body["context"] = op["context"]
+    try:
+        r = get_client().post("/imageviewer/timeline", json_data=body)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"new: the cut was not made ({_said(_answer_text(e))})"}
+    if not isinstance(r, dict) or not r.get("otio"):
+        return {"error": f"new: the cut was not made ({_said(r)})"}
+    return {"otio": str(r.get("path") or r["otio"]), "settings": settings}
+
+
+def _open_new(otio: str) -> bool:
+    """Open a cut just made in the viewer's Edit panel (``/imageviewer/push`` opens a lone .otio as a
+    cut), so the user sees it and the next changes land in the open panel."""
+    try:
+        from agenty_core.tools.show_in_viewer import open_in_viewer
+        got = open_in_viewer([otio], panel="edit")
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(got, dict) and not got.get("error")
+
+
+def _answer_text(e: Exception) -> str:
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            return str(resp.text or e)[:300]
+        except Exception:  # noqa: BLE001
+            pass
+    return str(e)[:300]
+
+
+def export_cut(otio: str, op: dict) -> dict:
+    """Render the saved cut into a film (``{"op": "export"}``): the viewer's ``POST
+    /imageviewer/timeline_render``, in ComfyUI's process, where the export rule puts a film -
+    always the next version, never over a file. ``{"film", "name", "frames", ...}`` or ``{"error"}``."""
+    from agenty_core.utils.comfyui_client import get_client
+    body = {"path": otio, "external": 1, "format": str(op.get("format") or "mp4").lower(),
+            "quality": str(op.get("quality") or "high")}
+    for k in ("name", "codec", "context"):
+        if op.get(k):
+            body[k] = op[k]
+    if isinstance(op.get("frames"), list):
+        body["frames"] = op["frames"]
+    try:
+        r = get_client().post("/imageviewer/timeline_render", json_data=body, timeout=RENDER_WAIT)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"export: not rendered ({_said(_answer_text(e))})"}
+    if not isinstance(r, dict) or not r.get("path"):
+        return {"error": f"export: not rendered ({_said(r)})"}
+    out = {"film": str(r["path"]), "name": str(r.get("name") or os.path.basename(str(r["path"])))}
+    for k in ("frames", "fps", "width", "height", "seconds", "duration", "version", "notes"):
+        if r.get(k) not in (None, "", []):
+            out[k] = r[k]
+    return out
+
+
 @tool
 def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_out: int = -1) -> str:
     """Read the cut open in the ComfyUI Image Viewer's Edit panel (or any .otio cut), and change it:
@@ -343,8 +473,20 @@ def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_
     under the whole film, V2.. / A2.. = clips placed at a moment of the film. Clips are
     numbered from 1 on each track, in play order. Times are seconds of the film.
 
+    A NEW cut (none open, none to change): the first op ``{"op": "new", "name": "promo", "files":
+    [path, ... | {"file", "in", "length", "transition"}, ...]}`` makes one - saved where the export
+    rule puts a cut, the files on V1 one after the other (a picture lasts 3 s unless ``length`` says
+    otherwise, a film its whole length from ``in``; ``transition`` = the dissolve into that clip),
+    its frame size and rate the first film's. The ops after it change that cut. Never write an .otio
+    yourself.
+
+    The FILM of a cut: the last op ``{"op": "export", "name": "", "format": "mp4", "quality":
+    "high"}`` renders the cut as saved (after the ops before it) in ComfyUI's process, where the
+    export rule puts a film - the next version, never over a file; the answer's ``export.film`` is
+    its path. Show it with show_in_viewer.
+
     Args:
-        otio: The cut's .otio path; "" for the cut open in the Edit panel.
+        otio: The cut's .otio path; "" for the cut open in the Edit panel (or the one ``new`` makes).
         ops: Leave empty to READ the cut (tracks and clips with their times). To change it,
             a list (all done, or none):
             ``{"op": "add", "file": <audio/video/image path>, "at": 8.25, "track": "",
@@ -405,6 +547,23 @@ def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_
     if not isinstance(ops, list):
         return _j({"status": "error", "error": "ops is a list of changes"})
     otio = str(otio or "").strip()
+    first = ops[0] if ops and isinstance(ops[0], dict) else {}
+    last = ops[-1] if ops and isinstance(ops[-1], dict) else {}
+    if any(isinstance(o, dict) and o.get("op") == "new" for o in ops[1:]):
+        return _j({"status": "error", "error": '"new" can only be the first op'})
+    if any(isinstance(o, dict) and o.get("op") == "export" for o in ops[:-1]):
+        return _j({"status": "error", "error": '"export" can only be the last op'})
+    made = None
+    if first.get("op") == "new":
+        made = new_cut(first)
+        if made.get("error"):
+            return _j({"status": "error", "error": made["error"]})
+        otio = made["otio"]
+        ops = ops[1:]
+    export = None
+    if last.get("op") == "export" and ops and ops[-1] is last:
+        export = last
+        ops = ops[:-1]
     try:
         fin, fout = int(frame_in), int(frame_out)
     except (TypeError, ValueError):
@@ -483,6 +642,14 @@ def edit_cut(otio: str = "", ops: list | None = None, frame_in: int = -1, frame_
         out["texts_auto_select_off"] = True
     if marks is not None:
         out["marked"] = _marked_of(r, *marks)
+    if made is not None:
+        out["new"] = True
+        out["opened"] = bool(_open_new(out["otio"]))
+    if export is not None:
+        out["export"] = export_cut(out["otio"], export)
+        if out["export"].get("error"):
+            out["status"] = "error"
+            out["error"] = out["export"]["error"]
     if ops:
         out["said"] = [str(s)[:200] for s in (r.get("said") or [])][:50]
         out["pushed"] = bool(r.get("pushed"))
