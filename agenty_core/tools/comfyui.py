@@ -194,9 +194,12 @@ def _server_validate(workflow: dict) -> dict:
                     _running = _vc.get("/queue").get("queue_running") or []
                     # Interrupt ONLY when our validation prompt is the SOLE running
                     # job — never blanket-kill a render that started meanwhile.
+                    # By prompt_id, so ComfyUI stops it only if it is still OUR
+                    # prompt that runs (a bare /interrupt is "Global interrupt":
+                    # whatever started between the check and the post goes too).
                     if (len(_running) == 1 and isinstance(_running[0], (list, tuple))
                             and len(_running[0]) > 1 and _running[0][1] == _vpid):
-                        _vc.post("/interrupt", json_data={})
+                        _vc.post("/interrupt", json_data={"prompt_id": _vpid})
                 except Exception:
                     pass
     except Exception as e:
@@ -2285,7 +2288,17 @@ def interrupt_execution(include_other_conversations: bool = False) -> str:
         others = [] if include_other_conversations else _running_for_others(client)
         if others:
             return _not_yours(others)
-        return json.dumps(client.post("/interrupt", json_data={}))
+        # By prompt_id when one job runs, so a job that starts in the meantime is
+        # not stopped with it; a bare /interrupt only when ComfyUI reports none.
+        body: dict = {}
+        try:
+            running = client.get("/queue").get("queue_running") or []
+            if (len(running) == 1 and isinstance(running[0], (list, tuple))
+                    and len(running[0]) > 1 and isinstance(running[0][1], str)):
+                body = {"prompt_id": running[0][1]}
+        except Exception:
+            pass
+        return json.dumps(client.post("/interrupt", json_data=body))
     except Exception as e:
         return json.dumps({"error": str(e)})
 
