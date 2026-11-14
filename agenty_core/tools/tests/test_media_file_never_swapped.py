@@ -41,6 +41,25 @@ class MediaFileNeverSwapped(unittest.TestCase):
         self.assertEqual(n["inputs"]["image"], "agent/c.png")
         self.assertEqual(len(unres), 1)
 
+    def test_empty_image_is_missing_not_the_first_file(self):
+        """A template's LoadImage left empty once rendered a stranger's still from the input folder."""
+        n = {"class_type": "LoadImage", "inputs": {"image": ""}}
+        missing = harden_node_inputs(n, IMG_REQ, [], None, None, [], [])
+        self.assertEqual(missing, ["image"])
+        self.assertEqual(n["inputs"]["image"], "")
+
+    def test_absent_image_is_missing_not_the_first_file(self):
+        n = {"class_type": "LoadImage", "inputs": {}}
+        missing = harden_node_inputs(n, IMG_REQ, [], None, None, [], [])
+        self.assertEqual(missing, ["image"])
+        self.assertNotIn("image", n["inputs"])
+
+    def test_absent_enum_still_gets_its_first_option(self):
+        n = {"class_type": "X", "inputs": {}}
+        missing = harden_node_inputs(n, {"mode": [["fast", "slow"], {}]}, [], None, None, [], [])
+        self.assertEqual(missing, [])
+        self.assertEqual(n["inputs"]["mode"], "fast")
+
     def test_same_file_in_another_folder_is_found(self):
         n = {"class_type": "LoadVideo", "inputs": {"file": "other.mov"}}
         unres = []
