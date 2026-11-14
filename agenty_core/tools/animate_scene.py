@@ -113,7 +113,11 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
 
     Args:
         action: One of -
-            Scene: "scene_info" (everything: items, cameras, clips, layers), "scene_set" {length, fps, frame},
+            Scene: "scene_info" (everything: items, cameras, clips, layers), "scene_set" {length, fps, frame, environment}
+            (environment = the world's sky / sun / fog / ambient / render, merged into its one Environment:
+            {"sky": {"top": "#rrggbb", "horizon": ..., "bottom": ...}, "sun": {"azimuth", "elevation", "intensity"},
+            "fog": {"color", "density"}} - the backdrop past a terrain's edges; a big sphere as a sky dome does not
+            show from inside),
             "add_model" {path, name, position, rotation, scale, size} (a model file into this scene; path = the
             file's absolute path, or one relative to ComfyUI's output folder ("agent/models/car.glb", or with an
             output/ / input/ / temp/ prefix); a file that is not there is an error; size = its
@@ -134,8 +138,9 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             turn over EACH clip's frames) or from / to, degrees (360), start_yaw (0 = in front of a character facing
             +Z), distance (m; 0 = fit the subject), height (m above the look point; default a fifth of the
             distance), look_height (m above the subject's centre), fov, resolution, name ("Turntable"), active}
-            - one pivot + camera rig ("Turntable cam"), framed on the subject's box over each range; follow true
-            (follow_step, frames, default 4) for a subject that MOVES (a car driving): the turn stays centred on it
+            - one pivot + camera rig ("Turntable cam"), framed on the subject's box over each range; a subject that
+            MOVES (a car driving) is followed by itself (follow false turns about one place; follow_step, frames,
+            default 4): the turn stays centred on it
             frame by frame, at one frame's size - an orbit round a driving car is this, not set_camera keys.
             Render: "render" {camera (name; "" = the free view; default the active one), clip (that clip's frames)
             or from / to, name (the file: output/previz/<name>.<format> by the export rule), format (mp4 | mov |
