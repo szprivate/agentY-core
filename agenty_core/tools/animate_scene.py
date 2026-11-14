@@ -116,7 +116,8 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             "add_model" {path, name, position, rotation, scale} (a model file into this scene).
             Cameras (Y up: position and look_at are [x, height, z]): "add_camera" {name, position [x,y,z],
             look_at [x,y,z] (or rotation, degrees XYZ), fov,
-            resolution [w,h], parent, active (default true)}, "set_camera" {camera, fov, resolution, active},
+            resolution [w,h], parent, active (default true)}, "set_camera" {camera, position, look_at or
+            rotation, fov, resolution, active, frame (a camera that animates gets a key there)},
             "turntable" {target (item or list; default every model), clips ("all" or a list of clip names: a full
             turn over EACH clip's frames) or from / to, degrees (360), start_yaw (0 = in front of a character facing
             +Z), distance (m; 0 = fit the subject), height (m above the look point; default a fifth of the
