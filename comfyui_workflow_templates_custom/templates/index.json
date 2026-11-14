@@ -1694,5 +1694,45 @@
         }
       }
     ]
+  },
+  {
+    "templates": [
+      {
+        "name": "ltx2_5_layout_to_render",
+        "description": "local LTX-2.5 IC-LoRA: previz or clay playblast (video) + look frame (image) + prompt -> rendered shot that keeps the camera; sizes divisible by 64, frames 8k+1, 24 fps. Layout-to-render IC-LoRA (LTX2\\ltx-2.5-22b-ic-lora-layout-to-render-1.0.safetensors) on LTX-2.5 22B distilled (int8 convrot transformer, LTX2\\ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors), two stages: 8 steps at the layout's size (shorter side 544), then the latent upscaled 2x and re-sampled. Built from Lightricks' official LTX-2.5_ICLoRA_Layout_To_Render_Two_Stage_Distilled graph. Inputs: the layout clip in LoadVideo (5001, title 'Load Video'; its length and frame rate set the shot's), the look still in LoadImage (9009, 'Load Image'; it guides the look, not the first frame), the words in 'Prompt (positive)' (5508) and 'Prompt (negative)' (5509). Gemma text encoder on the CPU; the Gemma API text-encode nodes stay unused and no LTX API key is needed or sent. Output: SaveVideo ltx_vfx/layout_to_render, with sound. Not yet measured on this machine.",
+        "models": [
+          "ltx-2.5-audio-vae-bf16",
+          "ltx-2.5-video-vae-bf16",
+          "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot",
+          "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot",
+          "ltx-2.5-22b-ic-lora-layout-to-render-1.0",
+          "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0"
+        ],
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 5001,
+              "nodeType": "LoadVideo",
+              "file": "",
+              "mediaType": "video"
+            },
+            {
+              "nodeId": 9009,
+              "nodeType": "LoadImage",
+              "file": "",
+              "mediaType": "image"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 4852,
+              "nodeType": "SaveVideo",
+              "file": "",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
   }
 ]
