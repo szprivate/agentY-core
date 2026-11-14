@@ -114,7 +114,9 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
     Args:
         action: One of -
             Scene: "scene_info" (everything: items, cameras, clips, layers), "scene_set" {length, fps, frame},
-            "add_model" {path, name, position, rotation, scale, size} (a model file into this scene; size = its
+            "add_model" {path, name, position, rotation, scale, size} (a model file into this scene; path = the
+            file's absolute path, or one relative to ComfyUI's output folder ("agent/models/car.glb", or with an
+            output/ / input/ / temp/ prefix); a file that is not there is an error; size = its
             longest side in metres - a car "4.7 m long" is size 4.7, NOT scale 4.7: scale multiplies the file's own
             size, whatever its units. Check which way the model faces with key_list / scene_info before turning it:
             a model already facing +Z drives forwards along +Z with rotation 0).
