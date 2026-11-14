@@ -5263,6 +5263,37 @@ def _paint_canvas_size(input_nodes: list) -> tuple | None:
     return None
 
 
+# Inputs a node that only holds a text (a prompt primitive, a string node) keeps it under.
+_TEXT_HOLDER_INPUTS = ("value", "text", "string", "prompt")
+
+
+def _write_prompt_text(workflow: dict, nid: str, slot: str, text: str, _depth: int = 0) -> str:
+    """Put a prompt where a node reads it, and say where that was.
+
+    When ``nid``'s ``slot`` is wired to another node (a template's "Prompt (positive)" primitive feeding
+    its encoders), the text goes into that node instead of replacing the link: writing it onto the encoder
+    cut the primitive off, so the other nodes it feeds kept the template's prompt and a later edit of the
+    primitive changed nothing (the promo's LTX render, 2026-11-14). A link to a node that is not a plain
+    text holder (one that makes its text - a concatenation, an LLM) is replaced as before.
+    """
+    inputs = workflow[nid].setdefault("inputs", {})
+    cur = inputs.get(slot)
+    if (_depth < 8 and isinstance(cur, list) and len(cur) == 2 and str(cur[0]) in workflow
+            and isinstance(workflow[str(cur[0])], dict)):
+        src = str(cur[0])
+        src_inputs = workflow[src].get("inputs") or {}
+        for key in _TEXT_HOLDER_INPUTS:
+            val = src_inputs.get(key)
+            others = [k for k, v in src_inputs.items() if k != key and isinstance(v, list)]
+            if isinstance(val, str) and not others:
+                src_inputs[key] = text
+                return f"{src}.inputs.{key} (feeds {nid}.inputs.{slot})"
+            if isinstance(val, list) and not others:
+                return _write_prompt_text(workflow, src, key, text, _depth + 1) + f" (feeds {nid}.inputs.{slot})"
+    inputs[slot] = text
+    return f"{nid}.inputs.{slot}"
+
+
 @tool
 def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
     """Apply a brainbriefing to a loaded workflow template in one atomic step.
@@ -5377,11 +5408,8 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         if not text:
             applied.append(f"prompt_nodes: node '{pn_nid}' role='{role}' — no text provided (skipped)")
             continue
-        node = workflow[pn_nid]
-        if "inputs" not in node:
-            node["inputs"] = {}
-        node["inputs"][slot] = text
-        applied.append(f"Node {pn_nid}.inputs.{slot} → ({role} prompt, {len(text)} chars)")
+        where = _write_prompt_text(workflow, pn_nid, slot, text)
+        applied.append(f"Node {where} → ({role} prompt, {len(text)} chars)")
         handled_nids.add(pn_nid)
 
     # ── 2b. positive_prompt_node_id (explicit), then heuristic ───────────────
@@ -5402,9 +5430,8 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
             # below rather than failing.
             applied.append(f"positive_prompt_node_id '{pos_nid}' not in workflow — using heuristic")
         else:
-            node = workflow[pos_nid]
-            node.setdefault("inputs", {})["text"] = positive_text
-            applied.append(f"Node {pos_nid}.inputs.text → (positive prompt, {len(positive_text)} chars)")
+            where = _write_prompt_text(workflow, pos_nid, "text", positive_text)
+            applied.append(f"Node {where} → (positive prompt, {len(positive_text)} chars)")
             handled_nids.add(pos_nid)
             positive_injected = True
     # Heuristic: no explicit target — inject into the unambiguous positive
@@ -5435,9 +5462,8 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
         target = preferred or (cands[0] if len(cands) == 1 else
                                (min(cands, key=lambda n: (len(str(n)), str(n))) if cands else None))
         if target:
-            node = workflow[target]
-            node.setdefault("inputs", {})["text"] = positive_text
-            applied.append(f"Node {target}.inputs.text → (positive prompt, heuristic, {len(positive_text)} chars)")
+            where = _write_prompt_text(workflow, target, "text", positive_text)
+            applied.append(f"Node {where} → (positive prompt, heuristic, {len(positive_text)} chars)")
             handled_nids.add(target)
             positive_injected = True
         elif cands:
@@ -5475,9 +5501,9 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
                 # Prefer a ``prompt`` input over ``text``, then the lowest node id.
                 _pref = [c for c in _api_cands if c[1] == "prompt"] or _api_cands
                 _tnid, _tname = min(_pref, key=lambda c: (len(str(c[0])), str(c[0])))
-                workflow[_tnid].setdefault("inputs", {})[_tname] = positive_text
+                _where = _write_prompt_text(workflow, _tnid, _tname, positive_text)
                 applied.append(
-                    f"Node {_tnid}.inputs.{_tname} → (positive prompt, api-node, "
+                    f"Node {_where} → (positive prompt, api-node, "
                     f"{len(positive_text)} chars)"
                 )
                 handled_nids.add(_tnid)
@@ -5507,11 +5533,8 @@ def apply_brainbriefing(workflow_path: str, brainbriefing_json: str) -> str:
                 neg_nid = nid
                 break
         if neg_nid:
-            node = workflow[neg_nid]
-            if "inputs" not in node:
-                node["inputs"] = {}
-            node["inputs"]["text"] = negative_text
-            applied.append(f"Node {neg_nid}.inputs.text → (negative prompt, {len(negative_text)} chars)")
+            where = _write_prompt_text(workflow, neg_nid, "text", negative_text)
+            applied.append(f"Node {where} → (negative prompt, {len(negative_text)} chars)")
         else:
             # Non-fatal: many modern pipelines have no negative prompt node
             applied.append("negative prompt: no matching node found (skipped)")
