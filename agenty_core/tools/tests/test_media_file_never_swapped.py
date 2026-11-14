@@ -115,3 +115,16 @@ class ThroughUpdateWorkflow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_picture_in_a_video_loader_is_an_error():
+    from agenty_core.tools.assembly_deterministic import wrong_media_kind
+    bad = wrong_media_kind({"class_type": "LoadVideo", "inputs": {"file": "image_00009_.png"}})
+    assert bad and "image file" in bad[0] and "loads video" in bad[0]
+    assert wrong_media_kind({"class_type": "LoadVideo", "inputs": {"file": "previz.mp4"}}) == []
+    assert wrong_media_kind({"class_type": "LoadImage", "inputs": {"image": "shot.mov", "upload": "image"}})
+    assert wrong_media_kind({"class_type": "LoadImage", "inputs": {"image": "look.png"}}) == []
+    assert wrong_media_kind({"class_type": "LoadAudio", "inputs": {"audio": "song.wav"}}) == []
+    # Not a loader, or no one kind in the name: nothing said.
+    assert wrong_media_kind({"class_type": "SaveImage", "inputs": {"filename_prefix": "x.mp4"}}) == []
+    assert wrong_media_kind({"class_type": "LoadImageFromVideo", "inputs": {"file": "a.png"}}) == []
