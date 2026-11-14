@@ -57,14 +57,36 @@ class InterruptOwnership(unittest.TestCase):
         queue_ledger.remember("p-a", owner="chat-a")
         client = _Client("p-a")
         self.run_with(client, comfyui.interrupt_execution, include_other_conversations=True)
-        self.assertEqual(client.posts, [("/interrupt", {})])
+        self.assertEqual(client.posts, [("/interrupt", {"prompt_id": "p-a"})])
 
     def test_its_own_job_or_the_users_is_stopped(self):
         queue_ledger.remember("p-b", owner="chat-b")
         for pid in ("p-b", "p-user"):
             client = _Client(pid)
             self.run_with(client, comfyui.interrupt_execution)
-            self.assertEqual(client.posts, [("/interrupt", {})], pid)
+            self.assertEqual(client.posts, [("/interrupt", {"prompt_id": pid})], pid)
+
+    def test_nothing_running_is_a_plain_interrupt(self):
+        client = _Client(None)
+        self.run_with(client, comfyui.interrupt_execution)
+        self.assertEqual(client.posts, [("/interrupt", {})])
+
+    def test_server_validation_stops_only_its_own_prompt(self):
+        """Validation submits the graph and stops it again: by its prompt_id, never a global interrupt."""
+        class _V(_Client):
+            api_key = ""
+
+            def post(self, path, json_data=None):
+                self.posts.append((path, json_data))
+                if path == "/prompt":
+                    self.running = "p-val"
+                    return {"prompt_id": "p-val"}
+                return {}
+        client = _V(None)
+        with mock.patch.object(comfyui, "get_client", return_value=client):
+            self.assertEqual(comfyui._server_validate({"1": {"class_type": "X", "inputs": {}}}), {})
+        self.assertIn(("/interrupt", {"prompt_id": "p-val"}), client.posts)
+        self.assertNotIn(("/interrupt", {}), client.posts)
 
     def test_clear_running_follows_the_same_rule(self):
         queue_ledger.remember("p-a", owner="chat-a")
