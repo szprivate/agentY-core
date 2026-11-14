@@ -855,7 +855,11 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
                 default = spec[1]["default"]
             else:
                 _opts = combo_options(spec)
-                default = _opts[0] if _opts else None
+                # A loader's file is never the folder's first one: that is whatever
+                # someone left in ComfyUI's input folder (a run of the LTX layout
+                # template whose LoadImage was never set rendered a stranger's
+                # still). It stays missing until the file is named.
+                default = _opts[0] if _opts and not _is_media_file_combo("", _opts) else None
             if default is not None:
                 node.setdefault("inputs", {})[req_name] = default
             else:
@@ -872,6 +876,12 @@ def harden_node_inputs(node: dict, required: dict, missing_models: list | None =
         copts = combo_options(cspec)
         if copts:
             if cval in copts:
+                continue
+            # An empty loader file (a template's slot nobody filled) is no file at
+            # all: report it as missing, never let a later step pick one for it.
+            if isinstance(cval, str) and not cval.strip() and _is_media_file_combo(cval, copts):
+                if cinp in required:
+                    missing.append(cinp)
                 continue
             # A non-string value in a combo slot (e.g. an int written into
             # scale_method by a shifted widget mapping) can never be valid —
