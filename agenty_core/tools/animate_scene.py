@@ -26,7 +26,7 @@ from agenty_core.tools.animate_character import ask_viewer
 # What the page answers (js/imageViewer_previzAgentScene.js SCENE_AGENT_ACTIONS; the viewer's
 # rig_routes.AGENT_ACTIONS lists them too).
 ACTIONS = (
-    "scene_info", "scene_set", "add_model", "add_camera", "set_camera", "turntable", "render", "playblast",
+    "scene_info", "scene_set", "add_model", "add_shape", "add_camera", "set_camera", "turntable", "render", "playblast",
     "key_set", "key_delete", "key_list",
     "layer_set", "layer_remove", "layer_merge_down",
     "display_layer_add", "display_layer_set", "display_layer_list",
@@ -114,6 +114,10 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
         action: One of -
             Scene: "scene_info" (everything: items, cameras, clips, layers), "scene_set" {length, fps, frame},
             "add_model" {path, name, position, rotation, scale} (a model file into this scene).
+            "add_shape" {type box|sphere|plane|cylinder|cone|torus|group, name, position, rotation, scale (its
+            size in m), color "#rrggbb", parent} (a solid stands on its base: y is its bottom; a cylinder's axis
+            is Y - rotation [0, 0, 90] for a wheel). A stand-in (a car, a prop) is a "group" with shapes under
+            it (their numbers in the group's space), the group keyed with key_set.
             Cameras (Y up: position and look_at are [x, height, z]): "add_camera" {name, position [x,y,z],
             look_at [x,y,z] (or rotation, degrees XYZ), fov,
             resolution [w,h], parent, active (default true)}, "set_camera" {camera, position, look_at or
@@ -122,7 +126,9 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             turn over EACH clip's frames) or from / to, degrees (360), start_yaw (0 = in front of a character facing
             +Z), distance (m; 0 = fit the subject), height (m above the look point; default a fifth of the
             distance), look_height (m above the subject's centre), fov, resolution, name ("Turntable"), active}
-            - one pivot + camera rig ("Turntable cam"), framed on the subject's box over each range.
+            - one pivot + camera rig ("Turntable cam"), framed on the subject's box over each range; follow true
+            (follow_step, frames, default 4) for a subject that MOVES (a car driving): the turn stays centred on it
+            frame by frame, at one frame's size - an orbit round a driving car is this, not set_camera keys.
             Render: "render" {camera (name; "" = the free view; default the active one), clip (that clip's frames)
             or from / to, name (the file: output/previz/<name>.<format> by the export rule), format (mp4 | mov |
             webm | png), shading (original | clay | normal | wireframe), width / height (else the camera's),
