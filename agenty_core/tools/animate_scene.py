@@ -146,9 +146,12 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             keeps looking at it, so a car DRIVES THROUGH the picture instead of standing still in its middle
             (with degrees small, e.g. 30-90, for a tracking shot that falls behind; lag 0 = locked on).
             "ground" {item, terrain (default the only one; none = y 0), step (frames: also key it every step
-            frames, so a drive follows the floor between its keys)} - stands an item's BOTTOM on the ground:
-            a static item is moved, an animated one gets every position key's height set; use it after keying
-            a drive (a model's origin is often its middle, so keying y = the floor sinks it halfway).
+            frames, so a drive follows the hills between its keys - 2-3 for a car on hills), tilt (default true:
+            leans it with the slope, heading kept; false = level), clearance (m, default 0.01)} - stands an item
+            on the ground: turned to the slope under its ends, then lifted until no part of its underside is
+            below the terrain (no wheels in the ground); a static item is moved, an animated one gets position
+            and rotation keys. Use it AFTER keying a drive, and again after any change to the terrain (sculpt,
+            erode) - a model's origin is often its middle, so keying y = the floor sinks it halfway.
             Render: "render" {camera (name; "" = the free view; default the active one), clip (that clip's frames)
             or from / to, name (the file: output/previz/<name>.<format> by the export rule), format (mp4 | mov |
             webm | png), shading (original | clay | normal | wireframe), width / height (else the camera's),
