@@ -106,12 +106,16 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
     animate_character does a character's rig and AI motion; this does the rest of the 3D space. The browser
     must be open on the 3D scene. get_viewer_state() shows its shot, cameras, clips and layers (scene3d).
     Items, clips, tracks, sources and layers are named by their name (or id). Every change is one undo step.
+    The 3D space is Y UP, in metres: [x, y, z] is x across, y the HEIGHT, z along the ground (a camera 1.6 m
+    above flat ground at the origin is [0, 1.6, 0]); never Z up as in some DCCs. On a terrain, take the ground's
+    height from terrain_height and add to y.
 
     Args:
         action: One of -
             Scene: "scene_info" (everything: items, cameras, clips, layers), "scene_set" {length, fps, frame},
             "add_model" {path, name, position, rotation, scale} (a model file into this scene).
-            Cameras: "add_camera" {name, position [x,y,z], look_at [x,y,z] (or rotation, degrees XYZ), fov,
+            Cameras (Y up: position and look_at are [x, height, z]): "add_camera" {name, position [x,y,z],
+            look_at [x,y,z] (or rotation, degrees XYZ), fov,
             resolution [w,h], parent, active (default true)}, "set_camera" {camera, fov, resolution, active},
             "turntable" {target (item or list; default every model), clips ("all" or a list of clip names: a full
             turn over EACH clip's frames) or from / to, degrees (360), start_yaw (0 = in front of a character facing
@@ -157,7 +161,8 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             points [[x, z], ...] (a polyline), radius (m), strength (0-1), hardness (0-1), passes (1-20; more =
             stronger), to (flatten: metres above the terrain's base; default the height under the first point),
             amount (raise / lower: metres in all)}], pause (ms between strokes, default 150)} - a road is a
-            flatten stroke along it, a ridge a raise; "terrain_paint" {terrain, strokes [{layer (0-3 or its name),
+            flatten stroke along it, a ridge a raise with a WIDE radius (a tenth of the terrain or more) and amount
+            set to its height in metres (passes at full strength stack up into a spike); "terrain_paint" {terrain, strokes [{layer (0-3 or its name),
             points, radius, strength, erase}]} (the ground layers, over the slope and height rules);
             "terrain_clear" {terrain, what (sculpt | layer_paint | scatter_paint + scatter)}; "terrain_height"
             {terrain, points [[x, z], ...]} -> the ground's world y there (stand a model or a camera on it);
