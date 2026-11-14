@@ -5077,6 +5077,9 @@ def update_workflow(
         )
         for _bad in _flatten(node, required, optional):
             local_errors.append(f"Node {nid} ({cls}): {_bad}.")
+        from agenty_core.tools.assembly_deterministic import wrong_media_kind as _wrong_kind  # noqa: PLC0415
+        for _bad in _wrong_kind(node):
+            local_errors.append(f"Node {nid} ({cls}): {_bad}.")
         for _key in _undeclared_wires(node, required, optional, node_info):
             local_errors.append(_undeclared_wire_error(nid, cls, _key, node, required, optional))
         node_inputs = node.get("inputs", {})

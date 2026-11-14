@@ -351,6 +351,42 @@ def _is_media_file_combo(cval, copts) -> bool:
     return _isf(cval) or (bool(copts) and _isf(copts[0]))
 
 
+_KIND_EXTS = {
+    "image": (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".exr"),
+    "video": (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mxf"),
+    "audio": (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"),
+}
+
+
+def wrong_media_kind(node: dict) -> list[str]:
+    """A loader handed the wrong kind of file: a picture in a video loader, a film in an image loader.
+
+    ComfyUI takes it and the run goes wrong without a word (the promo's layout-to-render got
+    its look frame as the layout video, after a patch landed on the wrong input). The kind a
+    loader wants is read off its class name (LoadVideo, LoadImage, LoadAudio, VHS_LoadVideo, ...);
+    only a string input whose extension names another kind is reported.
+    """
+    cls = str(node.get("class_type") or "")
+    low = cls.lower()
+    if "load" not in low:
+        return []
+    want = [k for k in ("video", "image", "audio") if k in low]
+    if len(want) != 1:
+        return []
+    want = want[0]
+    out = []
+    for name, val in (node.get("inputs") or {}).items():
+        if not isinstance(val, str):
+            continue
+        ext = val.strip().lower()
+        for kind, exts in _KIND_EXTS.items():
+            if kind != want and ext.endswith(exts):
+                out.append(f"input '{name}' is {val!r}, {'an' if kind[0] in 'aeiou' else 'a'} {kind} file, "
+                           f"but {cls} loads {want}: name the {want} it should load")
+                break
+    return out
+
+
 def _dynamic_combo_option_keys(spec) -> list:
     """The legal values of a ``COMFY_DYNAMICCOMBO_V3`` input: its options' keys."""
     if not (isinstance(spec, list) and len(spec) >= 2
