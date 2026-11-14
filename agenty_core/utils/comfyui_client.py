@@ -288,10 +288,13 @@ class ComfyUIClient:
         json_data: dict | None = None,
         data: dict | None = None,
         files: dict | None = None,
+        timeout: float | None = None,
     ) -> dict | str:
         """Send a POST request. Returns parsed JSON when possible.
 
-        A ``/prompt`` POST (a graph queued) runs the prompt hooks first."""
+        A ``/prompt`` POST (a graph queued) runs the prompt hooks first. ``timeout``
+        (seconds to wait for the answer) is for the few routes that work long - a film
+        rendered in ComfyUI's process; the connect timeout stays short."""
         url = f"{self.base_url}{path}"
         headers = self._headers()
         if files:
@@ -301,7 +304,8 @@ class ComfyUIClient:
         try:
             resp = _send(
                 self.base_url, requests.post, url,
-                headers=headers, json=json_data, data=data, files=files, timeout=_TIMEOUT,
+                headers=headers, json=json_data, data=data, files=files,
+                timeout=(_CONNECT_TIMEOUT, timeout) if timeout else _TIMEOUT,
             )
         finally:
             for after in afters:

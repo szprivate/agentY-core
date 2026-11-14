@@ -368,3 +368,73 @@ class RoundTrip(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless((VIEWER_PY / "timeline_io.py").is_file(), "needs the ComfyUI-ImageViewer checkout")
+class NewAndExport(Base):
+    """A cut made from nothing ({"op": "new"}) and rendered ({"op": "export"}), the viewer's routes
+    done here by its own timeline_io; the render is stood in for."""
+
+    def setUp(self):
+        super().setUp()
+        self.tio = _viewer_tio()
+        if not hasattr(self.tio, "change"):
+            self.skipTest("the viewer checkout predates timeline_io.change")
+        self.files = {}
+        for name in ("concept.png", "previz.mp4", "shot.mp4"):
+            (self.tmp / name).write_bytes(b"\0" * 16)
+            self.files[name] = str(self.tmp / name).replace("\\", "/")
+        self.calls = []
+        self.client.post.side_effect = self.route
+
+    def route(self, path, json_data=None, timeout=None, **_):
+        body = json_data or {}
+        self.calls.append((path, body, timeout))
+        if path == "/imageviewer/timeline_probe":
+            info = {self.files["concept.png"]: {"duration": 0.0, "still": True, "width": 1024, "height": 1024, "fps": 0.0},
+                    self.files["previz.mp4"]: {"duration": 6.0, "still": False, "width": 1280, "height": 720, "fps": 24.0},
+                    self.files["shot.mp4"]: {"duration": 5.0417, "still": False, "width": 1920, "height": 1088, "fps": 24.0}}
+            return {"info": {p: info.get(p, {"error": "not found"}) for p in body["paths"]}}
+        if path == "/imageviewer/timeline":
+            side = str(self.tmp / "edits" / (body["name"] + "_v001.otio"))
+            os.makedirs(os.path.dirname(side), exist_ok=True)
+            edit = self.tio.save(side, body["edit"], "", lambda p: True, body["name"])
+            return {"edit": edit, "otio": side, "path": side}
+        if path == "/imageviewer/push":
+            return {"cuts": body["paths"]}
+        if path == "/imageviewer/timeline_render":
+            return {"path": str(self.tmp / "videos" / "promo_v001.mp4"), "name": "promo_v001.mp4",
+                    "seconds": 9.0, "frames": 216, "width": 1920, "height": 1088, "fps": 24.0}
+        edit, said = (self.tio.change(body["otio"], body["ops"], "", lambda p: True, {}) if body.get("ops")
+                      else (self.tio.read_editable(body["otio"]), []))
+        return {"ok": True, "otio": body["otio"], "edit": edit, "length": self.tio.edit_length(edit),
+                "said": said, "pushed": True}
+
+    def test_a_new_cut_from_three_files_rendered_into_a_film(self):
+        f = self.files
+        out = json.loads(ec.edit_cut(ops=[
+            {"op": "new", "name": "promo", "files": [{"file": f["concept.png"], "length": 2},
+                                                     {"file": f["previz.mp4"], "length": 3, "transition": 0.5},
+                                                     {"file": f["shot.mp4"], "transition": 0.5}]},
+            {"op": "export", "name": "promo"}]))
+        self.assertEqual(out["status"], "ok", out)
+        self.assertTrue(out["new"] and out["opened"])
+        self.assertTrue(out["otio"].endswith("promo_v001.otio"))
+        v1, = [t for t in out["tracks"] if t["track"] == "V1"]
+        self.assertEqual([(c["file"], c["length"]) for c in v1["clips"]],
+                         [(f["concept.png"], 2.0), (f["previz.mp4"], 3.0), (f["shot.mp4"], 5.042)])
+        self.assertEqual([c.get("dissolve") for c in v1["clips"]], [None, 0.5, 0.5])
+        # The film's frame is the first FILM's, not the picture's.
+        _, made, _ = next(c for c in self.calls if c[0] == "/imageviewer/timeline")
+        self.assertEqual(made["edit"]["settings"], {"width": 1280, "height": 720, "fps": 24.0})
+        self.assertEqual(out["export"]["film"], str(self.tmp / "videos" / "promo_v001.mp4"))
+        path, body, timeout = self.calls[-1]
+        self.assertEqual((path, body["path"], body["external"], timeout),
+                         ("/imageviewer/timeline_render", out["otio"], 1, ec.RENDER_WAIT))
+
+    def test_new_and_export_are_first_and_last_and_a_new_cut_is_not_empty(self):
+        self.assertIn("first", json.loads(ec.edit_cut("x.otio", [{"op": "set"}, {"op": "new"}]))["error"])
+        self.assertIn("last", json.loads(ec.edit_cut("x.otio", [{"op": "export"}, {"op": "set"}]))["error"])
+        self.assertIn("cannot be empty", json.loads(ec.edit_cut(ops=[{"op": "new", "name": "x"}]))["error"])
+        got = json.loads(ec.edit_cut(ops=[{"op": "new", "files": [str(self.tmp / "gone.mp4")]}]))
+        self.assertIn("not found", got["error"])
