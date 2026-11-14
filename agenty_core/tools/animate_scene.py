@@ -36,11 +36,11 @@ ACTIONS = (
     "export_usd",
     # The Terrain menu (js/imageViewer_previzAgentTerrain.js TERRAIN_AGENT_ACTIONS).
     "terrain_add", "terrain_set", "terrain_sculpt", "terrain_paint", "terrain_clear", "terrain_height",
-    "terrain_erode", "scatter_add", "scatter_set", "scatter_paint",
+    "terrain_erode", "scatter_add", "scatter_set", "scatter_paint", "ground",
 )
 # What each action needs before it is worth sending (the page checks the rest).
 NEEDS = {
-    "add_model": ("path",), "set_camera": ("camera",),
+    "add_model": ("path",), "set_camera": ("camera",), "ground": ("item",),
     "item_set": ("item",),
     "key_set": ("item", "prop"), "key_delete": ("item",), "key_list": ("item",),
     "layer_set": ("layer",), "layer_remove": ("layer",), "layer_merge_down": ("layer",),
@@ -118,7 +118,7 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             {"sky": {"top": "#rrggbb", "horizon": ..., "bottom": ...}, "sun": {"azimuth", "elevation", "intensity"},
             "fog": {"color", "density"}} - the backdrop past a terrain's edges; a big sphere as a sky dome does not
             show from inside),
-            "add_model" {path, name, position, rotation, scale, size} (a model file into this scene; path = the
+            "add_model" {path, name, position, rotation, scale, size, ground (true: its bottom on the terrain / y 0)} (a model file into this scene; path = the
             file's absolute path, or one relative to ComfyUI's output folder ("agent/models/car.glb", or with an
             output/ / input/ / temp/ prefix); a file that is not there is an error; size = its
             longest side in metres - a car "4.7 m long" is size 4.7, NOT scale 4.7: scale multiplies the file's own
@@ -142,6 +142,13 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             MOVES (a car driving) is followed by itself (follow false turns about one place; follow_step, frames,
             default 4): the turn stays centred on it
             frame by frame, at one frame's size - an orbit round a driving car is this, not set_camera keys.
+            lag (frames) or lag_seconds: the orbit's centre trails the subject by that much while the camera
+            keeps looking at it, so a car DRIVES THROUGH the picture instead of standing still in its middle
+            (with degrees small, e.g. 30-90, for a tracking shot that falls behind; lag 0 = locked on).
+            "ground" {item, terrain (default the only one; none = y 0), step (frames: also key it every step
+            frames, so a drive follows the floor between its keys)} - stands an item's BOTTOM on the ground:
+            a static item is moved, an animated one gets every position key's height set; use it after keying
+            a drive (a model's origin is often its middle, so keying y = the floor sinks it halfway).
             Render: "render" {camera (name; "" = the free view; default the active one), clip (that clip's frames)
             or from / to, name (the file: output/previz/<name>.<format> by the export rule), format (mp4 | mov |
             webm | png), shading (original | clay | normal | wireframe), width / height (else the camera's),
@@ -177,8 +184,10 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             USD: "export_usd" {name, format (usda | usdc)} - the whole shot as a stage (constraints and clips baked).
             Terrain (the Terrain menu; places are world metres [x, z], Y up; each stroke is one undo step and
             shows in the view as it lands): "terrain_add" {name, size [w, d] (m, default 200 x 200), height (m of
-            relief, default 20), seed, roughness (0.05-0.95), segments (8-512), position, rotation, layers [{name,
-            color}] for ground / rock / cliff / peak} -> the terrain's name and settings; "terrain_set" {terrain,
+            relief, default 20), seed, roughness (0.05-0.95), segments (8-512), position, rotation, layers [{layer
+            (ground | rock | cliff | peak, or 0-3; else by place in the list), color, src (the texture: a file's
+            absolute path, or output/... input/...), tile (metres one repeat of it covers), normal, rough (maps),
+            roughness, normal_scale}] (other keys are refused)} -> the terrain's name and settings; "terrain_set" {terrain,
             same fields}; "terrain_sculpt" {terrain, strokes [{tool (raise | lower | smooth | flatten | restore),
             points [[x, z], ...] (a polyline), radius (m), strength (0-1), hardness (0-1), passes (1-20; more =
             stronger), to (flatten: metres above the terrain's base; default the height under the first point),
