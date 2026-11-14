@@ -42,6 +42,18 @@ class AnimateSceneTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=(action, opts)):
                 a.request_body(action, opts)
 
+    def test_terrain_request_bodies(self):
+        stroke = {"tool": "flatten", "points": [[0, -50], [0, 50]], "radius": 8, "to": 5}
+        self.assertEqual(a.request_body("terrain_sculpt", {"strokes": [stroke]}), {"action": "terrain_sculpt", "strokes": [stroke]})
+        self.assertEqual(a.request_body("terrain_erode", {"steps": 400, "follow": {"Rocks": "deposit"}})["steps"], 400)
+        self.assertEqual(a.request_body("scatter_add", {"type": "rock"})["type"], "rock")
+        for action, opts in (("terrain_sculpt", {}), ("terrain_sculpt", {"strokes": [{"tool": "melt", "points": [[0, 0]]}]}),
+                             ("terrain_paint", {"strokes": [{"radius": 3}]}), ("scatter_paint", {"strokes": "x"}),
+                             ("scatter_add", {"type": "cactus"}), ("terrain_erode", {"mode": "wind"}),
+                             ("terrain_erode", {"follow": {"Rocks": "snow"}})):
+            with self.assertRaises(ValueError, msg=(action, opts)):
+                a.request_body(action, opts)
+
     def test_an_action_goes_to_the_page_and_its_answer_comes_back(self):
         page = _Page(lambda b: {"state": "done", "result": {"clip": "c1", "from": 30, "to": 53}})
         out = self.run_with(page, a.animate_scene, action="clip_place", options={"source": "Walk 1", "at": 30})
