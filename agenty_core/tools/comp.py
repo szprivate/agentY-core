@@ -107,6 +107,15 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
             (shot.####.exr) and other comps (a precomp). A Write: file (#### = the frame number), file_type
             exr|png|tiff|jpg|mov|mp4|webm, channels rgba|rgb|all (all: every extra channel as EXR layers),
             depth, compression, first / last (comp frames, from 0), handles, first_number (1001 = comp frame 0).
+            Some node types beyond the list: depthblur (inputs src, depth; channel, focus = the depth in focus
+            on the map's own scale - read it off the map where the subject is -, dof, falloff, size, layers,
+            filter gaussian | lens), defocus, glow, lensflare, lumakeyer, chromakeyer, erode, shuffle,
+            colorcorrect. A Read's offset slides the footage: +10 starts it 10 frames later, -16 skips its
+            first 16 frames. Filters and colour nodes have a last input "mask" (with mask_channel, mask_invert,
+            mix): only where the mask is do they act.
+            Depth of field: Read the shot, Read its depth (an AI Depth result or a depth film) and its subject's
+            matte; depthblur(src = shot, depth = depth read, focus at the subject's depth) with mask = the matte
+            and mask_invert true, so the subject stays sharp. Never a plain blur over the whole picture.
         create: Make the comp when the file is not there (with width / height / fps / frames).
 
     Returns:
