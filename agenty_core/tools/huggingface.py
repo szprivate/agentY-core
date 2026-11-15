@@ -90,7 +90,13 @@ def _models_base_dir() -> Path:
     Priority:
     1. COMFYUI_MODELS_DIR env var
     2. comfyui_models_dir key in config/settings.json
-    3. Default: D:/AI/ComfyUI/models
+    3. The running ComfyUI's own ``models/`` folder: the parent of its
+       checkpoints folder (``/internal/folder_paths``), else ``models/`` beside
+       its ``main.py`` / ``--base-directory``
+    4. Default: D:/AI/ComfyUI/models - on Windows only. Elsewhere that is a
+       relative folder named "D:" in the working directory, which ComfyUI never
+       reads: on a Mac 25 GB of LTX files went there (2026-11-15). There the
+       last resort is ~/ComfyUI/models.
     """
     env_dir = get_secret("COMFYUI_MODELS_DIR")
     if env_dir:
@@ -110,7 +116,28 @@ def _models_base_dir() -> Path:
         except Exception:
             pass
 
-    return Path("D:/AI/ComfyUI/models")
+    own = _running_comfyui_models_dir()
+    if own is not None:
+        return own
+    if os.name == "nt":
+        return Path("D:/AI/ComfyUI/models")
+    return Path.home() / "ComfyUI" / "models"
+
+
+def _running_comfyui_models_dir() -> "Path | None":
+    """The ``models/`` folder of the ComfyUI that is running, or None."""
+    for p in (_folder_paths().get("checkpoints") or []):
+        parent = Path(p).parent
+        if parent.name.lower() == "models" and parent.is_dir():
+            return parent
+    try:
+        from agenty_core.tools.comfyui import _comfyui_root  # noqa: PLC0415
+        root = _comfyui_root()
+    except Exception:  # noqa: BLE001
+        root = None
+    if root is not None and (root / "models").is_dir():
+        return root / "models"
+    return None
 
 
 _FOLDER_PATHS_CACHE: dict | None = None
