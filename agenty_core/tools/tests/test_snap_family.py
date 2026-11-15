@@ -25,11 +25,17 @@ class SnapFamilyTest(unittest.TestCase):
         self.assertEqual(snap_combo("ltx-2.5-audio-vae-bf16.safetensors", VAES, fallback_first=False),
                          "LTX2\\ltx-2-3-22b-audio_vae.safetensors")
 
-    def test_no_file_of_the_family_keeps_the_old_choice(self):
-        """Not a missing-model verdict: that path can download, so it is not
-        widened here."""
-        self.assertEqual(snap_combo("hidream_vae_video.safetensors", VAES, fallback_first=False),
-                         "hunyuan_video_vae_bf16.safetensors")
+    def test_no_file_of_the_family_is_missing_not_another_family(self):
+        """Missing, so it can be downloaded. Standing in another family's file
+        loaded FLUX into an LTX job on a machine with no LTX file (2026-11-15)."""
+        self.assertIsNone(snap_combo("hidream_vae_video.safetensors", VAES, fallback_first=False))
+        self.assertIsNone(snap_combo("ltx-2.5-22b-dev-fp8.safetensors",
+                                     ["flux1-dev-fp8.safetensors", "z_image_turbo_bf16.safetensors"],
+                                     fallback_first=False))
+
+    def test_a_file_of_no_known_family_still_snaps_on_words(self):
+        self.assertEqual(snap_combo("my_custom_vae_v2.safetensors", ["my_custom_vae_v1.safetensors"],
+                                    fallback_first=False), "my_custom_vae_v1.safetensors")
 
     def test_enums_are_untouched(self):
         self.assertEqual(snap_combo("ltx nearest", ["bilinear", "nearest-exact"]), "nearest-exact")

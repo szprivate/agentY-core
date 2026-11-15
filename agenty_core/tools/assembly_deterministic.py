@@ -309,6 +309,14 @@ def snap_combo(val: str, opts: list, fallback_first: bool = True, strict_family:
         mine = _families(stem) if strict_family else set()
         if mine:
             opts = [o for o in opts if not (_families(o) and not (_families(o) & mine))]
+        # Nor does any model file of a known family when NO file of that family is
+        # installed: then it is missing, to be downloaded, not stood in for. On a
+        # Mac with no LTX file at all, "ltx-2.5-22b-dev-fp8" took "flux1-dev-fp8"
+        # (dev, fp8), the model-family check then saw a FLUX loader in an LTX job
+        # and the turn went straight to the repair specialist (2026-11-15).
+        own = _families(stem)
+        if own and not any(_families(o) & own for o in opts):
+            return None
     best, best_n = None, 0
     for o in opts:
         ot = set(re.findall(r"[a-z0-9]+",
