@@ -696,6 +696,7 @@ def _pick_machine(j: dict, t: dict) -> Optional[dict]:
 
 def _start_task(m: dict, j: dict, t: dict) -> None:
     m["task"] = [j["id"], t["i"]]
+    _live_wf[m["id"]] = {k: (v or {}).get("class_type", "") for k, v in t["workflow"].items() if isinstance(v, dict)}
     t.update(state="uploading", machine=m["id"], started=_now(), error="")
     t["tries"] += 1
     t["tried"].append(m["id"])
@@ -703,7 +704,8 @@ def _start_task(m: dict, j: dict, t: dict) -> None:
     try:
         wf = copy.deepcopy(t["workflow"])
         _upload_inputs(m, wf)
-        r = _comfy(m, "POST", "/prompt", json_body={"prompt": wf, "client_id": "agentY-farm"}, timeout=60).json() or {}
+        _ensure_watcher(m)
+        r = _comfy(m, "POST", "/prompt", json_body={"prompt": wf, "client_id": _client_id()}, timeout=60).json() or {}
         if r.get("node_errors"):
             raise PoolError(f"the workflow was refused: {json.dumps(r['node_errors'])[:300]}")
         t["prompt_id"] = r.get("prompt_id")
@@ -765,6 +767,183 @@ def _job_state(j: dict) -> str:
     if states & {"queued", "running", "uploading"}:
         return "running" if states & {"running", "uploading", "done", "failed"} else "queued"
     return "failed" if "failed" in states and "done" not in states else "done"
+
+
+# ── live progress: each busy machine's /ws feed ──────────────────────────────
+# ComfyUI tells the client that queued a prompt how it goes: "executing" (which node), "progress" (step of steps in
+# a sampler), "execution_cached" (nodes skipped), and binary preview frames while a sampler runs (only when that
+# ComfyUI has previews on, e.g. --preview-method auto). The pool queues with its own client id and listens on
+# /ws?clientId=<that id>, one thread per machine with a render, and keeps the latest of each per machine in _live
+# (its own lock, so a slow feed never holds the pool). state() hands it out with the machine and the task.
+PREVIEW_MAX_AGE = 30.0
+PREVIEW_MAX_BYTES = 400_000
+WS_IDLE_SECONDS = 60.0
+_live: dict = {}
+_live_lock = threading.Lock()
+_watchers: dict = {}
+_live_wf: dict = {}                          # machine id -> {node id: class_type} of the render it runs (not saved)
+_ws_connect: Optional[Callable] = None        # tests: fn(url, headers) -> object with recv(timeout) and close()
+
+
+def set_ws_connect(fn: Optional[Callable]) -> None:
+    global _ws_connect
+    _ws_connect = fn
+
+
+def _client_id() -> str:
+    s = _load()
+    if not s.get("client_id"):
+        s["client_id"] = "agentY-farm-" + uuid.uuid4().hex[:12]
+    return s["client_id"]
+
+
+def _ws_url(m: dict) -> str:
+    u = urlparse(m["url"])
+    scheme = "wss" if u.scheme == "https" else "ws"
+    return f"{scheme}://{u.netloc}{u.path.rstrip('/')}/ws?clientId={quote(_client_id())}"
+
+
+def _default_ws_connect(url: str, headers: dict):
+    from websockets.sync.client import connect
+    return connect(url, additional_headers=headers or None, open_timeout=10, max_size=2 ** 24)
+
+
+_IMAGE_MAGIC = ((b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG", "image/png"), (b"RIFF", "image/webp"))
+
+
+def preview_of(frame: bytes):
+    """The picture in a binary /ws frame, as (bytes, mime), or None. ComfyUI puts a 4-byte event type in front, then
+    a 4-byte format (or, in newer versions, a length and a JSON header); the picture is found by its magic bytes
+    in the first part of the frame rather than by trusting one layout."""
+    if not isinstance(frame, (bytes, bytearray)) or len(frame) < 12:
+        return None
+    head = bytes(frame[:4096])
+    best = None
+    for magic, mime in _IMAGE_MAGIC:
+        i = head.find(magic, 4)
+        if i >= 0 and (best is None or i < best[0]):
+            best = (i, mime)
+    if best is None:
+        return None
+    data = bytes(frame[best[0]:])
+    return (data, best[1]) if len(data) <= PREVIEW_MAX_BYTES else None
+
+
+def _live_update(mid: str, **kw) -> None:
+    with _live_lock:
+        d = _live.setdefault(mid, {})
+        d.update(kw, t=_now())
+
+
+def live_of(mid: str) -> dict:
+    with _live_lock:
+        return dict(_live.get(mid) or {})
+
+
+def handle_ws_message(m: dict, msg) -> None:
+    """One message of a machine's feed (text JSON or a binary frame), for the render that machine runs now."""
+    mid = m["id"]
+    cur = live_of(mid)
+    if isinstance(msg, (bytes, bytearray)):
+        pic = preview_of(msg)
+        if pic and cur.get("prompt_id"):
+            _live_update(mid, preview=pic[0], preview_mime=pic[1], preview_t=_now())
+        return
+    try:
+        ev = json.loads(msg)
+    except (TypeError, ValueError):
+        return
+    kind, data = ev.get("type"), ev.get("data") or {}
+    pid = data.get("prompt_id")
+    if kind == "execution_start" and pid:
+        _live_update(mid, prompt_id=pid, node=None, class_type="", value=0, max=0, nodes_done=0, done_nodes=[],
+                     preview=None, preview_t=0)
+    elif kind == "execution_cached" and pid and pid == cur.get("prompt_id"):
+        nodes = [str(n) for n in data.get("nodes") or []]
+        done = list(dict.fromkeys((cur.get("done_nodes") or []) + nodes))
+        _live_update(mid, done_nodes=done, nodes_done=len(done))
+    elif kind == "executing" and pid and pid == cur.get("prompt_id"):
+        node = data.get("node")
+        done = list(cur.get("done_nodes") or [])
+        if cur.get("node") and cur["node"] not in done:
+            done.append(cur["node"])
+        if node is None:
+            _live_update(mid, node=None, class_type="", value=0, max=0, done_nodes=done, nodes_done=len(done), finished=True)
+        else:
+            _live_update(mid, node=str(node), class_type=_class_of(m, str(node)), value=0, max=0, done_nodes=done,
+                         nodes_done=len(done))
+    elif kind == "progress" and pid and pid == cur.get("prompt_id"):
+        _live_update(mid, value=int(data.get("value") or 0), max=int(data.get("max") or 0),
+                     node=str(data.get("node") or cur.get("node") or "") or None)
+
+
+def _class_of(m: dict, node: str) -> str:
+    return str((_live_wf.get(m["id"]) or {}).get(node) or "")
+
+
+def _watch(mid: str) -> None:
+    """Listen to one machine's feed while it has a render; reconnect after a drop, end when it has none."""
+    backoff = 2.0
+    while True:
+        with _lock:
+            m = _load()["machines"].get(mid)
+            if not m or not m.get("task") or not m.get("url") or m["state"] in ("stopped", "gone"):
+                _watchers.pop(mid, None)
+                return
+            url, headers = _ws_url(m), _mh(m)
+        conn = None
+        try:
+            conn = (_ws_connect or _default_ws_connect)(url, headers)
+            backoff = 2.0
+            last = _now()
+            while True:
+                try:
+                    msg = conn.recv(timeout=5)
+                except TimeoutError:
+                    with _lock:
+                        mm = _load()["machines"].get(mid)
+                        if not mm or not mm.get("task"):
+                            break
+                    if _now() - last > WS_IDLE_SECONDS:
+                        break
+                    continue
+                last = _now()
+                handle_ws_message(m, msg)
+        except Exception as exc:  # noqa: BLE001 - a feed that drops costs only the live view
+            logger.debug("gpu_pool: %s feed: %s", mid, exc)
+            time.sleep(backoff)
+            backoff = min(30.0, backoff * 2)
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _ensure_watcher(m: dict) -> None:
+    t = _watchers.get(m["id"])
+    if t and t.is_alive():
+        return
+    th = threading.Thread(target=_watch, args=(m["id"],), name=f"gpu-pool-ws-{m['id']}", daemon=True)
+    _watchers[m["id"]] = th
+    th.start()
+
+
+def _live_public(m: dict, t: Optional[dict]) -> Optional[dict]:
+    """What the page draws for the render a machine runs: node, steps, nodes done of all, the newest preview."""
+    if not m.get("task") or not t or not t.get("prompt_id"):
+        return None
+    d = live_of(m["id"])
+    if d.get("prompt_id") != t.get("prompt_id"):
+        return {"started": False}
+    import base64
+    out = {"started": True, "node": d.get("node"), "class_type": d.get("class_type") or "",
+           "value": d.get("value") or 0, "max": d.get("max") or 0, "nodes_done": d.get("nodes_done") or 0,
+           "nodes_total": len(t.get("workflow") or {})}
+    if d.get("preview") and _now() - float(d.get("preview_t") or 0) < PREVIEW_MAX_AGE:
+        out["preview"] = f"data:{d.get('preview_mime') or 'image/jpeg'};base64," + base64.b64encode(d["preview"]).decode("ascii")
+    return out
 
 
 # ── the tick ─────────────────────────────────────────────────────────────────
@@ -888,6 +1067,11 @@ def _public_machine(m: dict) -> dict:
     out["cost_usd"] = round(float(m.get("cost_usd") or 0), 4)
     if m.get("task"):
         out["task"] = {"job": m["task"][0], "i": m["task"][1]}
+        j = _load()["jobs"].get(m["task"][0])
+        t = j["tasks"][m["task"][1]] if j and m["task"][1] < len(j["tasks"]) else None
+        live = _live_public(m, t)
+        if live:
+            out["live"] = live
     return out
 
 

@@ -1,6 +1,7 @@
 """gpu_pool offline: fake ComfyUI machines and fake vast.ai / RunPod APIs behind a swapped transport."""
 
 import json
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -99,6 +100,23 @@ class Net:
         return R(404, raw=b"?")
 
 
+class FakeWS:
+    def __init__(self, msgs, url, headers):
+        self.msgs, self.url, self.headers, self.closed = msgs, url, headers, False
+
+    def recv(self, timeout=None):
+        if self.msgs:
+            return self.msgs.pop(0)
+        time.sleep(0.01)
+        raise TimeoutError
+
+    def close(self):
+        self.closed = True
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"x" * 40
+
+
 class PoolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -109,9 +127,18 @@ class PoolTests(unittest.TestCase):
         gp.set_secret_reader(lambda n: self.keys.get(n, ""))
         gp._last_provider_poll = 0
         gp.listeners.clear()
+        self.ws = []
+        gp.set_ws_connect(self.fake_ws)
         self.dest = str(Path(self.tmp.name) / "out")
 
+    def fake_ws(self, url, headers):
+        conn = FakeWS(list(self.ws), url, headers)
+        self.ws.clear()
+        self.ws_conns = getattr(self, "ws_conns", []) + [conn]
+        return conn
+
     def tearDown(self):
+        gp.set_ws_connect(None)
         gp.set_transport(None)
         gp.set_secret_reader(None)
         gp.set_state_path(None)
@@ -249,6 +276,53 @@ class PoolTests(unittest.TestCase):
         gp.terminate(m["id"])
         self.assertEqual(gp.state()["machines"], [])
         self.assertEqual(self.net.vast_instances, {})
+
+
+    def test_a_preview_frame_is_found_by_its_magic_bytes(self):
+        self.assertEqual(gp.preview_of(b"\x00\x00\x00\x01\x00\x00\x00\x01" + JPEG), (JPEG, "image/jpeg"))
+        meta = json.dumps({"node_id": "2", "prompt_id": "p0"}).encode()
+        frame = b"\x00\x00\x00\x04" + len(meta).to_bytes(4, "big") + meta + b"\x89PNG" + b"y" * 30
+        self.assertEqual(gp.preview_of(frame)[1], "image/png")
+        self.assertIsNone(gp.preview_of(b"\x00" * 40))
+
+    def test_the_running_render_shows_its_node_steps_and_preview(self):
+        m = self.add("a:8188")
+        gp.submit(WF, name="cars", batch=1, dest=self.dest)
+        fake = self.net.machines["a:8188"]
+        self.net.machines["a:8188"] = lambda method, path, h, b: (R(body={}) if path.startswith("/history/") else fake(method, path, h, b))
+        gp.tick(dt=1)
+        mm = gp._load()["machines"][m["id"]]
+        for msg in [json.dumps({"type": "execution_start", "data": {"prompt_id": "p0"}}),
+                    json.dumps({"type": "execution_cached", "data": {"prompt_id": "p0", "nodes": ["1"]}}),
+                    json.dumps({"type": "executing", "data": {"node": "2", "prompt_id": "p0"}}),
+                    json.dumps({"type": "progress", "data": {"value": 12, "max": 30, "prompt_id": "p0", "node": "2"}}),
+                    json.dumps({"type": "progress", "data": {"value": 29, "max": 30, "prompt_id": "OTHER"}}),
+                    b"\x00\x00\x00\x01\x00\x00\x00\x01" + JPEG]:
+            gp.handle_ws_message(mm, msg)
+        live = gp.state()["machines"][0]["live"]
+        self.assertEqual((live["class_type"], live["value"], live["max"], live["nodes_done"], live["nodes_total"]),
+                         ("KSampler", 12, 30, 1, 3))
+        self.assertTrue(live["preview"].startswith("data:image/jpeg;base64,"))
+
+    def test_the_feed_is_heard_with_the_pools_own_client_id_and_token(self):
+        m = self.add("a:8188")
+        fake = self.net.machines["a:8188"]
+        self.net.machines["a:8188"] = lambda method, path, h, b: (R(body={}) if path.startswith("/history/") else fake(method, path, h, b))
+        self.ws += [json.dumps({"type": "execution_start", "data": {"prompt_id": "p0"}}),
+                    json.dumps({"type": "progress", "data": {"value": 3, "max": 8, "prompt_id": "p0"}})]
+        gp.submit(WF, batch=1, dest=self.dest)
+        gp.tick(dt=1)
+        for _ in range(100):
+            if gp.live_of(m["id"]).get("value") == 3:
+                break
+            time.sleep(0.02)
+        conn = self.ws_conns[0]
+        self.assertTrue(conn.url.startswith("ws://a:8188/ws?clientId=agentY-farm-"))
+        self.assertEqual(conn.headers, {"Authorization": "Bearer tok-a:8188"})
+        self.assertEqual(gp.live_of(m["id"])["value"], 3)
+        sent = fake.prompts["p0"]
+        self.assertIn("2", sent)
+        self.assertTrue(any(c[1].endswith("/prompt") for c in self.net.calls))
 
 
 if __name__ == "__main__":
