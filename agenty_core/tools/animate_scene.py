@@ -147,11 +147,17 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             (with degrees small, e.g. 30-90, for a tracking shot that falls behind; lag 0 = locked on).
             "ground" {item, terrain (default the only one; none = y 0), step (frames: also key it every step
             frames, so a drive follows the hills between its keys - 2-3 for a car on hills), tilt (default true:
-            leans it with the slope, heading kept; false = level), clearance (m, default 0.01)} - stands an item
+            leans it with the slope, heading kept; false = level), smooth (frames: the lean averaged over that
+            many frames either side - 4-8 on rough or stepped ground, so the car does not shake or tumble),
+            max_tilt (degrees: never leans more), keep_turn (true: keep a pitch / roll of its own; default it
+            starts level, so grounding again does not add up), clearance (m, default 0.01)} - stands an item
             on the ground: turned to the slope under its ends, then lifted until no part of its underside is
             below the terrain (no wheels in the ground); a static item is moved, an animated one gets position
             and rotation keys. Use it AFTER keying a drive, and again after any change to the terrain (sculpt,
-            erode) - a model's origin is often its middle, so keying y = the floor sinks it halfway.
+            erode) - a model's origin is often its middle, so keying y = the floor sinks it halfway. The answer
+            is read back from the keys as they play, every frame: most_pitch / most_roll / most_tilt (degrees,
+            most_tilt_at the frame), lowest_clearance (m, negative = in the ground between keys) and a warning
+            when it leans over 25 degrees - report those numbers, and fix the ground or add smooth when warned.
             Render: "render" {camera (name; "" = the free view; default the active one), clip (that clip's frames)
             or from / to, name (the file: output/previz/<name>.<format> by the export rule), format (mp4 | mov |
             webm | png), shading (original | clay | normal | wireframe), width / height (else the camera's),
