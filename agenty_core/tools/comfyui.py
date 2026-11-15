@@ -3279,13 +3279,34 @@ def _comfyui_root() -> "Path | None":
             return p.resolve()
     if argv and isinstance(argv[0], str) and argv[0]:
         root = Path(argv[0]).parent
-        if root.exists():
+        # A relative argv[0] ("main.py") is relative to ComfyUI's working
+        # directory, not ours: resolved here it named the agent's own folder.
+        if Path(argv[0]).is_absolute() and root.exists():
             return root.resolve()
+    # ComfyUI's own word, via the agentY extension: its user/ folder sits in the
+    # base folder (the desktop app keeps custom_nodes/ and models/ there too).
+    user_dir = _dirs_from_comfyui().get("user_dir")
+    if user_dir:
+        base = Path(user_dir).parent
+        if (base / "custom_nodes").is_dir() or (base / "models").is_dir():
+            return base
     return None
 
 
 def _custom_nodes_dir() -> "Path | None":
-    """The ComfyUI ``custom_nodes/`` directory, or ``None`` when unresolved."""
+    """The ComfyUI ``custom_nodes/`` directory, or ``None`` when unresolved.
+
+    ComfyUI's own folder list (``/internal/folder_paths``) names it first: the
+    desktop app on a Mac runs ``main.py`` by a relative path from inside its app
+    bundle, so argv alone could not find the folder and every install failed
+    with "Could not locate ComfyUI's custom_nodes directory" (2026-11-15)."""
+    try:
+        from agenty_core.tools.huggingface import _folder_paths  # noqa: PLC0415
+        for p in (_folder_paths().get("custom_nodes") or []):
+            if Path(p).is_dir():
+                return Path(p)
+    except Exception:  # noqa: BLE001
+        pass
     root = _comfyui_root()
     if root is None:
         return None
