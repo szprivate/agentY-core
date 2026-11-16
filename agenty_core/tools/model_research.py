@@ -150,6 +150,11 @@ def hf_search(query: str = "", author: str = "", file_pattern: str = "", limit: 
     Returns JSON: repos (id, downloads, gated, pipeline_tag, matching files with
     the ComfyUI models folder each belongs in). Sizes and access: hf_repo / hf_file.
     """
+    from agenty_core.tools.huggingface import input_file_refusal  # noqa: PLC0415
+    for _asked in (file_pattern, query):
+        _no = input_file_refusal(str(_asked or "").strip().strip("*"), "hf_search")
+        if _no:
+            return _out(_no)
     query, author = _split_author(str(query or ""), str(author or "").strip())
     limit = max(1, min(int(limit or 10), 30))
     want_files = bool(file_pattern)
@@ -330,6 +335,10 @@ def hf_file(url: str = "", repo_id: str = "", path: str = "") -> str:
     if not repo_id or not path:
         return _out({"ok": False, "error": "Give a url, or repo_id and path."})
     name = path.rsplit("/", 1)[-1]
+    from agenty_core.tools.huggingface import input_file_refusal  # noqa: PLC0415
+    _no = input_file_refusal(name, "hf_file")
+    if _no:
+        return _out(_no)
     try:
         resp = _head(repo_id, path)
     except Exception as exc:  # noqa: BLE001

@@ -51,6 +51,83 @@ HF_API_BASE = "https://huggingface.co/api/models"
 
 
 
+
+# ── The user's own files are never on Hugging Face ───────────────────────────
+# A picture, film or sound a loader takes is the user's file (or one this
+# machine made). In the promo run of 2026-11-15 the agent was given
+# hills_previz_v005.mp4, did not find it in the input folder, looked for it on
+# Hugging Face and downloaded two unrelated Lightricks sample videos into a
+# folder nothing reads. The HF tools now refuse such a name and say where the
+# file is on this machine instead.
+_INPUT_FILE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".exr",
+                    ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mxf",
+                    ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
+_FIND_LIMIT = 20000      # entries walked per folder, so a huge output folder stays quick
+
+
+def _is_input_file(name: str) -> bool:
+    base = str(name or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    return base.endswith(_INPUT_FILE_EXTS)
+
+
+def find_local_copies(name: str, limit: int = 5) -> list[str]:
+    """Where a file of this name is in ComfyUI's input and output folders (and the
+    agent's own output folders): absolute paths, input folder first."""
+    base = str(name or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if not base:
+        return []
+    roots: list[str] = []
+    try:
+        from agenty_core.tools.comfyui import get_comfyui_dirs  # noqa: PLC0415
+        d = json.loads(get_comfyui_dirs())
+        roots += [d.get("input_dir") or "", d.get("output_dir") or ""]
+    except Exception:  # noqa: BLE001
+        pass
+    seen, found = set(), []
+    low = base.lower()
+    for root in roots:
+        if not root or not os.path.isdir(root) or root in seen:
+            continue
+        seen.add(root)
+        n = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [x for x in dirnames if not x.startswith(".")]
+            n += len(filenames) + len(dirnames)
+            for f in filenames:
+                if f.lower() == low:
+                    found.append(os.path.join(dirpath, f).replace("\\", "/"))
+                    if len(found) >= limit:
+                        return found
+            if n > _FIND_LIMIT:
+                break
+    return found
+
+
+def input_file_refusal(name: str, tool_name: str) -> dict | None:
+    """The answer for a picture / film / sound file asked of a Hugging Face tool, else None."""
+    if not _is_input_file(name):
+        return None
+    base = str(name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    local = find_local_copies(base)
+    out = {
+        "ok": False,
+        "refused": "input_file",
+        "error": (f"{base} is a picture, film or sound file, not a model. {tool_name} only finds model "
+                  "files; the user's own media is never on Hugging Face, and nothing was searched or "
+                  "downloaded."),
+    }
+    if local:
+        out["local"] = local
+        out["hint"] = ("It is on this machine (local). Use that file: put it into ComfyUI's input folder "
+                       "with upload_image (it takes films and sound too) and set the loader to the name it "
+                       "returns.")
+    else:
+        out["hint"] = ("It is not in ComfyUI's input or output folder. Look for it with list_files "
+                       "(e.g. path 'output', pattern '" + base + "', recursive true), or ask the user "
+                       "where it is.")
+    return out
+
+
 def _hf_headers() -> dict:
     """Return request headers including HF auth token if available."""
     headers = {"Accept": "application/json"}
@@ -449,6 +526,10 @@ def find_hf_file(filename: str, hints: str = "") -> str:
         has ``repo_id``, ``filename``, ``subfolder``, ``url``, and
         ``exact`` (bool).  Feeds directly into ``download_hf_model``.
     """
+    _no = input_file_refusal(filename, "find_hf_file")
+    if _no:
+        return json.dumps(_no)
+
     def _make_match(repo_id: str, rfilename: str, *, exact: bool) -> dict:
         if "/" in rfilename:
             subfolder, found_name = rfilename.rsplit("/", 1)
@@ -872,6 +953,11 @@ def download_hf_model(
             e.g. 'FLUX1'.  Ignored when *node_class_type* is provided.
         subfolder: Subfolder within the HF repo e.g. 'transformer'.
     """
+    _no = input_file_refusal(filename, "download_hf_model")
+    if _no:
+        return json.dumps(_no)
+    if ".." in str(destination_folder or "").replace("\\", "/").split("/"):
+        return json.dumps({"ok": False, "error": "destination_folder must be a models folder name, without '..'"})
     key = _job_key(model_id, subfolder, filename)
     with _jobs_lock:
         job = _jobs.get(key)
