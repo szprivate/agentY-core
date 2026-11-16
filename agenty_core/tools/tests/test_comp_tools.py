@@ -77,6 +77,32 @@ class Tools(unittest.TestCase):
             self.assertIn("no comp is open", ct.edit_comp())
         self.assertIn("comp.json", ct.edit_comp(path="D:/c/x.png"))
 
+    def test_run_ai_adds_then_asks_the_viewer_page_to_run_the_node(self):
+        # Promo run 2026-11-15: the agent could not run AI Depth / AI Matte from its comp tools.
+        self.client.post.side_effect = [{"path": "D:/c/shot.comp.json", "ids": ["Read1", "AI1"], "comp": {}},
+                                        {"id": "a1", "state": "sent"}]
+        self.client.get.side_effect = [{"state": "running"}, {"state": "done", "result": {"done": 97, "saved": True}}]
+        with mock.patch.object(ct.time, "sleep"):
+            got = json.loads(ct.edit_comp(path="D:/c/shot.comp.json", ops=[
+                {"op": "add", "type": "read", "file": "shot.mp4"}, {"op": "add", "type": "ai_depth", "inputs": ["$0"]},
+                {"op": "run_ai", "node": "$1", "first": 0, "last": 96}]))
+        self.assertEqual(got["status"], "ok", got)
+        self.assertEqual(got["ran"][0]["result"]["done"], 97)
+        first, second = self.client.post.call_args_list
+        self.assertEqual([o["op"] for o in first.kwargs["json_data"]["ops"]], ["add", "add"])   # run_ai is not a comp op
+        self.assertEqual(second.args[0], "/imageviewer/comp_agent")
+        self.assertEqual(second.kwargs["json_data"], {"action": "ai_run", "path": "D:/c/shot.comp.json", "node": "AI1",
+                                                      "first": 0, "last": 96})
+
+    def test_run_ai_alone_reports_missing_models_as_an_error(self):
+        self.client.post.return_value = {"id": "a2", "state": "sent"}
+        self.client.get.return_value = {"state": "error", "error": "the model files it needs are not on this machine: x"}
+        with mock.patch.object(ct.time, "sleep"):
+            got = json.loads(ct.edit_comp(path="D:/c/shot.comp.json", ops=[{"op": "run_ai", "node": "Matte"}]))
+        self.assertEqual(got["status"], "error")
+        self.assertIn("Matte: the model files", got["error"])
+        self.assertEqual(self.client.post.call_count, 1)
+
     def test_render_here_waits_for_the_files(self):
         self.client.post.return_value = {"job": "j1"}
         self.client.get.side_effect = [{"state": "running", "done": 1, "total": 2},

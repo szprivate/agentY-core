@@ -83,9 +83,43 @@ def _clean_ops(ops):
     return (ops, "") if isinstance(ops, list) else (None, _OPS_HELP)
 
 
+def _run_ai(path: str, op: dict, wait_s: float) -> dict:
+    """One run_ai op: the open viewer page runs the AI node (comp_routes' /comp_agent), saves the comp, answers."""
+    from agenty_core.utils.comfyui_client import get_client
+    c = get_client()
+    body = {"action": "ai_run", "path": path, "node": str(op.get("node") or "")}
+    for k in ("first", "last"):
+        if op.get(k) is not None:
+            try:
+                body[k] = int(op[k])
+            except (TypeError, ValueError):
+                return {"node": body["node"], "state": "error", "error": f"{k} must be a frame number"}
+    try:
+        r = c.post("/imageviewer/comp_agent", json_data=body)
+    except Exception as e:  # noqa: BLE001
+        return {"node": body["node"], "state": "error", "error": json.loads(_fail(e, "run AI nodes for an agent"))["error"]}
+    aid = r.get("id")
+    end = time.time() + max(5.0, float(wait_s))
+    last = r
+    while time.time() < end:
+        time.sleep(1.0)
+        try:
+            last = c.get("/imageviewer/comp_agent", params={"id": aid})
+        except Exception as e:  # noqa: BLE001
+            return {"node": body["node"], "state": "error", "error": json.loads(_fail(e, "run AI nodes for an agent"))["error"]}
+        if last.get("state") in ("done", "error"):
+            break
+    out = {"node": body["node"], "state": last.get("state"), **({"result": last["result"]} if last.get("result") else {})}
+    if last.get("error"):
+        out["error"] = last["error"]
+    if last.get("state") not in ("done", "error"):
+        out["note"] = last.get("note") or "still running in the viewer; read the comp later (its node's results)"
+    return out
+
+
 @tool
 def edit_comp(path: str = "", ops: list | None = None, create: bool = False, width: int = 1920, height: int = 1080,
-              fps: float = 24, frames: int = 100) -> str:
+              fps: float = 24, frames: int = 100, wait_s: int = 1800) -> str:
     """Read or change a comp of the ComfyUI Image Viewer's Comp space (a node graph of pixel operations in a
     ``*.comp.json``): add nodes, wire them, set and key their parameters, add Write nodes. The viewer saves the
     change and an open Comp tab shows it at once.
@@ -95,8 +129,8 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
         ops: Leave empty to READ it (format, output, nodes with their inputs and the parameters that differ from
             the defaults, keyed ones). To change it, a list, all done or none:
             ``{"op": "add", "type": "read|constant|merge|grade|blur|transform|write|metadata|...", "name", "inputs": [..],
-              "x", "y", <param>: <value>}`` - its id comes back in ``ids``; later ops can name it "$1", "$2" (the
-              first, second node added by this call).
+              "x", "y", <param>: <value>}`` - its id comes back in ``ids``; later ops can name it "$0", "$1" (the
+              first, second node added by this call; counted from 0).
             ``{"op": "connect", "node": .., "from": <node>, "port": <input name or index>}``,
             ``{"op": "disconnect", "node": .., "port": ..}``,
             ``{"op": "set", "node": .., "params": {..}}`` (also "name", "disable"),
@@ -116,7 +150,16 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
             Depth of field: Read the shot, Read its depth (an AI Depth result or a depth film) and its subject's
             matte; depthblur(src = shot, depth = depth read, focus at the subject's depth) with mask = the matte
             and mask_invert true, so the subject stays sharp. Never a plain blur over the whole picture.
+            The read-back lists every type there is as ``node_types``: look there before saying one is missing.
+            AI nodes (ai_depth, ai_matte = BiRefNet-style cut-out, ai_upscale, ai_inpaint) make their pictures in
+            a ComfyUI run; until run, their ``results`` is 0 and they show nothing. Run one with
+            ``{"op": "run_ai", "node": .., "first"?: .., "last"?: ..}`` (comp frames, default all): the viewer
+            open in the browser runs it on the node's own workflow, saves the comp and answers how many frames
+            came back (or which model files are missing). It runs after the other ops of the call, so one call
+            can add the node and run it. So depth of field is: read, ai_depth on it, ai_matte on it, run_ai both,
+            then depthblur as above - no separate ComfyUI workflows needed.
         create: Make the comp when the file is not there (with width / height / fps / frames).
+        wait_s: For run_ai: how long to wait for the viewer (max 3600 s each).
 
     Returns:
         JSON: {"status": "ok", "path", "comp": {format, output, nodes: [...]}, "ids"?: [new node ids]} or
@@ -128,6 +171,13 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
     ops, why = _clean_ops(ops)
     if why:
         return _j({"status": "error", "error": why})
+    runs = [o for o in ops if isinstance(o, dict) and o.get("op") == "run_ai"]
+    ops = [o for o in ops if not (isinstance(o, dict) and o.get("op") == "run_ai")]
+    if runs and not ops and not create:
+        ran = [_run_ai(path, o, min(3600, int(wait_s))) for o in runs]
+        bad = [x for x in ran if x.get("state") != "done"]
+        return _j({"status": "error" if bad else "ok", "path": path, "ran": ran,
+                   **({"error": "; ".join(f"{x['node']}: {x.get('error') or x.get('note')}" for x in bad)} if bad else {})})
     from agenty_core.utils.comfyui_client import get_client
     try:
         if not ops and not create:
@@ -141,7 +191,20 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
         return _fail(e, "edit comps")
     if not isinstance(r, dict) or r.get("error"):
         return _j({"status": "error", "error": str((r or {}).get("error") if isinstance(r, dict) else r)[:400]})
-    return _j({"status": "ok", "path": r.get("path") or path, "ids": r.get("ids") or [], "comp": r.get("comp")})
+    out = {"status": "ok", "path": r.get("path") or path, "ids": r.get("ids") or [], "comp": r.get("comp")}
+    if runs:
+        # "$0" names the first node this call added, as in the other ops.
+        ids = out["ids"]
+        for o in runs:
+            ref = str(o.get("node") or "")
+            if ref.startswith("$") and ref[1:].isdigit() and int(ref[1:]) < len(ids):
+                o = {**o, "node": ids[int(ref[1:])]}
+            out.setdefault("ran", []).append(_run_ai(out["path"], o, min(3600, int(wait_s))))
+        bad = [x for x in out["ran"] if x.get("state") != "done"]
+        if bad:
+            out["status"] = "error"
+            out["error"] = "; ".join(f"{x['node']}: {x.get('error') or x.get('note')}" for x in bad)
+    return _j(out)
 
 
 @tool
