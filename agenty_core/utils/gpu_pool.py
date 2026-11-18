@@ -29,6 +29,7 @@ Not verified against live provider accounts: the vast.ai and RunPod request shap
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
 import logging
 import random
@@ -76,6 +77,7 @@ SETTING_TYPES = {"daily_cap_usd": float, "idle_stop_minutes": int, "eu_only": bo
                  "image": str, "disk_gb": int, "gpu": str, "retries": int}
 TICK_SECONDS = 3.0
 PROVIDER_POLL_SECONDS = 15.0
+GONE_GRACE_SECONDS = 120.0
 MAX_JOBS_KEPT = 50
 MAX_BATCH = 256
 
@@ -195,6 +197,21 @@ def _now() -> float:
 
 
 # ── providers ────────────────────────────────────────────────────────────────
+def _norm_gpu(name: str) -> str:
+    return " ".join(str(name or "").lower().replace("_", " ").split())
+
+
+def gpu_matches(pattern: str, name: str) -> bool:
+    """Does a GPU name fit what was typed? Empty matches all; ``*`` and ``?`` are wildcards
+    (``RTX 50*``, ``*5090*``, ``*PRO 6000*``); without one it is a case-insensitive part of the name."""
+    p, n = _norm_gpu(pattern), _norm_gpu(name)
+    if not p:
+        return True
+    if "*" in p or "?" in p:
+        return fnmatch.fnmatchcase(n, p)
+    return p in n or p.replace("rtx ", "") in n
+
+
 def _country(geo: str) -> str:
     m = re.search(r"\b([A-Z]{2})\s*$", str(geo or ""))
     return m.group(1) if m else ""
@@ -214,20 +231,24 @@ class VastClient:
         return r.json() or {}
 
     def offers(self, gpu: str, eu_only: bool, limit: int = 30) -> list:
+        # vast.ai only filters by an exact GPU name, so the name (with or without wildcards) is matched here,
+        # over a wide page of offers; the EU filter is applied here too, so both come before the limit.
         q = {"rentable": {"eq": True}, "verified": {"eq": True}, "num_gpus": {"eq": 1},
-             "order": [["dph_total", "asc"]], "type": "on-demand", "limit": limit}
-        if gpu:
-            q["gpu_name"] = {"eq": gpu}
+             "order": [["dph_total", "asc"]], "type": "on-demand", "limit": 1000}
         out = []
         for o in self._call("POST", "/bundles/", q).get("offers") or []:
             cc = _country(o.get("geolocation"))
             if eu_only and cc not in EU:
+                continue
+            if not gpu_matches(gpu, o.get("gpu_name") or ""):
                 continue
             out.append({"provider": "vast", "offer_id": str(o.get("id")), "gpu": o.get("gpu_name") or "",
                         "vram_gb": round((o.get("gpu_ram") or 0) / 1024, 1), "usd_per_hour": float(o.get("dph_total") or 0),
                         "region": o.get("geolocation") or "", "country": cc,
                         "reliability": round(float(o.get("reliability2") or o.get("reliability") or 0), 3),
                         "down_mbps": int(o.get("inet_down") or 0), "disk_gb": int(o.get("disk_space") or 0)})
+            if len(out) >= limit:
+                break
         return out
 
     def rent(self, offer_id: str, image: str, disk_gb: int, token: str) -> str:
@@ -279,7 +300,7 @@ class RunPodClient:
         out = []
         for g in ((r.json() or {}).get("data") or {}).get("gpuTypes") or []:
             name = g.get("displayName") or g.get("id") or ""
-            if gpu and gpu.lower().replace("rtx ", "") not in name.lower():
+            if not gpu_matches(gpu, name):
                 continue
             price = (g.get("lowestPrice") or {}).get("uninterruptablePrice") or g.get("securePrice") or 0
             if not price:
@@ -979,8 +1000,13 @@ def _poll_providers(force: bool = False) -> None:
         for m in ms:
             info = seen.get(m["provider_id"])
             if info is None or info["status"] == "gone":
-                m.update(state="gone", running_since=None, error="the provider no longer lists it")
+                # Terminated on the provider's own site: take it out of the farm. A machine rented a moment ago
+                # may not be listed yet, so it gets a grace period first.
+                if _now() - float(m.get("created") or 0) < GONE_GRACE_SECONDS:
+                    continue
+                logger.info("gpu_pool: %s %s is no longer listed by %s; removed", m["name"], m["provider_id"], provider)
                 _requeue(m)
+                _load()["machines"].pop(m["id"], None)
                 continue
             if info.get("url"):
                 m["url"] = info["url"]

@@ -4,6 +4,7 @@ import json
 import time
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -209,6 +210,37 @@ class PoolTests(unittest.TestCase):
         with self.assertRaises(gp.PoolError):      # the fake net only answers console.vast.ai
             gp.offers("vast")
         self.assertTrue(self.net.calls[-1][1].startswith("https://vast.example/api/v0/bundles/"))
+
+    def test_gpu_names_match_with_wildcards_and_without_exact_case(self):
+        m = gp.gpu_matches
+        self.assertTrue(m("", "RTX 4090"))
+        self.assertTrue(m("rtx 5090", "RTX 5090"))
+        self.assertTrue(m("5090", "RTX 5090"))
+        self.assertTrue(m("RTX 50*", "RTX 5070 Ti"))
+        self.assertTrue(m("*pro 6000*", "RTX PRO 6000 WS"))
+        self.assertTrue(m("H?00*", "H100 SXM"))
+        self.assertFalse(m("RTX 50*", "RTX 4090"))
+        self.assertFalse(m("5090", "RTX 4090"))
+
+    def test_vast_offers_take_a_wildcard(self):
+        self.assertEqual([o["offer_id"] for o in gp.offers("vast", gpu="rtx 50*")], ["11", "13"])
+        self.assertEqual(gp.offers("vast", gpu="*4090*"), [])
+        q = [c for c in self.net.calls if c[1].endswith("/bundles/")]
+        self.assertTrue(q)
+
+    def test_a_machine_terminated_on_the_provider_site_leaves_the_farm(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47, gpu="RTX 5090")
+        gp._poll_providers(force=True)
+        self.assertEqual(len(gp.state()["machines"]), 1)
+        self.net.vast_instances.clear()                     # destroyed on cloud.vast.ai
+        gp._poll_providers(force=True)                      # just rented: still in its grace period
+        self.assertEqual(len(gp.state()["machines"]), 1)
+        later = time.time() + gp.GONE_GRACE_SECONDS + 5
+        with mock.patch.object(gp, "_now", return_value=later):
+            gp._poll_providers(force=True)
+        self.assertEqual(gp.state()["machines"], [])
+        self.assertNotIn(m["id"], json.dumps(gp.state()["machines"]))
 
     def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
         with self.assertRaisesRegex(gp.PoolError, "machine image"):
