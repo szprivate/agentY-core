@@ -59,6 +59,29 @@ class FakeComfy:
         return R(404, raw=b"no")
 
 
+class FetchingComfy(FakeComfy):
+    """A machine image with the agenty_farm_helper node: downloads finish after two status reads."""
+
+    def __init__(self, **kw):
+        super().__init__(models=(), **kw)
+        self.fetches, self.reads = [], 0
+
+    def __call__(self, method, path, headers, body):
+        if path == "/farm/fetch" and method == "POST":
+            self.auth.append((headers or {}).get("Authorization"))
+            self.fetches += [dict(i, state="downloading", bytes=0, total=10_000_000_000) for i in body["items"]]
+            return R(body={"ok": True})
+        if path == "/farm/fetch":
+            self.reads += 1
+            if self.reads >= 2:
+                for f in self.fetches:
+                    if f["state"] != "done":
+                        f.update(state="done", bytes=f["total"])
+                        self.models.append(f["name"])
+            return R(body={"items": self.fetches})
+        return super().__call__(method, path, headers, body)
+
+
 class Net:
     """Routes by host: machines by their netloc, vast / runpod by API host."""
 
@@ -242,7 +265,71 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(gp.state()["machines"], [])
         self.assertNotIn(m["id"], json.dumps(gp.state()["machines"]))
 
+    def test_a_missing_model_is_downloaded_by_the_machine_before_the_render(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [{"id": "Comfy-Org/Z-Image-Turbo",
+                                          "siblings": [{"rfilename": "checkpoints/z_image_turbo.safetensors"}]}])
+        try:
+            self.add("a:8188", FetchingComfy())
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            gp.tick(dt=1)
+            j = gp.state()["jobs"][0]
+            self.assertEqual(j["tasks"][0]["state"], "models")
+            comfy = self.net.machines["a:8188"]
+            self.assertEqual(comfy.fetches[0]["url"], "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/"
+                                                      "checkpoints/z_image_turbo.safetensors")
+            self.assertEqual(comfy.fetches[0]["folder"], "checkpoints")
+            self.run_ticks(4)
+            self.assertEqual(gp.state()["jobs"][0]["state"], "done")
+            self.assertEqual(len(comfy.prompts), 1)
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_a_machine_that_cannot_download_says_so(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [{"id": "Comfy-Org/Z-Image-Turbo",
+                                          "siblings": [{"rfilename": "checkpoints/z_image_turbo.safetensors"}]}])
+        try:
+            self.add("a:8188", FakeComfy(models=()))
+            gp.set_settings({"retries": 0})
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            self.run_ticks(2)
+            t = gp.state()["jobs"][0]["tasks"][0]
+            self.assertEqual(t["state"], "failed")
+            self.assertIn("cannot download models", t["error"])
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_an_unknown_model_names_the_file_to_add(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [])
+        try:
+            self.add("a:8188", FetchingComfy())
+            gp.set_settings({"retries": 0})
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            self.run_ticks(2)
+            t = gp.state()["jobs"][0]["tasks"][0]
+            self.assertEqual(t["state"], "failed")
+            self.assertIn("checkpoints/z_image_turbo.safetensors", t["error"])
+            self.assertIn("farm_models.json", t["error"])
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_open_url_brings_the_token_only_when_asked(self):
+        m = self.add("a:8188")
+        r = gp.action({"action": "open_url", "id": m["id"]})
+        self.assertEqual(r["url"], "http://a:8188/?token=tok-a%3A8188")
+        self.assertNotIn("tok-a", json.dumps(r["state"]))
+
     def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
+        self.assertEqual(gp.state()["settings"]["image"], "ghcr.io/szprivate/agenty-farm:latest")
+        gp.set_settings({"image": ""})
         with self.assertRaisesRegex(gp.PoolError, "machine image"):
             gp.rent("vast", "11", usd_per_hour=0.47)
         gp.set_settings({"image": "example/comfy:1"})

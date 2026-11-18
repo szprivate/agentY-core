@@ -68,7 +68,8 @@ DEFAULT_SETTINGS = {
     "idle_stop_minutes": 10,
     "eu_only": True,
     "max_usd_per_hour": 1.5,
-    "image": "",              # the machine image: ComfyUI + bepic_templates + the custom nodes of ws26
+    # the machine image: ComfyUI + the agentY farm helper (agentY deploy/farm-image, built by its Farm image workflow)
+    "image": "ghcr.io/szprivate/agenty-farm:latest",
     "disk_gb": 80,
     "gpu": "RTX 5090",
     "retries": 1,
@@ -390,24 +391,35 @@ def check_parity(machine_id: str, workflow: dict) -> dict:
     info = _comfy(m, "GET", "/object_info", timeout=60).json() or {}
     types = {str(n.get("class_type")) for n in (workflow or {}).values() if isinstance(n, dict)}
     missing_nodes = sorted(t for t in types if t and t not in info)
-    wanted: dict = {}
-    for n in (workflow or {}).values():
-        for k, v in ((n or {}).get("inputs") or {}).items() if isinstance(n, dict) else ():
-            if k in MODEL_FOLDERS and isinstance(v, str) and v:
-                wanted.setdefault(MODEL_FOLDERS[k], set()).add(v.replace("\\", "/"))
-    missing_models = []
-    for folder, names in sorted(wanted.items()):
-        try:
-            have = {str(x).replace("\\", "/") for x in (_comfy(m, "GET", f"/models/{folder}").json() or [])}
-        except PoolError:
-            have = set()
-        missing_models += [f"{folder}/{n}" for n in sorted(names) if n not in have]
+    missing_models = [f"{f}/{n}" for f, n in _missing_models(m, workflow)]
     res = {"ok": not missing_nodes and not missing_models, "missing_nodes": missing_nodes,
            "missing_models": missing_models, "checked": _now()}
     with _lock:
         m["parity"] = res
         _save()
     return res
+
+
+def _wanted_models(workflow: dict) -> dict:
+    """``{folder: {name, ...}}`` of the model files a workflow's loaders name."""
+    wanted: dict = {}
+    for n in (workflow or {}).values():
+        for k, v in ((n or {}).get("inputs") or {}).items() if isinstance(n, dict) else ():
+            if k in MODEL_FOLDERS and isinstance(v, str) and v:
+                wanted.setdefault(MODEL_FOLDERS[k], set()).add(v.replace("\\", "/"))
+    return wanted
+
+
+def _missing_models(m: dict, workflow: dict) -> list:
+    """``[(folder, name), ...]`` the workflow needs and the machine does not list."""
+    out = []
+    for folder, names in sorted(_wanted_models(workflow).items()):
+        try:
+            have = {str(x).replace("\\", "/") for x in (_comfy(m, "GET", f"/models/{folder}").json() or [])}
+        except PoolError:
+            have = set()
+        out += [(folder, n) for n in sorted(names) if n not in have]
+    return out
 
 
 # ── machines ─────────────────────────────────────────────────────────────────
@@ -570,8 +582,11 @@ def _seeded(workflow: dict, mode: str, i: int, base_rng: random.Random) -> tuple
 
 
 def submit(workflow: dict, *, name: str = "", batch: int = 1, seed_mode: str = "increment",
-           machines: Optional[list] = None, dest: Optional[str] = None) -> dict:
-    """Queue *workflow* (API format) ``batch`` times. ``machines``: ids to use (default all)."""
+           machines: Optional[list] = None, dest: Optional[str] = None,
+           model_urls: Optional[dict] = None) -> dict:
+    """Queue *workflow* (API format) ``batch`` times. ``machines``: ids to use (default all). ``model_urls``:
+    ``{"folder/name": url}`` the workflow brought along (ComfyUI templates carry one per loader), used when a
+    machine has to download a model."""
     if not isinstance(workflow, dict) or not workflow:
         raise PoolError("No workflow to render")
     if not any(isinstance(n, dict) and n.get("class_type") for n in workflow.values()):
@@ -590,6 +605,8 @@ def submit(workflow: dict, *, name: str = "", batch: int = 1, seed_mode: str = "
         jid = "j" + uuid.uuid4().hex[:8]
         s["jobs"][jid] = {"id": jid, "name": name or "Farm render", "created": _now(), "batch": batch,
                           "seed_mode": seed_mode, "machines": list(machines or []), "dest": dest or "",
+                          "model_urls": {str(k): str(v) for k, v in (model_urls or {}).items()
+                                         if isinstance(v, str) and v.startswith("https://")},
                           "state": "queued", "tasks": tasks}
         _trim_jobs()
         _save()
@@ -602,7 +619,7 @@ def cancel(jid: str) -> dict:
         if not j:
             raise PoolError(f"No job {jid!r}")
         for t in j["tasks"]:
-            if t["state"] in ("queued", "running", "uploading"):
+            if t["state"] in ("queued", "running", "uploading", "models"):
                 m = _load()["machines"].get(t.get("machine") or "")
                 if t["state"] == "running" and m and t.get("prompt_id"):
                     try:
@@ -656,7 +673,7 @@ def _requeue(m: dict) -> None:
         return
     jid, i = m["task"]
     j = _load()["jobs"].get(jid)
-    if j and i < len(j["tasks"]) and j["tasks"][i]["state"] in ("running", "uploading"):
+    if j and i < len(j["tasks"]) and j["tasks"][i]["state"] in ("running", "uploading", "models"):
         j["tasks"][i].update(state="queued", machine=None, prompt_id=None)
     m["task"] = None
 
@@ -738,6 +755,75 @@ def _start_task(m: dict, j: dict, t: dict) -> None:
     t["tried"].append(m["id"])
     m["state_note"] = f"{j['name']} #{t['i'] + 1}"
     try:
+        need = _missing_models(m, t["workflow"])
+        if need:
+            _request_models(m, j, t, need)
+            return
+    except Exception as exc:  # noqa: BLE001
+        _task_failed(m, j, t, str(exc))
+        return
+    _submit(m, j, t)
+
+
+def _request_models(m: dict, j: dict, t: dict, need: list) -> None:
+    """Ask the machine (its ``agenty_farm_helper`` node) to download the models it lacks; the task waits in
+    state ``models`` until they are there (:func:`_poll_models`)."""
+    from agenty_core.utils import farm_models
+    items, unknown = [], []
+    for folder, name in need:
+        url = farm_models.resolve(folder, name, j.get("model_urls"))
+        if url:
+            items.append({"folder": folder, "name": name, "url": url})
+        else:
+            unknown.append(f"{folder}/{name}")
+    if unknown:
+        raise PoolError(f"{m['name']} lacks {', '.join(unknown)} and no download address is known for "
+                        f"{'it' if len(unknown) == 1 else 'them'}: add one to config/farm_models.json")
+    try:
+        _comfy(m, "POST", "/farm/fetch", json_body={"items": items}, timeout=30)
+    except PoolError as exc:
+        if "answered 404" in str(exc) or "answered 405" in str(exc):
+            raise PoolError(f"{m['name']} lacks {', '.join(f'{f}/{n}' for f, n in need)} and its machine image "
+                            "cannot download models: use the agentY farm image (Setup > Machine image)") from None
+        raise
+    t.update(state="models", fetch=[f"{i['folder']}/{i['name']}" for i in items])
+    logger.info("gpu_pool: %s downloads %s", m["name"], ", ".join(t["fetch"]))
+
+
+def _poll_models(m: dict, j: dict, t: dict) -> None:
+    try:
+        st = _comfy(m, "GET", "/farm/fetch", timeout=20).json() or {}
+    except Exception as exc:  # noqa: BLE001
+        if not _probe(m):
+            m["state"] = "unreachable"
+            _task_failed(m, j, t, f"lost the machine: {exc}")
+        return
+    have = {f"{i.get('folder')}/{i.get('name')}": i for i in st.get("items") or [] if isinstance(i, dict)}
+    mine = [(k, have.get(k)) for k in t.get("fetch") or []]
+    for k, i in mine:
+        if i is None:
+            _task_failed(m, j, t, f"{m['name']} forgot the download of {k} (restarted?)")
+            return
+        if i.get("state") == "failed":
+            _task_failed(m, j, t, f"could not download {k}: {i.get('error') or 'failed'}")
+            return
+    if all(i.get("state") == "done" for _, i in mine):
+        t["fetch_note"] = ""
+        _submit(m, j, t)
+        return
+    got = sum(int(i.get("bytes") or 0) for _, i in mine)
+    total = sum(int(i.get("total") or 0) for _, i in mine)
+    left = sum(1 for _, i in mine if i.get("state") != "done")
+    pct = f"{100 * got / total:.0f}% · " if total else ""
+    t["fetch_note"] = f"downloading {left} model{'s' if left != 1 else ''}: {pct}{got / 1e9:.1f}" + \
+                      (f" of {total / 1e9:.1f} GB" if total else " GB")
+    m["state_note"] = f"{j['name']} #{t['i'] + 1} ({t['fetch_note']})"
+
+
+def _submit(m: dict, j: dict, t: dict) -> None:
+    t["state"] = "uploading"
+    m["state_note"] = f"{j['name']} #{t['i'] + 1}"
+    try:
         wf = copy.deepcopy(t["workflow"])
         _upload_inputs(m, wf)
         _ensure_watcher(m)
@@ -800,8 +886,8 @@ def _job_state(j: dict) -> str:
     states = {t["state"] for t in j["tasks"]}
     if j["state"] == "cancelled":
         return "cancelled"
-    if states & {"queued", "running", "uploading"}:
-        return "running" if states & {"running", "uploading", "done", "failed"} else "queued"
+    if states & {"queued", "running", "uploading", "models"}:
+        return "running" if states & {"running", "uploading", "models", "done", "failed"} else "queued"
     return "failed" if "failed" in states and "done" not in states else "done"
 
 
@@ -1065,12 +1151,12 @@ def tick(dt: Optional[float] = None) -> None:
             if j["state"] in ("done", "failed", "cancelled"):
                 continue
             for t in j["tasks"]:
-                if t["state"] == "running":
+                if t["state"] in ("running", "models"):
                     m = s["machines"].get(t["machine"] or "")
                     if not m:
                         t.update(state="queued", machine=None, prompt_id=None)
                         continue
-                    _poll_task(m, j, t)
+                    (_poll_task if t["state"] == "running" else _poll_models)(m, j, t)
             for t in j["tasks"]:
                 if t["state"] == "queued" and not over:
                     m = _pick_machine(j, t)
@@ -1170,12 +1256,19 @@ def action(body: dict) -> dict:
                                  float(b.get("usd_per_hour") or 0))
     elif a == "remove":
         remove(str(b.get("id")))
+    elif a == "open_url":
+        # The machine's ComfyUI for a browser: with its token once (the farm image keeps it as a cookie).
+        with _lock:
+            m = _machine(str(b.get("id")))
+            if not m.get("url"):
+                raise PoolError(f"{m['name']} has no address yet")
+            res["url"] = m["url"].rstrip("/") + "/" + (f"?token={quote(m['token'])}" if m.get("token") else "")
     elif a == "parity":
         res["parity"] = check_parity(str(b.get("id")), b.get("workflow") or {})
     elif a == "submit":
         res["job"] = submit(b.get("workflow") or {}, name=str(b.get("name") or ""), batch=int(b.get("batch") or 1),
                             seed_mode=str(b.get("seed_mode") or "increment"), machines=b.get("machines") or None,
-                            dest=b.get("dest") or None)
+                            dest=b.get("dest") or None, model_urls=b.get("model_urls") or None)
     elif a == "cancel":
         res["job"] = cancel(str(b.get("id")))
     elif a == "retry":
