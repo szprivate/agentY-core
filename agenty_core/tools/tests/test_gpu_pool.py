@@ -202,6 +202,14 @@ class PoolTests(unittest.TestCase):
         gp.set_settings({"eu_only": False})
         self.assertEqual(len(gp.offers("vast")), 3)
 
+    def test_the_api_address_comes_from_env_or_the_default(self):
+        self.assertEqual(gp._api_url("vast"), "https://console.vast.ai/api/v0")
+        self.assertEqual(gp._api_url("runpod"), "https://rest.runpod.io/v1")
+        self.keys["VAST_API_URL"] = "https://vast.example/api/v0/ "
+        with self.assertRaises(gp.PoolError):      # the fake net only answers console.vast.ai
+            gp.offers("vast")
+        self.assertTrue(self.net.calls[-1][1].startswith("https://vast.example/api/v0/bundles/"))
+
     def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
         with self.assertRaisesRegex(gp.PoolError, "machine image"):
             gp.rent("vast", "11", usd_per_hour=0.47)

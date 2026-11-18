@@ -48,6 +48,8 @@ RUNPOD_REST = "https://rest.runpod.io/v1"
 RUNPOD_GRAPHQL = "https://api.runpod.io/graphql"
 PROVIDERS = ("vast", "runpod", "url")
 KEY_NAMES = {"vast": "VAST_API_KEY", "runpod": "RUNPOD_API_KEY"}
+# Optional .env overrides of the API addresses (agentY's Settings shows them, filled with the defaults above).
+URL_NAMES = {"vast": ("VAST_API_URL", VAST_API), "runpod": ("RUNPOD_API_URL", RUNPOD_REST)}
 SEED_MODES = ("increment", "random", "fixed")
 SEED_KEYS = ("seed", "noise_seed")
 LOADER_KEYS = ("image", "video", "audio", "file", "mask")
@@ -130,6 +132,17 @@ def _http(method, url, **kw):
     return (_transport or _requests_transport)(method, url, **kw)
 
 
+def _api_url(provider: str) -> str:
+    """The provider's API address: the .env override (``VAST_API_URL`` / ``RUNPOD_API_URL``) or the default."""
+    name, default = URL_NAMES[provider]
+    if _secret:
+        v = _secret(name) or ""
+    else:
+        from agenty_core.utils.secrets import get_secret
+        v = get_secret(name, "")
+    return (v.strip() or default).rstrip("/")
+
+
 def _key(provider: str) -> str:
     name = KEY_NAMES.get(provider)
     if not name:
@@ -192,9 +205,10 @@ class VastClient:
 
     def __init__(self, key: str):
         self.h = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+        self.base = _api_url("vast")
 
     def _call(self, method, path, body=None):
-        r = _http(method, VAST_API + path, headers=self.h, json_body=body, timeout=30)
+        r = _http(method, self.base + path, headers=self.h, json_body=body, timeout=30)
         if r.status_code >= 400:
             raise PoolError(f"vast.ai answered {r.status_code}: {r.content[:200].decode('utf-8', 'replace')}")
         return r.json() or {}
@@ -248,9 +262,10 @@ class RunPodClient:
 
     def __init__(self, key: str):
         self.h = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+        self.base = _api_url("runpod")
 
     def _rest(self, method, path, body=None):
-        r = _http(method, RUNPOD_REST + path, headers=self.h, json_body=body, timeout=30)
+        r = _http(method, self.base + path, headers=self.h, json_body=body, timeout=30)
         if r.status_code >= 400:
             raise PoolError(f"RunPod answered {r.status_code}: {r.content[:200].decode('utf-8', 'replace')}")
         return r.json() if r.content else {}
