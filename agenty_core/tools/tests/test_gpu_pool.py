@@ -4,6 +4,7 @@ import json
 import time
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -56,6 +57,29 @@ class FakeComfy:
         if path in ("/interrupt",):
             return R(body={})
         return R(404, raw=b"no")
+
+
+class FetchingComfy(FakeComfy):
+    """A machine image with the agenty_farm_helper node: downloads finish after two status reads."""
+
+    def __init__(self, **kw):
+        super().__init__(models=(), **kw)
+        self.fetches, self.reads = [], 0
+
+    def __call__(self, method, path, headers, body):
+        if path == "/farm/fetch" and method == "POST":
+            self.auth.append((headers or {}).get("Authorization"))
+            self.fetches += [dict(i, state="downloading", bytes=0, total=10_000_000_000) for i in body["items"]]
+            return R(body={"ok": True})
+        if path == "/farm/fetch":
+            self.reads += 1
+            if self.reads >= 2:
+                for f in self.fetches:
+                    if f["state"] != "done":
+                        f.update(state="done", bytes=f["total"])
+                        self.models.append(f["name"])
+            return R(body={"items": self.fetches})
+        return super().__call__(method, path, headers, body)
 
 
 class Net:
@@ -202,7 +226,110 @@ class PoolTests(unittest.TestCase):
         gp.set_settings({"eu_only": False})
         self.assertEqual(len(gp.offers("vast")), 3)
 
+    def test_the_api_address_comes_from_env_or_the_default(self):
+        self.assertEqual(gp._api_url("vast"), "https://console.vast.ai/api/v0")
+        self.assertEqual(gp._api_url("runpod"), "https://rest.runpod.io/v1")
+        self.keys["VAST_API_URL"] = "https://vast.example/api/v0/ "
+        with self.assertRaises(gp.PoolError):      # the fake net only answers console.vast.ai
+            gp.offers("vast")
+        self.assertTrue(self.net.calls[-1][1].startswith("https://vast.example/api/v0/bundles/"))
+
+    def test_gpu_names_match_with_wildcards_and_without_exact_case(self):
+        m = gp.gpu_matches
+        self.assertTrue(m("", "RTX 4090"))
+        self.assertTrue(m("rtx 5090", "RTX 5090"))
+        self.assertTrue(m("5090", "RTX 5090"))
+        self.assertTrue(m("RTX 50*", "RTX 5070 Ti"))
+        self.assertTrue(m("*pro 6000*", "RTX PRO 6000 WS"))
+        self.assertTrue(m("H?00*", "H100 SXM"))
+        self.assertFalse(m("RTX 50*", "RTX 4090"))
+        self.assertFalse(m("5090", "RTX 4090"))
+
+    def test_vast_offers_take_a_wildcard(self):
+        self.assertEqual([o["offer_id"] for o in gp.offers("vast", gpu="rtx 50*")], ["11", "13"])
+        self.assertEqual(gp.offers("vast", gpu="*4090*"), [])
+        q = [c for c in self.net.calls if c[1].endswith("/bundles/")]
+        self.assertTrue(q)
+
+    def test_a_machine_terminated_on_the_provider_site_leaves_the_farm(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47, gpu="RTX 5090")
+        gp._poll_providers(force=True)
+        self.assertEqual(len(gp.state()["machines"]), 1)
+        self.net.vast_instances.clear()                     # destroyed on cloud.vast.ai
+        gp._poll_providers(force=True)                      # just rented: still in its grace period
+        self.assertEqual(len(gp.state()["machines"]), 1)
+        later = time.time() + gp.GONE_GRACE_SECONDS + 5
+        with mock.patch.object(gp, "_now", return_value=later):
+            gp._poll_providers(force=True)
+        self.assertEqual(gp.state()["machines"], [])
+        self.assertNotIn(m["id"], json.dumps(gp.state()["machines"]))
+
+    def test_a_missing_model_is_downloaded_by_the_machine_before_the_render(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [{"id": "Comfy-Org/Z-Image-Turbo",
+                                          "siblings": [{"rfilename": "checkpoints/z_image_turbo.safetensors"}]}])
+        try:
+            self.add("a:8188", FetchingComfy())
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            gp.tick(dt=1)
+            j = gp.state()["jobs"][0]
+            self.assertEqual(j["tasks"][0]["state"], "models")
+            comfy = self.net.machines["a:8188"]
+            self.assertEqual(comfy.fetches[0]["url"], "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/"
+                                                      "checkpoints/z_image_turbo.safetensors")
+            self.assertEqual(comfy.fetches[0]["folder"], "checkpoints")
+            self.run_ticks(4)
+            self.assertEqual(gp.state()["jobs"][0]["state"], "done")
+            self.assertEqual(len(comfy.prompts), 1)
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_a_machine_that_cannot_download_says_so(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [{"id": "Comfy-Org/Z-Image-Turbo",
+                                          "siblings": [{"rfilename": "checkpoints/z_image_turbo.safetensors"}]}])
+        try:
+            self.add("a:8188", FakeComfy(models=()))
+            gp.set_settings({"retries": 0})
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            self.run_ticks(2)
+            t = gp.state()["jobs"][0]["tasks"][0]
+            self.assertEqual(t["state"], "failed")
+            self.assertIn("cannot download models", t["error"])
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_an_unknown_model_names_the_file_to_add(self):
+        from agenty_core.utils import farm_models as fm
+        fm.set_root(Path(self.tmp.name))
+        fm.set_http(lambda url, params: [])
+        try:
+            self.add("a:8188", FetchingComfy())
+            gp.set_settings({"retries": 0})
+            gp.submit(WF, name="cars", batch=1, dest=self.dest)
+            self.run_ticks(2)
+            t = gp.state()["jobs"][0]["tasks"][0]
+            self.assertEqual(t["state"], "failed")
+            self.assertIn("checkpoints/z_image_turbo.safetensors", t["error"])
+            self.assertIn("farm_models.json", t["error"])
+        finally:
+            fm.set_http(None)
+            fm.set_root(None)
+
+    def test_open_url_brings_the_token_only_when_asked(self):
+        m = self.add("a:8188")
+        r = gp.action({"action": "open_url", "id": m["id"]})
+        self.assertEqual(r["url"], "http://a:8188/?token=tok-a%3A8188")
+        self.assertNotIn("tok-a", json.dumps(r["state"]))
+
     def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
+        self.assertEqual(gp.state()["settings"]["image"], "ghcr.io/szprivate/agenty-farm:latest")
+        gp.set_settings({"image": ""})
         with self.assertRaisesRegex(gp.PoolError, "machine image"):
             gp.rent("vast", "11", usd_per_hour=0.47)
         gp.set_settings({"image": "example/comfy:1"})
