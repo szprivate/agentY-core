@@ -75,6 +75,8 @@ DEFAULT_SETTINGS = {
     "gpu": "RTX 5090",
     "retries": 1,
 }
+# images an earlier Farm suggested or saved; a machine started from one has no farm helper, so they mean the default
+OLD_DEFAULT_IMAGES = ("", "yanwk/comfyui-boot:cu130-slim-v2")
 SETTING_TYPES = {"daily_cap_usd": float, "idle_stop_minutes": int, "eu_only": bool, "max_usd_per_hour": float,
                  "image": str, "disk_gb": int, "gpu": str, "retries": int}
 TICK_SECONDS = 3.0
@@ -175,6 +177,8 @@ def _load() -> dict:
         _state.setdefault("jobs", {})
         _state.setdefault("spend", {})
         _state["settings"] = {**DEFAULT_SETTINGS, **(_state.get("settings") or {})}
+        if str(_state["settings"].get("image") or "").strip() in OLD_DEFAULT_IMAGES:
+            _state["settings"]["image"] = DEFAULT_SETTINGS["image"]
     return _state
 
 
@@ -599,6 +603,8 @@ def set_settings(patch: dict) -> dict:
             if t in (int, float) and v < 0:
                 raise PoolError(f"{k} cannot be negative")
             st[k] = v.strip() if isinstance(v, str) else v
+            if k == "image" and not st[k]:
+                st[k] = DEFAULT_SETTINGS["image"]
         _save()
         return dict(st)
 

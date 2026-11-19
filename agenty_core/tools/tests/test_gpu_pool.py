@@ -371,6 +371,18 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(gp.state()["machines"][0]["url"], "http://203.0.113.7:41001")
         self.assertIn(("GET", "https://console.vast.ai/api/v1/instances?limit=25"), self.net.calls)
 
+    def test_the_machine_image_defaults_to_the_farm_image(self):
+        self.assertEqual(gp.state()["settings"]["image"], "ghcr.io/szprivate/agenty-farm:latest")
+        self.assertEqual(gp.set_settings({"image": "ghcr.io/me/farm:2"})["image"], "ghcr.io/me/farm:2")
+        self.assertEqual(gp.set_settings({"image": "  "})["image"], "ghcr.io/szprivate/agenty-farm:latest")
+
+    def test_the_old_suggested_image_is_replaced_by_the_farm_image(self):
+        gp._state = None
+        Path(gp._state_path).write_text(json.dumps({"settings": {"image": "yanwk/comfyui-boot:cu130-slim-v2",
+                                                                  "disk_gb": 40}}))
+        st = gp.state()["settings"]
+        self.assertEqual((st["image"], st["disk_gb"]), ("ghcr.io/szprivate/agenty-farm:latest", 40))
+
     def test_a_machine_past_the_first_page_of_the_listing_is_found(self):
         gp.set_settings({"image": "example/comfy:1"})
         m = gp.rent("vast", "11", usd_per_hour=0.47)
@@ -393,11 +405,7 @@ class PoolTests(unittest.TestCase):
         self.assertIn("no public address for ComfyUI's port 8188", err)
         self.assertIn("22/tcp", err)
 
-    def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
-        self.assertEqual(gp.state()["settings"]["image"], "ghcr.io/szprivate/agenty-farm:latest")
-        gp.set_settings({"image": ""})
-        with self.assertRaisesRegex(gp.PoolError, "machine image"):
-            gp.rent("vast", "11", usd_per_hour=0.47)
+    def test_renting_needs_a_key_and_room_under_the_cap(self):
         gp.set_settings({"image": "example/comfy:1"})
         with self.assertRaisesRegex(gp.PoolError, "limit"):
             gp.rent("vast", "13", usd_per_hour=1.9)
