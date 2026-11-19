@@ -90,6 +90,10 @@ class Net:
         self.vast_instances = {}
         self.rented = []
         self.list_fails = False
+        self.vast_volumes = {}
+        self.vol_offers = [{"id": 900, "machine_id": 7001, "geolocation": "Germany, DE", "disk_space": 500,
+                            "storage_cost": 0.15, "reliability2": 0.99}]
+        self.pods, self.netvols = [], {}
 
     def __call__(self, method, url, headers=None, json_body=None, data=None, files=None, timeout=30):
         u = urlparse(url)
@@ -99,6 +103,8 @@ class Net:
             if u.path.startswith("/api/v1/"):
                 return self.vast_v1(method, u.path[len("/api/v1"):], parse_qs(u.query))
             return self.vast(method, u.path[len("/api/v0"):], json_body)
+        if u.netloc == "rest.runpod.io":
+            return self.runpod(method, u.path[len("/v1"):], json_body)
         if u.netloc in self.machines:
             return self.machines[u.netloc](method, path, headers, json_body)
         return R(502, raw=b"down")
@@ -115,15 +121,62 @@ class Net:
         nxt = str(start + limit) if start + limit < len(rows) else None
         return R(body={"instances": page, "next_token": nxt})
 
+    def runpod(self, method, path, body):
+        if path == "/pods" and method == "POST":
+            self.pods.append(body)
+            return R(body={"id": f"pod{len(self.pods)}"})
+        if path == "/pods":
+            return R(body=[{"id": f"pod{i + 1}", "desiredStatus": "RUNNING"} for i in range(len(self.pods))])
+        if path == "/networkvolumes" and method == "POST":
+            vid = f"nv{len(self.netvols) + 1}"
+            self.netvols[vid] = {"id": vid, "name": body["name"], "size": body["size"], "dataCenterId": body["dataCenterId"]}
+            return R(body=self.netvols[vid])
+        if path == "/networkvolumes":
+            return R(body=list(self.netvols.values()))
+        if path.startswith("/networkvolumes/"):
+            vid = path.rsplit("/", 1)[1]
+            if method == "PATCH":
+                self.netvols[vid]["size"] = body["size"]
+            elif method == "DELETE":
+                self.netvols.pop(vid)
+            return R(body=self.netvols.get(vid, {}))
+        return R(404, raw=b"?")
+
     def vast(self, method, path, body):
         if path == "/bundles/":
-            return R(body={"offers": [
-                {"id": 11, "gpu_name": "RTX 5090", "dph_total": 0.47, "geolocation": "Germany, DE", "reliability2": 0.99,
-                 "gpu_ram": 32768, "inet_down": 900, "disk_space": 200},
-                {"id": 12, "gpu_name": "RTX 5090", "dph_total": 0.41, "geolocation": "Texas, US", "reliability2": 0.98},
-                {"id": 13, "gpu_name": "RTX 5090", "dph_total": 1.90, "geolocation": "Sweden, SE", "reliability2": 0.99}]})
+            offers = [
+                {"id": 11, "machine_id": 7001, "gpu_name": "RTX 5090", "dph_total": 0.47, "geolocation": "Germany, DE",
+                 "reliability2": 0.99, "gpu_ram": 32768, "inet_down": 900, "disk_space": 200},
+                {"id": 12, "machine_id": 7002, "gpu_name": "RTX 5090", "dph_total": 0.41, "geolocation": "Texas, US",
+                 "reliability2": 0.98},
+                {"id": 13, "machine_id": 7003, "gpu_name": "RTX 5090", "dph_total": 1.90, "geolocation": "Sweden, SE",
+                 "reliability2": 0.99},
+                {"id": 14, "machine_id": 7004, "gpu_name": "RTX A6000", "dph_total": 0.45, "geolocation": "France, FR",
+                 "reliability2": 0.99}]
+            if "eq" in (body.get("id") or {}):
+                offers = [o for o in offers if o["id"] == body["id"]["eq"]]
+            return R(body={"offers": offers})
+        if path == "/volumes/search":
+            return R(body={"offers": self.vol_offers})
+        if path == "/volumes" and method == "PUT":
+            o = next(o for o in self.vol_offers if o["id"] == body["id"])
+            vid = 3000 + len(self.vast_volumes)
+            self.vast_volumes[str(vid)] = {"id": vid, "machine_id": o["machine_id"], "disk_space": body["size"],
+                                           "status": "ready", "instances": []}
+            return R(body={"success": True, "volume_name": f"V.{vid}"})
+        if path == "/volumes" and method == "DELETE":
+            self.vast_volumes.pop(str(body["id"]))
+            return R(body={"success": True})
+        if path == "/volumes":
+            return R(body={"volumes": list(self.vast_volumes.values())})
         if path.startswith("/asks/"):
             self.rented.append(body)
+            vi = body.get("volume_info") or {}
+            if vi.get("create_new"):                  # vast.ai makes the volume on the offer's machine
+                o = next(o for o in self.vol_offers if o["id"] == vi["volume_id"])
+                vid = 3000 + len(self.vast_volumes)
+                self.vast_volumes[str(vid)] = {"id": vid, "machine_id": o["machine_id"], "disk_space": vi["size"],
+                                               "status": "ready", "instances": [1]}
             iid = str(500 + len(self.rented))
             self.vast_instances[iid] = {"id": int(iid), "actual_status": "loading", "dph_total": 0.47}
             return R(body={"success": True, "new_contract": int(iid)})
@@ -166,6 +219,7 @@ class PoolTests(unittest.TestCase):
         self.keys = {"VAST_API_KEY": "vk-secret"}
         gp.set_secret_reader(lambda n: self.keys.get(n, ""))
         gp._last_provider_poll = 0
+        gp._last_volume_poll = 0
         gp.listeners.clear()
         self.ws = []
         gp.set_ws_connect(self.fake_ws)
@@ -382,6 +436,89 @@ class PoolTests(unittest.TestCase):
                                                                   "disk_gb": 40}}))
         st = gp.state()["settings"]
         self.assertEqual((st["image"], st["disk_gb"]), ("ghcr.io/szprivate/agenty-farm:latest", 40))
+
+    def test_kept_models_make_a_vast_volume_on_the_machine_then_link_it(self):
+        gp.set_settings({"keep_models": True, "volume_gb": 120})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        vi = self.net.rented[0]["volume_info"]
+        self.assertEqual((vi["create_new"], vi["volume_id"], vi["size"], vi["mount_path"]), (True, 900, 120, "/data"))
+        self.assertEqual(self.net.rented[0]["env"]["FARM_MODELS_DIR"], "/data/models")
+        gp._poll_volumes(force=True)
+        st = gp.state()
+        self.assertEqual([v["where"] for v in st["volumes"]], ["7001"])
+        self.assertEqual(st["volumes"][0]["machines"], [m["name"]])
+        self.assertEqual(st["machines"][0]["volume"], "vast:3000")
+        offers = gp.offers("vast")
+        self.assertEqual(offers[0]["offer_id"], "11")             # the machine with the models comes first
+        self.assertTrue(offers[0]["has_volume"])
+        gp.rent("vast", "11", usd_per_hour=0.47)
+        self.assertEqual(self.net.rented[1]["volume_info"], {"create_new": False, "volume_id": 3000, "mount_path": "/data"})
+
+    def test_a_vast_machine_without_storage_for_sale_rents_without_a_volume(self):
+        gp.set_settings({"keep_models": True})
+        gp.rent("vast", "14", usd_per_hour=0.45)
+        self.assertNotIn("volume_info", self.net.rented[0])
+        self.assertIn("sells no storage", gp.state()["machines"][0]["volume_note"])
+
+    def test_without_keep_models_no_volume_is_made(self):
+        gp.rent("vast", "11", usd_per_hour=0.47)
+        self.assertNotIn("volume_info", self.net.rented[0])
+
+    def test_the_volume_lists_the_models_on_it(self):
+        gp.set_settings({"keep_models": True})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        comfy = FakeComfy()
+
+        def answer(method, path, headers, body):
+            if path == "/farm/models":
+                return R(body={"files": [{"folder": "diffusion_models", "name": "moss.safetensors", "bytes": 9e9},
+                                         {"folder": "vae", "name": "v.safetensors", "bytes": 1e9}]})
+            return comfy(method, path, headers, body)
+        self.net.machines["203.0.113.5:41000"] = answer
+        self.net.vast_instances[m["provider_id"]].update(actual_status="running", public_ipaddr="203.0.113.5",
+                                                         ports={"8188/tcp": [{"HostPort": "41000"}]})
+        gp._poll_providers(force=True)
+        gp._poll_volumes(force=True)
+        self.run_ticks(2)
+        v = gp.state()["volumes"][0]
+        self.assertEqual(v["models"], ["diffusion_models/moss.safetensors", "vae/v.safetensors"])
+        self.assertEqual(v["models_gb"], 10.0)
+
+    def test_a_volume_in_use_is_not_deleted_and_vast_ones_do_not_grow(self):
+        gp.set_settings({"keep_models": True})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        gp._poll_volumes(force=True)
+        with self.assertRaisesRegex(gp.PoolError, "terminate"):
+            gp.delete_volume("vast:3000")
+        with self.assertRaisesRegex(gp.PoolError, "cannot change"):
+            gp.resize_volume("vast:3000", 300)
+        gp.terminate(m["id"])
+        gp.delete_volume("vast:3000")
+        self.assertEqual((gp.state()["volumes"], self.net.vast_volumes), ([], {}))
+
+    def test_a_vast_volume_is_made_by_hand_from_a_storage_offer(self):
+        offers = gp.volume_offers("vast")
+        self.assertEqual((offers[0]["offer_id"], offers[0]["usd_per_gb_month"]), ("900", 0.15))
+        v = gp.create_volume("vast", offer_id="900", size_gb=200)
+        self.assertEqual((v["where"], v["size_gb"], v["usd_per_month"]), ("7001", 200.0, 30.0))
+
+    def test_runpod_keeps_models_on_a_network_volume_in_its_data_centre(self):
+        self.keys["RUNPOD_API_KEY"] = "rp"
+        gp.set_settings({"keep_models": True, "volume_gb": 100})
+        gp.rent("runpod", "NVIDIA GeForce RTX 5090", usd_per_hour=0.9)
+        self.assertEqual(list(self.net.netvols.values())[0]["dataCenterId"], "EU-RO-1")
+        pod = self.net.pods[0]
+        self.assertEqual((pod["networkVolumeId"], pod["volumeMountPath"], pod["dataCenterIds"]),
+                         ("nv1", "/workspace", ["EU-RO-1"]))
+        self.assertEqual(pod["env"]["FARM_MODELS_DIR"], "/workspace/models")
+        gp.rent("runpod", "NVIDIA GeForce RTX 5090", usd_per_hour=0.9)
+        self.assertEqual((len(self.net.netvols), self.net.pods[1]["networkVolumeId"]), (1, "nv1"))
+        v = gp.state()["volumes"][0]
+        self.assertEqual(v["usd_per_month"], 7.0)
+        v = gp.resize_volume(v["id"], 200)
+        self.assertEqual((self.net.netvols["nv1"]["size"], v["usd_per_month"]), (200, 14.0))
+        with self.assertRaisesRegex(gp.PoolError, "only grow"):
+            gp.resize_volume(v["id"], 50)
 
     def test_a_machine_past_the_first_page_of_the_listing_is_found(self):
         gp.set_settings({"image": "example/comfy:1"})

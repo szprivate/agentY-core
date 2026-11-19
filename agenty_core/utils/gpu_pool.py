@@ -16,6 +16,11 @@ beyond the machine image.
 * **Money**: every running provider machine adds its $/h to today's spend; at ``daily_cap_usd`` every provider
   machine is stopped and nothing new is rented or started that day. A ready machine with nothing to do for
   ``idle_stop_minutes`` is stopped. ``max_usd_per_hour`` refuses dearer offers.
+* **Storage** (``keep_models``): the models a machine downloads go to provider storage it is rented with, so the
+  next machine starts with them. vast.ai volumes live on one physical machine: an offer on a machine with one of
+  ours links it, any other gets a new volume there (when that machine sells storage). RunPod network volumes
+  belong to a data centre, and the pod is placed there. :func:`create_volume` / :func:`resize_volume` /
+  :func:`delete_volume` manage them by hand; :func:`state` lists them with their size, cost and models.
 * **Parity**: :func:`check_parity` compares a workflow's node types and model files against a machine's
   ``/object_info`` and ``/models/<folder>`` before anything is sent to it.
 
@@ -74,11 +79,23 @@ DEFAULT_SETTINGS = {
     "disk_gb": 80,
     "gpu": "RTX 5090",
     "retries": 1,
+    # keep the downloaded models on provider storage (a vast.ai volume, a RunPod network volume) for the next machine
+    "keep_models": False,
+    "volume_gb": 150,
 }
 # images an earlier Farm suggested or saved; a machine started from one has no farm helper, so they mean the default
 OLD_DEFAULT_IMAGES = ("", "yanwk/comfyui-boot:cu130-slim-v2")
 SETTING_TYPES = {"daily_cap_usd": float, "idle_stop_minutes": int, "eu_only": bool, "max_usd_per_hour": float,
-                 "image": str, "disk_gb": int, "gpu": str, "retries": int}
+                 "image": str, "disk_gb": int, "gpu": str, "retries": int, "keep_models": bool, "volume_gb": int}
+# Where a machine sees the storage, and where the farm image's helper keeps the models on it (FARM_MODELS_DIR).
+VAST_MOUNT = "/data"
+RUNPOD_MOUNT = "/workspace"
+# RunPod's data centres a network volume is made in (the first that the EU switch allows)
+RUNPOD_EU_DCS = ["EU-RO-1", "EU-SE-1", "EU-NL-1", "EU-CZ-1", "EU-FR-1"]
+RUNPOD_ANY_DCS = RUNPOD_EU_DCS + ["US-KS-2", "US-GA-1", "US-TX-3", "CA-MTL-1"]
+RUNPOD_USD_PER_GB_MONTH = 0.07        # RunPod's network volume price under 1 TB
+VOLUME_POLL_SECONDS = 60.0
+MODELS_LIST_SECONDS = 120.0
 TICK_SECONDS = 3.0
 PROVIDER_POLL_SECONDS = 15.0
 GONE_GRACE_SECONDS = 120.0
@@ -94,6 +111,7 @@ _transport: Optional[Callable] = None
 _secret: Optional[Callable] = None
 _thread: Optional[threading.Thread] = None
 _last_provider_poll = 0.0
+_last_volume_poll = 0.0
 
 
 class PoolError(Exception):
@@ -176,6 +194,7 @@ def _load() -> dict:
         _state.setdefault("machines", {})
         _state.setdefault("jobs", {})
         _state.setdefault("spend", {})
+        _state.setdefault("volumes", {})
         _state["settings"] = {**DEFAULT_SETTINGS, **(_state.get("settings") or {})}
         if str(_state["settings"].get("image") or "").strip() in OLD_DEFAULT_IMAGES:
             _state["settings"]["image"] = DEFAULT_SETTINGS["image"]
@@ -249,6 +268,7 @@ class VastClient:
             if not gpu_matches(gpu, o.get("gpu_name") or ""):
                 continue
             out.append({"provider": "vast", "offer_id": str(o.get("id")), "gpu": o.get("gpu_name") or "",
+                        "machine_id": str(o.get("machine_id") or ""),
                         "vram_gb": round((o.get("gpu_ram") or 0) / 1024, 1), "usd_per_hour": float(o.get("dph_total") or 0),
                         "region": o.get("geolocation") or "", "country": cc,
                         "reliability": round(float(o.get("reliability2") or o.get("reliability") or 0), 3),
@@ -257,9 +277,17 @@ class VastClient:
                 break
         return out
 
-    def rent(self, offer_id: str, image: str, disk_gb: int, token: str) -> str:
+    def rent(self, offer_id: str, image: str, disk_gb: int, token: str, volume: Optional[dict] = None) -> str:
         body = {"client_id": "me", "image": image, "disk": disk_gb, "runtype": "args",
                 "env": {"-p 8188:8188": "1", "COMFY_TOKEN": token}, "label": "agentY farm"}
+        if volume:
+            # a volume lives on one physical machine: linked when this offer's machine has one of ours, else made
+            # from a volume offer on the same machine
+            body["volume_info"] = ({"create_new": False, "volume_id": int(volume["link"]), "mount_path": VAST_MOUNT}
+                                   if volume.get("link") else
+                                   {"create_new": True, "volume_id": int(volume["new"]), "size": int(volume["size"]),
+                                    "mount_path": VAST_MOUNT})
+            body["env"]["FARM_MODELS_DIR"] = VAST_MOUNT + "/models"
         r = self._call("PUT", f"/asks/{quote(str(offer_id))}/", body)
         if not r.get("success", True) or not r.get("new_contract"):
             raise PoolError(f"vast.ai did not rent the offer: {r.get('msg') or r}")
@@ -306,6 +334,56 @@ class VastClient:
     def set_running(self, pid: str, running: bool) -> None:
         self._call("PUT", f"/instances/{quote(pid)}/", {"state": "running" if running else "stopped"})
 
+    def machine_of(self, offer_id: str) -> str:
+        """The physical machine behind a GPU offer (a volume can only be used there)."""
+        try:
+            q = {"id": {"eq": int(offer_id)}, "limit": 1}
+        except ValueError:
+            return ""
+        rows = self._call("POST", "/bundles/", q).get("offers") or []
+        return str((rows[0] if rows else {}).get("machine_id") or "")
+
+    def volume_offers(self, eu_only: bool, machine_id: str = "", limit: int = 30) -> list:
+        q: dict = {"limit": 500}
+        if machine_id:
+            q["machine_id"] = {"eq": int(machine_id)}
+        out = []
+        for o in self._call("POST", "/volumes/search", q).get("offers") or []:
+            cc = _country(o.get("geolocation"))
+            if eu_only and cc not in EU and not machine_id:
+                continue
+            if machine_id and str(o.get("machine_id")) != str(machine_id):
+                continue
+            out.append({"provider": "vast", "offer_id": str(o.get("id")), "machine_id": str(o.get("machine_id") or ""),
+                        "region": o.get("geolocation") or "", "country": cc,
+                        "free_gb": int(o.get("disk_space") or 0),
+                        "usd_per_gb_month": round(float(o.get("storage_cost") or 0), 4),
+                        "reliability": round(float(o.get("reliability2") or o.get("reliability") or 0), 3)})
+        return sorted(out, key=lambda o: o["usd_per_gb_month"])[:limit]
+
+    def create_volume(self, offer_id: str, size_gb: int, name: str = "") -> str:
+        r = self._call("PUT", "/volumes", {"id": int(offer_id), "size": int(size_gb)})
+        if not r.get("success", True):
+            raise PoolError(f"vast.ai did not create the volume: {r.get('msg') or r}")
+        return str(r.get("volume_name") or "")
+
+    def volumes(self) -> dict:
+        out = {}
+        for v in self._call("GET", "/volumes").get("volumes") or []:
+            if not isinstance(v, dict) or v.get("id") is None:
+                continue
+            out[str(v["id"])] = {"size_gb": float(v.get("disk_space") or 0), "where": str(v.get("machine_id") or ""),
+                                 "status": str(v.get("status") or ""),
+                                 "in_use": bool(v.get("instances")),
+                                 "region": str(v.get("geolocation") or v.get("public_ipaddr") or "").strip()}
+        return out
+
+    def resize_volume(self, vid: str, size_gb: int) -> None:
+        raise PoolError("vast.ai cannot change a volume's size after it is made: make a bigger one and delete this one.")
+
+    def delete_volume(self, vid: str) -> None:
+        self._call("DELETE", "/volumes", {"id": int(vid)})
+
     def destroy(self, pid: str) -> None:
         self._call("DELETE", f"/instances/{quote(pid)}/")
 
@@ -342,12 +420,18 @@ class RunPodClient:
                         "country": "EU" if eu_only else "", "reliability": 0.99, "down_mbps": 0, "disk_gb": 0})
         return sorted(out, key=lambda o: o["usd_per_hour"])[:limit]
 
-    def rent(self, offer_id: str, image: str, disk_gb: int, token: str, eu_only: bool = True) -> str:
+    def rent(self, offer_id: str, image: str, disk_gb: int, token: str, eu_only: bool = True,
+             volume: Optional[dict] = None) -> str:
         body = {"name": "agentY farm", "imageName": image, "gpuTypeIds": [offer_id], "gpuCount": 1,
                 "containerDiskInGb": disk_gb, "ports": ["8188/http"], "env": {"COMFY_TOKEN": token},
                 "cloudType": "SECURE"}
         if eu_only:
-            body["dataCenterIds"] = ["EU-RO-1", "EU-SE-1", "EU-NL-1", "EU-CZ-1", "EU-FR-1"]
+            body["dataCenterIds"] = list(RUNPOD_EU_DCS)
+        if volume and volume.get("link"):
+            # a network volume belongs to one data centre: the pod has to be there
+            body.update(networkVolumeId=str(volume["link"]), volumeMountPath=RUNPOD_MOUNT,
+                        dataCenterIds=[volume["where"]])
+            body["env"]["FARM_MODELS_DIR"] = RUNPOD_MOUNT + "/models"
         r = self._rest("POST", "/pods", body)
         if not r.get("id"):
             raise PoolError(f"RunPod did not create the pod: {r}")
@@ -370,6 +454,27 @@ class RunPodClient:
 
     def destroy(self, pid: str) -> None:
         self._rest("DELETE", f"/pods/{quote(pid)}")
+
+    def volumes(self) -> dict:
+        r = self._rest("GET", "/networkvolumes")
+        rows = r if isinstance(r, list) else r.get("networkVolumes") or r.get("items") or []
+        return {str(v["id"]): {"size_gb": float(v.get("size") or 0), "where": str(v.get("dataCenterId") or ""),
+                               "region": str(v.get("dataCenterId") or ""), "name": str(v.get("name") or ""),
+                               "status": "ready", "in_use": False}
+                for v in rows if isinstance(v, dict) and v.get("id")}
+
+    def create_volume(self, where: str, size_gb: int, name: str = "") -> str:
+        r = self._rest("POST", "/networkvolumes", {"name": name or "agentY farm models", "size": int(size_gb),
+                                                    "dataCenterId": where})
+        if not r.get("id"):
+            raise PoolError(f"RunPod did not create the network volume: {r}")
+        return str(r["id"])
+
+    def resize_volume(self, vid: str, size_gb: int) -> None:
+        self._rest("PATCH", f"/networkvolumes/{quote(vid)}", {"size": int(size_gb)})
+
+    def delete_volume(self, vid: str) -> None:
+        self._rest("DELETE", f"/networkvolumes/{quote(vid)}")
 
 
 def _client(provider: str):
@@ -488,8 +593,15 @@ def offers(provider: str, gpu: Optional[str] = None) -> list:
     with _lock:
         st = dict(_load()["settings"])
     rows = _client(provider).offers(st["gpu"] if gpu is None else gpu, bool(st["eu_only"]))
+    with _lock:
+        vols = [v for v in _load()["volumes"].values() if v["provider"] == provider]
     for o in rows:
         o["too_dear"] = o["usd_per_hour"] > float(st["max_usd_per_hour"])
+        if provider == "vast":
+            # a vast.ai volume can only be used on its own machine: offers there start with the models in place
+            o["has_volume"] = any(v["where"] and v["where"] == o.get("machine_id") for v in vols)
+    if provider == "vast" and st.get("keep_models"):
+        rows.sort(key=lambda o: (not o.get("has_volume"), o["too_dear"], o["usd_per_hour"]))
     return rows
 
 
@@ -508,14 +620,189 @@ def rent(provider: str, offer_id: str, *, usd_per_hour: float = 0.0, gpu: str = 
             raise PoolError(f"${usd_per_hour:.2f}/h is above the ${st['max_usd_per_hour']:.2f}/h limit in Setup.")
     token = uuid.uuid4().hex
     c = _client(provider)
-    pid = c.rent(offer_id, st["image"], int(st["disk_gb"]), token, **({"eu_only": bool(st["eu_only"])}
-                                                                       if provider == "runpod" else {}))
+    volume, vnote = _volume_for_rent(c, provider, offer_id, st) if st.get("keep_models") else (None, "")
+    kw: dict = {"eu_only": bool(st["eu_only"])} if provider == "runpod" else {}
+    if volume:
+        kw["volume"] = volume
+    pid = c.rent(offer_id, st["image"], int(st["disk_gb"]), token, **kw)
     with _lock:
         n = sum(1 for x in _load()["machines"].values() if x["provider"] == provider) + 1
+        extra = {"volume": f"{provider}:{volume['link']}" if volume and volume.get("link") else "",
+                 "host_machine": (volume or {}).get("where", ""), "volume_note": vnote}
+        if volume and volume.get("new"):
+            extra["volume_note"] = f"making a {volume['size']} GB volume on this machine for the models"
         m = _new_machine(provider, name or f"{provider}-{n}", provider_id=pid, token=token,
-                         usd_per_hour=float(usd_per_hour or 0), gpu=gpu, region=region, running_since=_now())
+                         usd_per_hour=float(usd_per_hour or 0), gpu=gpu, region=region, running_since=_now(), **extra)
         _save()
         return _public_machine(m)
+
+
+# ── storage for models ───────────────────────────────────────────────────────
+def _volume_for_rent(c, provider: str, offer_id: str, st: dict) -> tuple:
+    """``(volume, note)`` for a machine about to be rented with ``keep_models`` on.
+
+    vast.ai: a volume is tied to one physical machine, so an offer on a machine that has one of ours links it, and
+    any other offer gets a new volume made from a storage offer on that same machine (when it sells storage).
+    RunPod: a network volume belongs to a data centre; the pod is placed there (one is made when there is none)."""
+    size = max(10, int(st.get("volume_gb") or 150))
+    with _lock:
+        vols = [v for v in _load()["volumes"].values() if v["provider"] == provider]
+    try:
+        if provider == "vast":
+            where = c.machine_of(offer_id)
+            if not where:
+                return None, "no volume: vast.ai did not say which machine this offer is on"
+            mine = [v for v in vols if v["where"] == where]
+            if mine:
+                return {"link": mine[0]["provider_id"], "where": where}, f"models on volume {mine[0]['name']}"
+            vo = c.volume_offers(False, machine_id=where, limit=1)
+            if not vo:
+                return None, "no volume: this machine sells no storage, so its models are not kept"
+            return {"new": vo[0]["offer_id"], "size": size, "where": where}, ""
+        dcs = RUNPOD_EU_DCS if st.get("eu_only") else RUNPOD_ANY_DCS
+        mine = [v for v in vols if v["where"] in dcs]
+        if mine:
+            v = max(mine, key=lambda v: v["size_gb"])
+            return {"link": v["provider_id"], "where": v["where"]}, f"models on network volume {v['name']} ({v['where']})"
+        vid = c.create_volume(dcs[0], size, "agentY farm models")
+        with _lock:
+            _remember_volume(provider, vid, {"size_gb": size, "where": dcs[0], "region": dcs[0],
+                                             "name": "agentY farm models", "status": "ready", "in_use": False},
+                             usd_per_month=size * RUNPOD_USD_PER_GB_MONTH)
+        return {"link": vid, "where": dcs[0]}, f"made network volume in {dcs[0]} ({size} GB)"
+    except PoolError as exc:
+        return None, f"no volume: {exc}"[:200]
+
+
+def _remember_volume(provider: str, vid: str, info: dict, **kw) -> dict:
+    key = f"{provider}:{vid}"
+    vols = _load()["volumes"]
+    v = vols.get(key) or {"id": key, "provider": provider, "provider_id": str(vid), "models": [], "models_gb": 0.0,
+                          "models_at": 0.0, "created": _now(), "usd_per_month": 0.0}
+    v.update({k: info[k] for k in ("size_gb", "where", "region", "status", "in_use") if k in info})
+    v["name"] = info.get("name") or v.get("name") or (f"V.{vid}" if provider == "vast" else str(vid))
+    v.update(kw)
+    if provider == "runpod":
+        v["usd_per_month"] = round(float(v["size_gb"]) * RUNPOD_USD_PER_GB_MONTH, 2)
+    vols[key] = v
+    return v
+
+
+def _poll_volumes(force: bool = False) -> None:
+    """The providers' own volume lists: new ones (made on rent) are picked up, deleted ones dropped, and a machine
+    rented with a new vast.ai volume learns which volume it got."""
+    global _last_volume_poll
+    if not force and _now() - _last_volume_poll < VOLUME_POLL_SECONDS:
+        return
+    _last_volume_poll = _now()
+    s = _load()
+    for provider in ("vast", "runpod"):
+        if not _key(provider):
+            continue
+        try:
+            seen = _client(provider).volumes()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("gpu_pool: %s did not list its volumes: %s", provider, exc)
+            continue
+        for vid, info in seen.items():
+            _remember_volume(provider, vid, info)
+        for key in [k for k, v in s["volumes"].items() if v["provider"] == provider and v["provider_id"] not in seen]:
+            if _now() - float(s["volumes"][key].get("created") or 0) > GONE_GRACE_SECONDS:
+                s["volumes"].pop(key, None)
+        for m in s["machines"].values():
+            if m["provider"] == provider and not m.get("volume") and m.get("host_machine"):
+                for v in s["volumes"].values():
+                    if v["provider"] == provider and v["where"] == m["host_machine"]:
+                        m["volume"], m["volume_note"] = v["id"], f"models on volume {v['name']}"
+                        break
+
+
+def _list_models(m: dict) -> None:
+    """What the machine's volume holds (the farm image's ``GET /farm/models``), kept on the volume's record."""
+    v = _load()["volumes"].get(m.get("volume") or "")
+    if not v or _now() - float(m.get("models_at") or 0) < MODELS_LIST_SECONDS:
+        return
+    m["models_at"] = _now()
+    try:
+        d = _comfy(m, "GET", "/farm/models", timeout=10).json() or {}
+    except Exception:  # noqa: BLE001 - an older image: nothing to show
+        return
+    files = [f for f in d.get("files") or [] if isinstance(f, dict) and f.get("name")]
+    v["models"] = sorted(f"{f.get('folder')}/{f['name']}" for f in files)
+    v["models_gb"] = round(sum(float(f.get("bytes") or 0) for f in files) / 1e9, 2)
+    v["models_at"] = _now()
+
+
+def volume_offers(provider: str = "vast") -> list:
+    if provider != "vast":
+        return [{"provider": "runpod", "where": dc, "region": dc, "usd_per_gb_month": RUNPOD_USD_PER_GB_MONTH}
+                for dc in (RUNPOD_EU_DCS if _load()["settings"].get("eu_only") else RUNPOD_ANY_DCS)]
+    with _lock:
+        eu = bool(_load()["settings"]["eu_only"])
+    return _client("vast").volume_offers(eu)
+
+
+def create_volume(provider: str, *, offer_id: str = "", where: str = "", size_gb: int = 0, name: str = "") -> dict:
+    """Make a volume by hand (Farm > Storage). vast.ai: from a storage offer (it lands on that offer's machine);
+    RunPod: a network volume in a data centre."""
+    size = int(size_gb or _load()["settings"].get("volume_gb") or 150)
+    if size < 10:
+        raise PoolError("A volume needs at least 10 GB")
+    c = _client(provider)
+    if provider == "vast":
+        if not offer_id:
+            raise PoolError("Pick a storage offer: a vast.ai volume is made on one machine")
+        offer = next((o for o in c.volume_offers(False, limit=200) if o["offer_id"] == str(offer_id)), None)
+        c.create_volume(offer_id, size, name)
+        with _lock:
+            _poll_volumes(force=True)
+            v = next((v for v in _load()["volumes"].values() if v["provider"] == "vast"
+                      and offer and v["where"] == offer["machine_id"]), None)
+            if v and offer:
+                v["usd_per_month"] = round(size * offer["usd_per_gb_month"], 2)
+            _save()
+            return dict(v) if v else {}
+    if not where:
+        raise PoolError("Pick a RunPod data centre")
+    vid = c.create_volume(where, size, name)
+    with _lock:
+        v = _remember_volume("runpod", vid, {"size_gb": size, "where": where, "region": where, "name": name,
+                                             "status": "ready", "in_use": False})
+        _save()
+        return dict(v)
+
+
+def resize_volume(key: str, size_gb: int) -> dict:
+    with _lock:
+        v = _volume(key)
+        if int(size_gb) <= float(v["size_gb"]):
+            raise PoolError(f"A volume can only grow: {v['name']} has {v['size_gb']:.0f} GB")
+    _client(v["provider"]).resize_volume(v["provider_id"], int(size_gb))
+    with _lock:
+        v["size_gb"] = float(size_gb)
+        if v["provider"] == "runpod":
+            v["usd_per_month"] = round(float(size_gb) * RUNPOD_USD_PER_GB_MONTH, 2)
+        _save()
+        return dict(v)
+
+
+def delete_volume(key: str) -> None:
+    with _lock:
+        v = _volume(key)
+        users = [m["name"] for m in _load()["machines"].values() if m.get("volume") == key]
+        if users:
+            raise PoolError(f"{v['name']} is used by {', '.join(users)}: terminate {'it' if len(users) == 1 else 'them'} first")
+    _client(v["provider"]).delete_volume(v["provider_id"])
+    with _lock:
+        _load()["volumes"].pop(key, None)
+        _save()
+
+
+def _volume(key: str) -> dict:
+    v = _load()["volumes"].get(str(key))
+    if not v:
+        raise PoolError(f"No volume {key!r} in the farm")
+    return v
 
 
 def add_url(url: str, name: str = "", token: str = "", usd_per_hour: float = 0.0) -> dict:
@@ -1175,6 +1462,7 @@ def tick(dt: Optional[float] = None) -> None:
         dt = max(0.0, min(60.0, _now() - last)) if dt is None else dt
         s["last_tick"] = _now()
         _poll_providers()
+        _poll_volumes()
         _bill(dt)
         st = s["settings"]
         over = _cap_left() <= 0
@@ -1188,6 +1476,8 @@ def tick(dt: Optional[float] = None) -> None:
             if m["state"] in ("starting", "unreachable") and m.get("url"):
                 if _probe(m):
                     m.update(state="ready", error="", idle_since=_now())
+            if m["state"] == "ready" and not m.get("task") and m.get("volume"):
+                _list_models(m)
             if m["state"] == "ready" and not m.get("task") and m["provider"] != "url":
                 idle = float(st["idle_stop_minutes"]) * 60
                 busy_elsewhere = _queue_len(m) > 0
@@ -1252,6 +1542,12 @@ def _public_machine(m: dict) -> dict:
     return out
 
 
+def _public_volume(v: dict, s: dict) -> dict:
+    out = dict(v)
+    out["machines"] = [m["name"] for m in s["machines"].values() if m.get("volume") == v["id"]]
+    return out
+
+
 def _public_job(j: dict) -> dict:
     tasks = [{k: v for k, v in t.items() if k != "workflow"} for t in j["tasks"]]
     counts: dict = {}
@@ -1278,6 +1574,7 @@ def state() -> dict:
                           "per_hour": round(sum(float(m["usd_per_hour"] or 0) for m in s["machines"].values()
                                                 if m["provider"] != "url" and m["state"] not in ("stopped", "gone")), 4),
                           "days": dict(sorted(s["spend"].items())[-14:])},
+                "volumes": sorted((_public_volume(v, s) for v in s["volumes"].values()), key=lambda v: v["created"]),
                 "keys": {p: bool(_key(p)) for p in KEY_NAMES},
                 "providers": list(PROVIDERS)}
         return _snapshot
@@ -1330,6 +1627,17 @@ def action(body: dict) -> dict:
     elif a == "refresh":
         with _lock:
             _poll_providers(force=True)
+            _poll_volumes(force=True)
+    elif a == "volume_offers":
+        res["offers"] = volume_offers(str(b.get("provider") or "vast"))
+    elif a == "create_volume":
+        res["volume"] = create_volume(str(b.get("provider") or ""), offer_id=str(b.get("offer_id") or ""),
+                                      where=str(b.get("where") or ""), size_gb=int(b.get("size_gb") or 0),
+                                      name=str(b.get("name") or ""))
+    elif a == "resize_volume":
+        res["volume"] = resize_volume(str(b.get("id")), int(b.get("size_gb") or 0))
+    elif a == "delete_volume":
+        delete_volume(str(b.get("id")))
     else:
         raise PoolError(f"Unknown farm action {a!r}")
     if a in ("submit", "start", "add_url", "rent"):
