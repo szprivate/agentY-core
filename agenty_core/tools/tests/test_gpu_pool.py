@@ -96,10 +96,24 @@ class Net:
         self.calls.append((method, url))
         path = u.path + (("?" + u.query) if u.query else "")
         if u.netloc == "console.vast.ai":
+            if u.path.startswith("/api/v1/"):
+                return self.vast_v1(method, u.path[len("/api/v1"):], parse_qs(u.query))
             return self.vast(method, u.path[len("/api/v0"):], json_body)
         if u.netloc in self.machines:
             return self.machines[u.netloc](method, path, headers, json_body)
         return R(502, raw=b"down")
+
+    def vast_v1(self, method, path, query):
+        if path != "/instances" or method != "GET":
+            return R(404, raw=b"?")
+        if self.list_fails:
+            return R(500, raw=b"boom")
+        rows = list(self.vast_instances.values())
+        limit = int((query.get("limit") or ["25"])[0])
+        start = int((query.get("after_token") or ["0"])[0])
+        page = rows[start:start + limit]
+        nxt = str(start + limit) if start + limit < len(rows) else None
+        return R(body={"instances": page, "next_token": nxt})
 
     def vast(self, method, path, body):
         if path == "/bundles/":
@@ -113,10 +127,8 @@ class Net:
             iid = str(500 + len(self.rented))
             self.vast_instances[iid] = {"id": int(iid), "actual_status": "loading", "dph_total": 0.47}
             return R(body={"success": True, "new_contract": int(iid)})
-        if path == "/instances/" and self.list_fails:
-            return R(500, raw=b"boom")
-        if path == "/instances/":
-            return R(body={"instances": list(self.vast_instances.values())})
+        if path == "/instances/":                 # retired by vast.ai
+            return R(410, raw=b'{"success":false,"error":"deprecated_endpoint"}')
         if path.startswith("/instances/"):
             iid = path.strip("/").split("/")[1]
             if method == "DELETE":
@@ -357,7 +369,19 @@ class PoolTests(unittest.TestCase):
                                             ports={"8188/tcp": [{"HostIp": "0.0.0.0", "HostPort": "41001"}]})
         gp._poll_providers(force=True)
         self.assertEqual(gp.state()["machines"][0]["url"], "http://203.0.113.7:41001")
-        self.assertIn(("GET", "https://console.vast.ai/api/v0/instances/?owner=me"), self.net.calls)
+        self.assertIn(("GET", "https://console.vast.ai/api/v1/instances?limit=25"), self.net.calls)
+
+    def test_a_machine_past_the_first_page_of_the_listing_is_found(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        mine = self.net.vast_instances.pop(m["provider_id"])
+        for n in range(30):                                  # other machines on the account come first
+            self.net.vast_instances[str(900 + n)] = {"id": 900 + n, "actual_status": "running"}
+        self.net.vast_instances[m["provider_id"]] = dict(mine, actual_status="running", public_ipaddr="203.0.113.9",
+                                                         ports={"8188/tcp": [{"HostPort": "41002"}]})
+        gp._poll_providers(force=True)
+        self.assertEqual(gp.state()["machines"][0]["url"], "http://203.0.113.9:41002")
+        self.assertIn(("GET", "https://console.vast.ai/api/v1/instances?limit=25&after_token=25"), self.net.calls)
 
     def test_a_running_machine_without_port_8188_says_which_ports_it_has(self):
         gp.set_settings({"image": "example/comfy:1"})

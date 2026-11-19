@@ -263,10 +263,7 @@ class VastClient:
 
     def instances(self) -> dict:
         out = {}
-        rows = self._call("GET", "/instances/?owner=me").get("instances") or []
-        if isinstance(rows, dict):           # one instance answers as an object, a list as an array
-            rows = [rows]
-        for i in rows:
+        for i in self._list_instances():
             if not isinstance(i, dict):
                 continue
             ports = i.get("ports") if isinstance(i.get("ports"), dict) else {}
@@ -283,6 +280,24 @@ class VastClient:
                     "vast.ai runs it but shows no public address for ComfyUI's port 8188 "
                     f"(IP {ip or 'none'}, open ports: {', '.join(sorted(ports)) or 'none'})")
         return out
+
+    def _list_instances(self) -> list:
+        """Every instance of the account. vast.ai retired ``GET /api/v0/instances/`` (410 deprecated_endpoint);
+        ``GET /api/v1/instances`` answers 25 at a time with a ``next_token``."""
+        base = re.sub(r"/v0/?$", "/v1", self.base)
+        rows, token = [], None
+        for _ in range(40):                  # 1000 instances is plenty for one farm
+            url = f"{base}/instances?limit=25" + (f"&after_token={quote(str(token))}" if token else "")
+            r = _http("GET", url, headers=self.h, timeout=30)
+            if r.status_code >= 400:
+                raise PoolError(f"vast.ai answered {r.status_code}: {r.content[:200].decode('utf-8', 'replace')}")
+            d = r.json() or {}
+            page = d.get("instances") or []
+            rows += [page] if isinstance(page, dict) else [i for i in page if isinstance(i, dict)]
+            token = d.get("next_token")
+            if not token:
+                break
+        return rows
 
     def set_running(self, pid: str, running: bool) -> None:
         self._call("PUT", f"/instances/{quote(pid)}/", {"state": "running" if running else "stopped"})
