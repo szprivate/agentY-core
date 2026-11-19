@@ -24,6 +24,7 @@ from agenty_core.tools.animate_character import ask_viewer
 ACTIONS = (
     "info", "open", "camera", "lens", "lens_export", "mask", "mask_remove", "track", "track_add", "track_delete",
     "track_set", "solve", "object_add", "object_track", "object_solve", "build", "orient", "geometry", "save",
+    "ground", "ai_mask", "measure", "phone_export",
 )
 NEEDS = {
     "mask_remove": ("mask",), "track_add": ("points",), "track_set": ("ids",), "orient": ("how", "points"),
@@ -34,6 +35,9 @@ SOLVE_MODES = ("auto", "free", "tripod")
 REFINE = ("auto", "on", "off")
 ORIENT_HOW = ("ground", "origin", "x", "z", "scale")
 GEOMETRY = ("plane", "box", "locator")
+GROUND_HOW = ("auto", "points", "ai", "depth", "phone")
+AI_MASK_ENGINES = ("objects", "background")
+MEASURE_KINDS = ("distance", "plane", "line", "right")
 
 
 def _error(msg: str) -> str:
@@ -96,6 +100,33 @@ def request_body(action: str, options: Optional[dict] = None) -> dict:
             raise ValueError(f"options.how is one of: {', '.join(ORIENT_HOW)}")
         if opts["how"] == "scale" and not opts.get("distance"):
             raise ValueError("orient scale needs options.distance (how far apart the two points are, scene units)")
+    if action == "ground":
+        how = opts.get("how", "auto")
+        if how not in GROUND_HOW:
+            raise ValueError(f"options.how is one of: {', '.join(GROUND_HOW)}")
+        if how == "points" and len(opts.get("points") or []) < 3:
+            raise ValueError("ground points needs options.points: 3 or more track ids on the floor")
+    if action == "ai_mask":
+        if opts.get("engine", "objects") not in AI_MASK_ENGINES:
+            raise ValueError(f"options.engine is one of: {', '.join(AI_MASK_ENGINES)}")
+        if opts.get("engine", "objects") == "objects" and not str(opts.get("prompt") or "").strip():
+            raise ValueError("ai_mask with engine objects needs options.prompt (what to mask: person, car, water ...)")
+    if action in ("ground", "ai_mask") and opts.get("scale") is not None and not (0.1 <= float(opts["scale"]) <= 1):
+        raise ValueError("options.scale is the share of the plate's size the model runs at, 0.1 .. 1")
+    if action == "measure":
+        add = opts.get("add")
+        if not add and opts.get("remove") in (None, "") and not opts.get("clear"):
+            raise ValueError("measure needs options.add {kind, ids, metres}, options.remove (an id) or options.clear")
+        if add:
+            if not isinstance(add, dict) or add.get("kind") not in MEASURE_KINDS:
+                raise ValueError(f"options.add.kind is one of: {', '.join(MEASURE_KINDS)}")
+            need = {"distance": 2, "line": 3, "plane": 3, "right": 3}[add["kind"]]
+            if len(add.get("ids") or []) < need:
+                raise ValueError(f"a {add['kind']} needs {need}{'' if add['kind'] in ('distance', 'right') else ' or more'} track ids")
+            if add["kind"] == "distance" and not (float(add.get("metres") or 0) > 0):
+                raise ValueError("a distance needs options.add.metres (how far apart the two tracks are in the world)")
+    if action == "camera" and opts.get("pixel_aspect") is not None and not (0.2 <= float(opts["pixel_aspect"]) <= 5):
+        raise ValueError("options.pixel_aspect is a pixel's width over its height, 0.2 .. 5 (2 = a 2x anamorphic squeeze)")
     if action == "geometry" and opts["kind"] not in GEOMETRY:
         raise ValueError(f"options.kind is one of: {', '.join(GEOMETRY)}")
     if opts.get("from") is not None and opts.get("to") is not None and int(opts["to"]) < int(opts["from"]):
@@ -112,7 +143,8 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
     coordinates are pixels of the plate, x right, y down from the top left; frames count from 0. Every answer
     carries "matchmove": the plate, camera, lens, masks, objects, the tracks (total, median length, fewest on a
     frame, thin_frames runs), the solve (rms_px, verdict, focal_px / focal_mm, worst_tracks [[id, px]],
-    frames_over_1px, unsolved_frames) and what was built.
+    frames_over_1px, unsolved_frames, focal_check, units), measurements, the phone (an iPhone film or photo: its
+    camera, rotation and depth) and what was built.
 
     Args:
         action: One of -
@@ -120,8 +152,10 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             "open" {plate (a film, or one frame of a numbered sequence: the whole sequence is taken) | file (a
             .mm.json to go on with)} - a new plate starts a new matchmove; the camera facts the file holds
             (focal length, sensor) are read and answered as facts.
-            "camera" {focal_mm (null = not known), sensor [w, h] mm (the RECORDED part of the sensor), known (the
-            solve holds a known focal length unless solve refine is on)}.
+            "camera" {preset (an id of the viewer's camera list, e.g. iphone14-wide, iphone14pro-wide, iphone-ultra,
+            iphone-tele77: a phone as its 35 mm equivalent on the plate's shape), focal_mm (null = not known), sensor
+            [w, h] mm (the RECORDED part of the sensor), known (the solve starts from a known focal length; "auto"
+            refine still refines it), pixel_aspect (1 square, 2 a 2x anamorphic squeeze)}.
             "lens" {how: grid {path (default the plate), frames [n, ...] (several, the chart in other places),
             kind auto | checker | lines} | lines {lines: [[[x, y], ...], ...] (3+ points along something straight
             in the world each; 6+ lines out to the corners)} | comp {path (a .comp.json's first Lens Distortion
@@ -148,6 +182,19 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             ids with a 3D point - take them from solve.worst_tracks' opposite end or info]}.
             "geometry" {kind plane (3+) | box | locator, points [track ids]} - geometry on solved points to check the
             track sticks.
+            "measure" {add {kind distance | plane | line | right, ids [track ids; a right angle's in order end,
+            corner, end], metres (a distance)} | remove (its id) | clear} - real measurements the NEXT solve keeps:
+            a distance sets the scale (1 unit = 1 m) and two or more fix the proportions; a squashed or stretched
+            solve is put right by them. The answer's measurements say whether each holds.
+            "ground" {how auto (every solved point) | points (3+ track ids on the floor) | ai (SAM 3 looks for
+            prompt, default "ground") | depth (a depth model on 5 frames; metres true sets 1 unit = 1 m with the
+            metric model) | phone (an iPhone Cinematic film's own depth track: no model, no ComfyUI job, not in
+            metres), scale (ai / depth: share of the plate's size the model runs at, 0.1..1), tolerance (% of the
+            scene's size), lift (scene units), flip} - after build: the world set level on the ground, at height 0.
+            "ai_mask" {engine objects (SAM 3: prompt = what to mask) | background (a background remover: the
+            subject; films use the video model), step (every Nth frame), from, to, object (an object's name: its
+            mask), workflow, scale} - one ComfyUI job, a matte for the whole stretch; track again after it.
+            "phone_export" - an iPhone Cinematic film's depth track as a 16-bit PNG sequence -> result.depth.
             "save" - the .mm.json (saved after every change anyway) -> result.path.
         options: The action's settings (above).
         timeout_seconds: How long to wait for the page (tracking and solving a long plate take minutes).
