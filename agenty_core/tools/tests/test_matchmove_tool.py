@@ -33,6 +33,11 @@ class MatchmoveToolTests(unittest.TestCase):
         self.assertEqual(m.request_body("lens", {"how": "set", "k1": -0.05})["k1"], -0.05)
         self.assertEqual(m.request_body("mask", {"keys": [{"frame": 0, "points": [[0, 0], [9, 0], [9, 9]]}]})["action"],
                          "matchmove_mask")
+        self.assertEqual(m.request_body("ground", {"how": "phone"}), {"action": "matchmove_ground", "how": "phone"})
+        self.assertEqual(m.request_body("phone_export"), {"action": "matchmove_phone_export"})
+        self.assertEqual(m.request_body("ai_mask", {"engine": "background"})["action"], "matchmove_ai_mask")
+        self.assertEqual(m.request_body("measure", {"add": {"kind": "distance", "ids": ["t1", "t2"], "metres": 1.2}})["add"]["metres"], 1.2)
+        self.assertEqual(m.request_body("camera", {"preset": "iphone14-wide"})["preset"], "iphone14-wide")
         for action, opts in (("nope", {}), ("open", {}), ("lens", {"how": "magic"}), ("lens", {"how": "set"}),
                              ("lens", {"how": "comp"}), ("lens", {"how": "lines", "lines": [[[0, 0], [1, 1]]]}),
                              ("mask", {}), ("mask", {"keys": [{"frame": 0, "points": [[0, 0]]}]}),
@@ -40,7 +45,12 @@ class MatchmoveToolTests(unittest.TestCase):
                              ("track_add", {"points": [{"x": 1}]}), ("track_delete", {}), ("solve", {"mode": "orbit"}),
                              ("orient", {"how": "ground"}), ("orient", {"how": "scale", "points": ["t1", "t2"]}),
                              ("geometry", {"kind": "cone", "points": ["t1"]}), ("lens_export", {"to": "nk"}),
-                             ("track", {"from": 10, "to": 2})):
+                             ("track", {"from": 10, "to": 2}), ("ground", {"how": "lidar"}),
+                             ("ground", {"how": "points", "points": ["t1"]}), ("ground", {"how": "depth", "scale": 2}),
+                             ("ai_mask", {}), ("ai_mask", {"engine": "magic"}), ("measure", {}),
+                             ("measure", {"add": {"kind": "distance", "ids": ["t1", "t2"]}}),
+                             ("measure", {"add": {"kind": "plane", "ids": ["t1", "t2"]}}),
+                             ("camera", {"pixel_aspect": 9})):
             with self.assertRaises(ValueError, msg=(action, opts)):
                 m.request_body(action, opts)
 
