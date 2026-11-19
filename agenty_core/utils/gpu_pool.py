@@ -49,6 +49,7 @@ RUNPOD_REST = "https://rest.runpod.io/v1"
 RUNPOD_GRAPHQL = "https://api.runpod.io/graphql"
 PROVIDERS = ("vast", "runpod", "url")
 KEY_NAMES = {"vast": "VAST_API_KEY", "runpod": "RUNPOD_API_KEY"}
+PROVIDER_LABEL = {"vast": "vast.ai", "runpod": "RunPod"}
 # Optional .env overrides of the API addresses (agentY's Settings shows them, filled with the defaults above).
 URL_NAMES = {"vast": ("VAST_API_URL", VAST_API), "runpod": ("RUNPOD_API_URL", RUNPOD_REST)}
 SEED_MODES = ("increment", "random", "fixed")
@@ -262,14 +263,25 @@ class VastClient:
 
     def instances(self) -> dict:
         out = {}
-        for i in self._call("GET", "/instances/").get("instances") or []:
-            port = ((i.get("ports") or {}).get("8188/tcp") or [{}])[0].get("HostPort")
-            ip = i.get("public_ipaddr") or ""
+        rows = self._call("GET", "/instances/?owner=me").get("instances") or []
+        if isinstance(rows, dict):           # one instance answers as an object, a list as an array
+            rows = [rows]
+        for i in rows:
+            if not isinstance(i, dict):
+                continue
+            ports = i.get("ports") if isinstance(i.get("ports"), dict) else {}
+            mapped = ports.get("8188/tcp") or ports.get("8188") or []
+            port = (mapped[0] if isinstance(mapped, list) and mapped and isinstance(mapped[0], dict) else {}).get("HostPort")
+            ip = str(i.get("public_ipaddr") or "").strip()      # vast.ai sends it with a trailing newline at times
             status = str(i.get("actual_status") or i.get("cur_state") or "")
             out[str(i.get("id"))] = {"status": {"running": "running", "exited": "stopped", "stopped": "stopped"}
                                      .get(status, "starting" if status in ("loading", "created", "") else status),
                                      "url": f"http://{ip}:{port}" if ip and port else "",
                                      "usd_per_hour": float(i.get("dph_total") or 0)}
+            if status == "running" and not (ip and port):
+                out[str(i.get("id"))]["note"] = (
+                    "vast.ai runs it but shows no public address for ComfyUI's port 8188 "
+                    f"(IP {ip or 'none'}, open ports: {', '.join(sorted(ports)) or 'none'})")
         return out
 
     def set_running(self, pid: str, running: bool) -> None:
@@ -530,7 +542,17 @@ def terminate(mid: str) -> None:
     with _lock:
         m = _machine(mid)
     if m["provider"] != "url" and m.get("provider_id"):
-        _client(m["provider"]).destroy(m["provider_id"])
+        c = _client(m["provider"])
+        try:
+            c.destroy(m["provider_id"])
+        except Exception:
+            # Already destroyed on the provider's site: the provider no longer lists it, so it only leaves the farm.
+            try:
+                listed = m["provider_id"] in c.instances()
+            except Exception:  # noqa: BLE001
+                listed = True
+            if listed:
+                raise
     with _lock:
         _requeue(m)
         _load()["machines"].pop(mid, None)
@@ -1081,8 +1103,15 @@ def _poll_providers(force: bool = False) -> None:
         try:
             seen = _client(provider).instances()
         except Exception as exc:  # noqa: BLE001
-            logger.info("gpu_pool: %s instances: %s", provider, exc)
+            # Shown on every machine of that provider: without this list nothing is learnt about them (address,
+            # running, terminated), and a silent failure looks like a machine that never starts.
+            msg = f"{PROVIDER_LABEL.get(provider, provider)} did not list its machines: {exc}"[:300]
+            logger.warning("gpu_pool: %s", msg)
+            for m in ms:
+                m["provider_error"] = msg
             continue
+        for m in ms:
+            m["provider_error"] = (seen.get(m["provider_id"]) or {}).get("note", "")
         for m in ms:
             info = seen.get(m["provider_id"])
             if info is None or info["status"] == "gone":

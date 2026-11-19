@@ -89,6 +89,7 @@ class Net:
         self.machines, self.calls = {}, []
         self.vast_instances = {}
         self.rented = []
+        self.list_fails = False
 
     def __call__(self, method, url, headers=None, json_body=None, data=None, files=None, timeout=30):
         u = urlparse(url)
@@ -112,12 +113,15 @@ class Net:
             iid = str(500 + len(self.rented))
             self.vast_instances[iid] = {"id": int(iid), "actual_status": "loading", "dph_total": 0.47}
             return R(body={"success": True, "new_contract": int(iid)})
+        if path == "/instances/" and self.list_fails:
+            return R(500, raw=b"boom")
         if path == "/instances/":
             return R(body={"instances": list(self.vast_instances.values())})
         if path.startswith("/instances/"):
             iid = path.strip("/").split("/")[1]
             if method == "DELETE":
-                self.vast_instances.pop(iid, None)
+                if self.vast_instances.pop(iid, None) is None:
+                    return R(404, raw=b'{"success": false, "error": "no_such_instance"}')
             else:
                 self.vast_instances[iid]["actual_status"] = "running" if body["state"] == "running" else "exited"
             return R(body={"success": True})
@@ -326,6 +330,44 @@ class PoolTests(unittest.TestCase):
         r = gp.action({"action": "open_url", "id": m["id"]})
         self.assertEqual(r["url"], "http://a:8188/?token=tok-a%3A8188")
         self.assertNotIn("tok-a", json.dumps(r["state"]))
+
+    def test_terminate_of_a_machine_destroyed_on_the_site_still_takes_it_out(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        self.net.vast_instances.clear()                     # destroyed on cloud.vast.ai, still in its grace period
+        gp.terminate(m["id"])
+        self.assertEqual(gp.state()["machines"], [])
+
+    def test_a_provider_that_does_not_list_its_machines_says_so_on_them(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        gp.rent("vast", "11", usd_per_hour=0.47)
+        self.net.list_fails = True
+        gp._poll_providers(force=True)
+        err = gp.state()["machines"][0]["provider_error"]
+        self.assertIn("vast.ai did not list its machines", err)
+        self.net.list_fails = False
+        gp._poll_providers(force=True)
+        self.assertEqual(gp.state()["machines"][0]["provider_error"], "")
+
+    def test_the_address_comes_from_the_listing_even_with_a_newline_in_the_ip(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        iid = m["provider_id"]
+        self.net.vast_instances[iid].update(actual_status="running", public_ipaddr="203.0.113.7\n",
+                                            ports={"8188/tcp": [{"HostIp": "0.0.0.0", "HostPort": "41001"}]})
+        gp._poll_providers(force=True)
+        self.assertEqual(gp.state()["machines"][0]["url"], "http://203.0.113.7:41001")
+        self.assertIn(("GET", "https://console.vast.ai/api/v0/instances/?owner=me"), self.net.calls)
+
+    def test_a_running_machine_without_port_8188_says_which_ports_it_has(self):
+        gp.set_settings({"image": "example/comfy:1"})
+        m = gp.rent("vast", "11", usd_per_hour=0.47)
+        self.net.vast_instances[m["provider_id"]].update(actual_status="running", public_ipaddr="203.0.113.7",
+                                                         ports={"22/tcp": [{"HostPort": "40022"}]})
+        gp._poll_providers(force=True)
+        err = gp.state()["machines"][0]["provider_error"]
+        self.assertIn("no public address for ComfyUI's port 8188", err)
+        self.assertIn("22/tcp", err)
 
     def test_renting_needs_an_image_a_key_and_room_under_the_cap(self):
         self.assertEqual(gp.state()["settings"]["image"], "ghcr.io/szprivate/agenty-farm:latest")
