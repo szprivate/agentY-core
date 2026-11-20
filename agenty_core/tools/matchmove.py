@@ -33,6 +33,8 @@ NEEDS = {
 LENS_HOW = ("grid", "lines", "comp", "set", "none")
 SOLVE_MODES = ("auto", "free", "tripod")
 REFINE = ("auto", "on", "off")
+DEPTH_SOURCES = ("off", "phone", "ai")
+DEPTH_EDGES = (True, "phone", "ai")
 ORIENT_HOW = ("ground", "origin", "x", "z", "scale")
 GEOMETRY = ("plane", "box", "locator")
 GROUND_HOW = ("auto", "points", "ai", "depth", "phone")
@@ -113,13 +115,20 @@ def request_body(action: str, options: Optional[dict] = None) -> dict:
             raise ValueError(f"at most {FRAME_MOST} frames at a time")
         if opts.get("frame") is not None and not (isinstance(opts["frame"], (int, float)) and opts["frame"] >= 0):
             raise ValueError("options.frame is a plate frame (from 0)")
-    if action == "track_delete" and not any(opts.get(k) not in (None, "", []) for k in ("ids", "worst_share", "error_over", "shorter_than", "all")):
-        raise ValueError("track_delete needs ids, worst_share, error_over, shorter_than or all")
+    if action == "track_delete" and not any(opts.get(k) not in (None, "", [], False) for k in ("ids", "worst_share", "error_over", "shorter_than", "all", "depth_edges")):
+        raise ValueError("track_delete needs ids, worst_share, error_over, shorter_than, all or depth_edges")
+    if action == "track_delete" and opts.get("depth_edges") not in (None, False, *DEPTH_EDGES):
+        raise ValueError('options.depth_edges is true (the depth the solve uses, else the phone\'s, else AI), "phone" or "ai"')
     if action == "solve":
         if opts.get("mode") not in (None, *SOLVE_MODES):
             raise ValueError(f"options.mode is one of: {', '.join(SOLVE_MODES)}")
         if opts.get("refine") not in (None, *REFINE):
             raise ValueError(f"options.refine is one of: {', '.join(REFINE)}")
+        if opts.get("depth") not in (None, *DEPTH_SOURCES):
+            raise ValueError(f"options.depth is one of: {', '.join(DEPTH_SOURCES)}")
+        ds = opts.get("depth_strength")
+        if ds is not None and not (isinstance(ds, (int, float)) and 0.1 <= ds <= 10):
+            raise ValueError("options.depth_strength is 0.1 .. 10 (1: as much as the depth agrees with itself)")
     if action == "orient":
         if opts["how"] not in ORIENT_HOW:
             raise ValueError(f"options.how is one of: {', '.join(ORIENT_HOW)}")
@@ -206,9 +215,17 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             follows features; run again to add more (it keeps the tracks there). A hard shot (things coming
             into view, a fast turn, a cut-off start): seeds "thin" after the first pass, extend, direction both. "track_add" {points [{x, y, frame}], object} - tracks by hand, followed
             both ways. "track_delete" {ids, worst_share (0-0.5 of the solved tracks, worst first), error_over (px),
-            shorter_than (frames), all}. "track_set" {ids, on, object (a name, or "camera")}.
-            "solve" {mode auto | free | tripod, refine auto | on | off (the focal length)} - the camera of every
-            frame and a 3D point per track; under 0.5 px rms is very good, under 1 usable.
+            shorter_than (frames), all, depth_edges (true | "phone" | "ai": the tracks the depth says not to trust -
+            on a depth edge, a corner in front of something far, or jumping in depth; answered as depth_edges
+            [[id, edge | jumps]]), edge_tol (0.15)}. "track_set" {ids, on, object (a name, or "camera")}.
+            "solve" {mode auto | free | tripod, refine auto | on | off (the focal length), depth off | phone (an
+            iPhone Cinematic film's depth track) | ai (a depth model on 12 frames over the tracks, run first and
+            kept), depth_strength (0.1-10, 1), depth_workflow, depth_scale (0.1-1), depth_again} - the camera of
+            every frame and a 3D point per track; under 0.5 px rms is very good, under 1 usable. With depth the
+            points are pulled into the depth the plate was seen at (each frame scaled onto the solve, so no units
+            needed): a shot with little camera movement gets its focal length and proportions from it, and one
+            solved inside out (near and far swapped) is solved again from the depth. solve.depth says how well
+            they agree (order: rank correlation, agreement: share off) or why the depth was left out.
             "object_add" {name, keys (its mask)}, "object_track" {object}, "object_solve" {object, scale}.
             "build" {backplate (default true: the undistorted plate on the camera)} - a "Matchmove" group, the
             camera keyed every frame and looked through, the plate, the points as locators, the objects.
