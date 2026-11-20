@@ -24,7 +24,7 @@ from agenty_core.tools.animate_character import ask_viewer
 ACTIONS = (
     "info", "open", "camera", "lens", "lens_export", "mask", "mask_remove", "track", "track_add", "track_delete",
     "track_set", "solve", "object_add", "object_track", "object_solve", "build", "orient", "geometry", "save",
-    "ground", "ai_mask", "measure", "phone_export", "frame",
+    "ground", "ai_mask", "measure", "phone_export", "frame", "pin",
 )
 NEEDS = {
     "mask_remove": ("mask",), "track_add": ("points",), "track_set": ("ids",), "orient": ("how", "points"),
@@ -41,6 +41,7 @@ GROUND_HOW = ("auto", "points", "ai", "depth", "phone")
 AI_MASK_ENGINES = ("objects", "background")
 MEASURE_KINDS = ("distance", "plane", "line", "right")
 TRACK_DIRECTIONS = ("both", "forward", "backward")
+PIN_MODES = ("off", "align", "hold")
 FRAME_MOST = 16           # frames one "frame" call looks at
 FRAME_SIZE = 1600         # longest side of a frame picture, px
 FRAME_TRACKS_LISTED = 80  # tracks per frame named in the answer (all are drawn)
@@ -159,6 +160,25 @@ def request_body(action: str, options: Optional[dict] = None) -> dict:
                 raise ValueError(f"a {add['kind']} needs {need}{'' if add['kind'] in ('distance', 'right') else ' or more'} track ids")
             if add["kind"] == "distance" and not (float(add.get("metres") or 0) > 0):
                 raise ValueError("a distance needs options.add.metres (how far apart the two tracks are in the world)")
+    if action == "solve" and opts.get("geometry") not in (None, *PIN_MODES):
+        raise ValueError(f"options.geometry is one of: {', '.join(PIN_MODES)}")
+    if action == "pin":
+        add = opts.get("add")
+        if not add and opts.get("remove") in (None, "", []) and not opts.get("clear") and opts.get("mode") is None:
+            raise ValueError("pin needs options.add {track, point [x, y, z]} | {track, item, vertex}, options.remove, options.clear or options.mode")
+        if opts.get("mode") not in (None, *PIN_MODES):
+            raise ValueError(f"options.mode is one of: {', '.join(PIN_MODES)}")
+        for p in (add if isinstance(add, list) else [add] if add else []):
+            if not isinstance(p, dict) or p.get("track") in (None, ""):
+                raise ValueError("each pin is {track, point [x, y, z]} or {track, item, vertex}")
+            pt = p.get("point")
+            if pt is not None:
+                if not (isinstance(pt, (list, tuple)) and len(pt) == 3 and all(isinstance(v, (int, float)) for v in pt)):
+                    raise ValueError("options.add.point is [x, y, z] in the 3D space's units")
+            elif not p.get("item"):
+                raise ValueError("a pin needs options.add.point [x, y, z] or options.add.item (an item's id or name; vertex: one of its vertices)")
+            if p.get("vertex") is not None and not (isinstance(p["vertex"], int) and p["vertex"] >= 0):
+                raise ValueError("options.add.vertex is a vertex index (0 or more) of the item's first mesh")
     if action == "camera" and opts.get("pixel_aspect") is not None and not (0.2 <= float(opts["pixel_aspect"]) <= 5):
         raise ValueError("options.pixel_aspect is a pixel's width over its height, 0.2 .. 5 (2 = a 2x anamorphic squeeze)")
     if action == "geometry" and opts["kind"] not in GEOMETRY:
@@ -220,7 +240,8 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             [[id, edge | jumps]]), edge_tol (0.15)}. "track_set" {ids, on, object (a name, or "camera")}.
             "solve" {mode auto | free | tripod, refine auto | on | off (the focal length), depth off | phone (an
             iPhone Cinematic film's depth track) | ai (a depth model on 12 frames over the tracks, run first and
-            kept), depth_strength (0.1-10, 1), depth_workflow, depth_scale (0.1-1), depth_again} - the camera of
+            kept), depth_strength (0.1-10, 1), depth_workflow, depth_scale (0.1-1), depth_again, geometry off |
+            align | hold (how the pins are used, see "pin")} - the camera of
             every frame and a 3D point per track; under 0.5 px rms is very good, under 1 usable. With depth the
             points are pulled into the depth the plate was seen at (each frame scaled onto the solve, so no units
             needed): a shot with little camera movement gets its focal length and proportions from it, and one
@@ -238,6 +259,15 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             corner, end], metres (a distance)} | remove (its id) | clear} - real measurements the NEXT solve keeps:
             a distance sets the scale (1 unit = 1 m) and two or more fix the proportions; a squashed or stretched
             solve is put right by them. The answer's measurements say whether each holds.
+            "pin" {add {track, point [x, y, z]} | {track, item (id or name), vertex (index; else its origin)} or a
+            list of those, remove [track ids], clear, mode off | align (the solve moved, turned and scaled onto
+            the pins) | hold (default: the pins also pull inside the solve, so camera and focal length follow -
+            mends a squashed solve)} - tracks pinned to known spots of geometry ALREADY in the 3D space (a box set
+            where the real one stands, an imported set model, a scan, surveyed points) in its axes and units.
+            With 3+ pins on, not on one line, the NEXT solve lands in that space: solve.surveyed, units "scene",
+            solve.geometry.pins says how far each lands off (left out = disagreed with the rest), and build puts
+            the camera straight into the geometry's world (do not orient / ground afterwards). Tripod solves
+            leave the pins out. The answer's pins list them.
             "ground" {how auto (every solved point) | points (3+ track ids on the floor) | ai (SAM 3 looks for
             prompt, default "ground") | depth (a depth model on 5 frames; metres true sets 1 unit = 1 m with the
             metric model) | phone (an iPhone Cinematic film's own depth track: no model, no ComfyUI job, not in

@@ -45,6 +45,10 @@ class MatchmoveToolTests(unittest.TestCase):
         self.assertEqual(m.request_body("solve", {"depth": "ai", "depth_strength": 2}),
                          {"action": "matchmove_solve", "depth": "ai", "depth_strength": 2})
         self.assertEqual(m.request_body("track_delete", {"depth_edges": True})["depth_edges"], True)
+        self.assertEqual(m.request_body("pin", {"add": [{"track": "t1", "point": [1, 2, 3.5]}, {"track": "t2", "item": "Box", "vertex": 4}],
+                                                "mode": "align"})["add"][1]["vertex"], 4)
+        self.assertEqual(m.request_body("pin", {"clear": True}), {"action": "matchmove_pin", "clear": True})
+        self.assertEqual(m.request_body("solve", {"geometry": "hold"})["geometry"], "hold")
         for action, opts in (("track", {"direction": "sideways"}), ("track", {"seeds": "some"}), ("track", {"seeds": []}),
                              ("track", {"start": -1}), ("track", {"extend": "yes"}), ("frame", {"frames": []}),
                              ("frame", {"frames": list(range(17))}), ("frame", {"frame": -2}),
@@ -62,7 +66,10 @@ class MatchmoveToolTests(unittest.TestCase):
                              ("measure", {"add": {"kind": "plane", "ids": ["t1", "t2"]}}),
                              ("camera", {"pixel_aspect": 9}), ("solve", {"depth": "lidar"}),
                              ("solve", {"depth": "phone", "depth_strength": 50}), ("track_delete", {"depth_edges": "maybe"}),
-                             ("track_delete", {"depth_edges": False})):
+                             ("track_delete", {"depth_edges": False}), ("pin", {}), ("pin", {"mode": "glue"}),
+                             ("pin", {"add": {"point": [0, 0, 0]}}), ("pin", {"add": {"track": "t1"}}),
+                             ("pin", {"add": {"track": "t1", "point": [0, 0]}}),
+                             ("pin", {"add": {"track": "t1", "item": "Box", "vertex": -1}}), ("solve", {"geometry": "glue"})):
             with self.assertRaises(ValueError, msg=(action, opts)):
                 m.request_body(action, opts)
 
