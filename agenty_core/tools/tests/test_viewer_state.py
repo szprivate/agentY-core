@@ -67,6 +67,20 @@ class Lines(unittest.TestCase):
         self.assertIn("annotations=3 (1 on this frame)", text)
         self.assertNotIn("logo", text)                  # a count, never the marks' text
 
+    def test_the_matchmove_plate_is_named(self):
+        """Sebastian 2026-11-20: the agent could not see the plate loaded in Matchmove."""
+        st = dict(QUIET, tab={"key": "previz:1", "label": "Matchmove", "mode": "previz"}, item=None, matchmove={
+            "tab": "previz:1", "file": "D:/o/plate_mm_v001.mm.json", "current_frame": 37, "step": "track",
+            "plate": {"path": "D:/in/plate.####.exr", "frames": 120, "width": 3840, "height": 2160, "fps": 24,
+                      "first_file_frame": 1001, "frame_range": [0, 119]},
+            "tracks": {"total": 180, "on": 170}, "solve": None, "plate_in_main_view": True})
+        text = vs.describe_lines(st)
+        self.assertIn("matchmove plate=D:/in/plate.####.exr 3840x2160, frames 0-119, @ 24 fps, (file frame 1001 = 0), "
+                      "showing frame 37, step track, tracks 180, not solved, plate in the main view", text)
+        self.assertLessEqual(tokens(text), BUDGET_TOKENS, text)
+        st["matchmove"] = {"tab": "previz:1", "file": "D:/o/a.mm.json", "loaded": False}
+        self.assertIn("matchmove file=D:/o/a.mm.json (not read in yet", vs.describe_lines(st))
+
     def test_defaults_are_not_spelled_out(self):
         text = vs.describe_lines(QUIET)
         self.assertEqual(text, "display=docked tab=agentY mode=image\nitem=1/1 kind=image file=D:/out/a.png")

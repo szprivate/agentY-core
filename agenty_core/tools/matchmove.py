@@ -24,7 +24,7 @@ from agenty_core.tools.animate_character import ask_viewer
 ACTIONS = (
     "info", "open", "camera", "lens", "lens_export", "mask", "mask_remove", "track", "track_add", "track_delete",
     "track_set", "solve", "object_add", "object_track", "object_solve", "build", "orient", "geometry", "save",
-    "ground", "ai_mask", "measure", "phone_export",
+    "ground", "ai_mask", "measure", "phone_export", "frame",
 )
 NEEDS = {
     "mask_remove": ("mask",), "track_add": ("points",), "track_set": ("ids",), "orient": ("how", "points"),
@@ -38,6 +38,10 @@ GEOMETRY = ("plane", "box", "locator")
 GROUND_HOW = ("auto", "points", "ai", "depth", "phone")
 AI_MASK_ENGINES = ("objects", "background")
 MEASURE_KINDS = ("distance", "plane", "line", "right")
+TRACK_DIRECTIONS = ("both", "forward", "backward")
+FRAME_MOST = 16           # frames one "frame" call looks at
+FRAME_SIZE = 1600         # longest side of a frame picture, px
+FRAME_TRACKS_LISTED = 80  # tracks per frame named in the answer (all are drawn)
 
 
 def _error(msg: str) -> str:
@@ -88,6 +92,27 @@ def request_body(action: str, options: Optional[dict] = None) -> dict:
     if action == "track_add":
         if not all(isinstance(p, dict) and "x" in p and "y" in p for p in opts["points"]):
             raise ValueError("options.points is [{x, y, frame}] in plate pixels")
+    if action == "track":
+        if opts.get("direction") not in (None, *TRACK_DIRECTIONS):
+            raise ValueError(f"options.direction is one of: {', '.join(TRACK_DIRECTIONS)}")
+        for k in ("start",):
+            if opts.get(k) is not None and not (isinstance(opts[k], (int, float)) and opts[k] >= 0):
+                raise ValueError("options.start is a frame (0 or more) or null (the first frame of the range)")
+        seeds = opts.get("seeds")
+        if seeds is not None and seeds != "thin" and not (
+                isinstance(seeds, list) and seeds and all(isinstance(f, (int, float)) and f >= 0 for f in seeds)):
+            raise ValueError('options.seeds is a list of frames to find new points on, or "thin"')
+        ext = opts.get("extend")
+        if ext is not None and not (isinstance(ext, bool) or (isinstance(ext, list) and ext)):
+            raise ValueError("options.extend is true (every track on) or a list of track ids")
+    if action == "frame":
+        fr = opts.get("frames")
+        if fr is not None and not (isinstance(fr, list) and fr and all(isinstance(f, (int, float)) and f >= 0 for f in fr)):
+            raise ValueError("options.frames is a list of plate frames (from 0)")
+        if fr is not None and len(fr) > FRAME_MOST:
+            raise ValueError(f"at most {FRAME_MOST} frames at a time")
+        if opts.get("frame") is not None and not (isinstance(opts["frame"], (int, float)) and opts["frame"] >= 0):
+            raise ValueError("options.frame is a plate frame (from 0)")
     if action == "track_delete" and not any(opts.get(k) not in (None, "", []) for k in ("ids", "worst_share", "error_over", "shorter_than", "all")):
         raise ValueError("track_delete needs ids, worst_share, error_over, shorter_than or all")
     if action == "solve":
@@ -148,7 +173,13 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
 
     Args:
         action: One of -
-            "info" - the summary only.
+            "info" - the summary only. START with it: the user may have loaded a plate already (the turn's
+            [VIEWER] lines name it as "matchmove plate=..."); go on with that one, "open" only for another.
+            "frame" {frames [n, ...] (at most 16) | frame (default the frame shown), tracks (default true: the
+            tracks drawn on - green solved under 1 px, yellow not solved, red over 1 px or off - and listed with
+            id, x, y), undistort (the plate through the lens instead; nothing drawn), size (longest side, px)} -
+            the frames as pictures to LOOK at: result.frames[i].path (and result.contact_sheet for several);
+            hand them to analyze_image (file_paths=[...]) or view_image.
             "open" {plate (a film, or one frame of a numbered sequence: the whole sequence is taken) | file (a
             .mm.json to go on with)} - a new plate starts a new matchmove; the camera facts the file holds
             (focal length, sensor) are read and answered as facts.
@@ -168,8 +199,12 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
             name: tracks in it are that object's), mask (an existing one to change), replace_keys, on};
             "mask_remove" {mask}.
             "track" {features (8-1000, default 200), min_ncc (0.3-0.99, default 0.75: how alike a feature must
-            stay), min_dist (px between features), from, to} - finds and follows features; run again to add more
-            (it keeps the tracks there). "track_add" {points [{x, y, frame}], object} - tracks by hand, followed
+            stay), min_dist (px between features), from, to, direction both | forward | backward (default
+            forward), start (the frame tracking starts on, null = from), seeds ([frames]: new points found on those
+            frames and followed the direction's way(s); "thin": on the middle of every stretch with too few
+            tracks, both ways), extend (true: carry every track on past its ends; or [track ids])} - finds and
+            follows features; run again to add more (it keeps the tracks there). A hard shot (things coming
+            into view, a fast turn, a cut-off start): seeds "thin" after the first pass, extend, direction both. "track_add" {points [{x, y, frame}], object} - tracks by hand, followed
             both ways. "track_delete" {ids, worst_share (0-0.5 of the solved tracks, worst first), error_over (px),
             shorter_than (frames), all}. "track_set" {ids, on, object (a name, or "camera")}.
             "solve" {mode auto | free | tripod, refine auto | on | off (the focal length)} - the camera of every
@@ -206,4 +241,93 @@ def matchmove(action: str, options: Optional[dict] = None, timeout_seconds: floa
         body = request_body(action, options)
     except (ValueError, TypeError) as exc:
         return _error(str(exc))
+    if action == "frame":
+        return _look(body, timeout_seconds)
     return ask_viewer(body, timeout_seconds, what="the matchmove")
+
+
+def _track_colour(t: dict):
+    if t.get("on") is False:
+        return (230, 60, 60)
+    e = t.get("error_px")
+    if e is None:
+        return (240, 210, 60)
+    return (90, 220, 110) if e <= 1 else (235, 70, 70)
+
+
+def _look(body: dict, timeout_seconds: float) -> str:
+    """matchmove "frame": the page names the plate, its lens and each frame's tracks (matchmove_frame); the frames
+    themselves come from the viewer's mm_frame route as JPEGs, the tracks drawn on, saved for analyze_image."""
+    from agenty_core.tools.animate_character import _client
+    from agenty_core.tools.workspace_tools import _frames_dir, _sheet
+
+    raw = ask_viewer(body, timeout_seconds, what="the matchmove")
+    try:
+        out = json.loads(raw)
+    except ValueError:
+        return raw
+    if out.get("status") != "ok":
+        return raw
+    res = out.get("result") or {}
+    mm = res.get("matchmove") or {}
+    plate = mm.get("plate") or {}
+    if not plate.get("path"):
+        return _error("no plate yet: matchmove_open with plate = the film or one frame of the sequence")
+    undistort = bool(body.get("undistort")) and bool(res.get("lens"))
+    size = int(body.get("size") or FRAME_SIZE)
+    folder = None
+    paths, labels = [], []
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:  # pragma: no cover - Pillow is a dependency
+        Image = None
+    import io
+    for fr in res.get("frames") or []:
+        q = {"path": plate["path"], "frame": int(fr["frame"]), "size": max(256, min(size, 4096))}
+        if undistort:
+            L = res["lens"]
+            q.update(k1=L.get("k1") or 0, k2=L.get("k2") or 0)
+            if isinstance(L.get("center"), list) and len(L["center"]) >= 2:
+                q.update(cx=L["center"][0], cy=L["center"][1])
+        try:
+            resp = _client().get("/imageviewer/mm_frame", params=q, raw=True)
+            data = resp.content
+        except Exception as exc:  # noqa: BLE001
+            fr["error"] = f"the frame was not read: {exc}"
+            continue
+        if folder is None:
+            stem = str(plate["path"]).replace("\\", "/").split("/")[-1].split(".")[0] or "plate"
+            folder = _frames_dir(f"matchmove_{stem}")
+        target = folder / f"frame_{int(fr['frame']):05d}.jpg"
+        tracks = fr.get("tracks") or []
+        if Image is not None and tracks and not undistort and plate.get("width"):
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            k = im.width / float(plate["width"])
+            draw = ImageDraw.Draw(im)
+            r = max(3, round(im.width / 300))
+            for t in tracks:
+                x, y = t["x"] * k, t["y"] * k
+                draw.ellipse((x - r, y - r, x + r, y + r), outline=_track_colour(t), width=max(1, r // 2))
+                if len(tracks) <= 60:
+                    draw.text((x + r + 2, y - r - 2), str(t["id"]), fill=_track_colour(t))
+            im.save(target, quality=90)
+        else:
+            target.write_bytes(data)
+        fr["path"] = str(target)
+        fr["tracks_on_frame"] = len(tracks)
+        if len(tracks) > FRAME_TRACKS_LISTED:
+            fr["tracks"] = sorted(tracks, key=lambda t: -(t.get("error_px") or 0))[:FRAME_TRACKS_LISTED]
+            fr["tracks_note"] = f"the {FRAME_TRACKS_LISTED} worst listed; all {len(tracks)} drawn"
+        paths.append(target)
+        labels.append(f"frame {fr['frame']}")
+    if not paths:
+        return _error("no frame of the plate could be read through ComfyUI (is the viewer up to date?)")
+    if len(paths) > 1:
+        try:
+            res["contact_sheet"] = str(_sheet(paths, labels, folder / "contact_sheet.jpg"))
+        except Exception as exc:  # noqa: BLE001
+            res["contact_sheet_error"] = str(exc)
+    res["look"] = ("hand result.frames[i].path to analyze_image (file_paths=[...] for several)"
+                   + ("; the plate is undistorted, so no tracks are drawn" if undistort else
+                      "; tracks: green solved under 1 px, yellow not solved, red over 1 px or switched off"))
+    return json.dumps(out)
