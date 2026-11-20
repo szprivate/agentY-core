@@ -248,6 +248,38 @@ def describe_lines(state: dict | None) -> str:
                                                       for l in s3["display_layers"][:6]))
         if bits:
             lines.append("3d scene " + "; ".join(bits))
+
+    # The matchmove's plate: what the matchmove tool works on (go on with it; "open" is for another plate).
+    mm = s.get("matchmove") or {}
+    if mm:
+        p = mm.get("plate") or {}
+        if p.get("path"):
+            path = _short(p["path"])
+            bits = [f"plate={_q(path) if ' ' in path else path}",
+                    f"{p.get('width')}x{p.get('height')}", f"frames 0-{max(0, int(p.get('frames') or 1) - 1)}"]
+            if p.get("fps"):
+                bits.append(f"@ {_num(p['fps'])} fps")
+            if p.get("first_file_frame"):
+                bits.append(f"(file frame {p['first_file_frame']} = 0)")
+            if mm.get("current_frame") is not None:
+                bits.append(f"showing frame {mm['current_frame']}")
+            if mm.get("step"):
+                bits.append(f"step {mm['step']}")
+            t = mm.get("tracks") or {}
+            bits.append(f"tracks {t.get('total', 0)}")
+            sv = mm.get("solve")
+            bits.append(f"solve {_num(sv.get('rms_px'))} px ({sv.get('verdict')})" if isinstance(sv, dict) else "not solved")
+            if mm.get("built"):
+                bits.append("built into the scene")
+            if mm.get("plate_in_main_view"):
+                bits.append("plate in the main view")
+            if mm.get("on_this_tab") is False:
+                bits.append(f"on 3D tab {_q(mm.get('tab'))}")
+            if mm.get("busy"):
+                bits.append(f"busy: {mm['busy']}")
+            lines.append("matchmove " + " ".join(bits[:1]) + " " + ", ".join(bits[1:]))
+        elif mm.get("file"):
+            lines.append(f"matchmove file={_short(mm['file'])} (not read in yet: matchmove info reads it)")
     return "\n".join(lines)
 
 
@@ -280,7 +312,8 @@ def get_viewer_state() -> str:
     user picked on the timeline, loop and play state; the Edit panel's selected
     clip; a comparison (A/B, wipe); zoom / channel / exposure; the 3D camera (pose,
     fov) on a 3D tab; the 3D scene's characters (skeleton? rig? humanoid? keyed frames - what
-    animate_character works on); the 3D scene's shot, cameras, clips and layers (what animate_scene works on); and how many annotations the item has.
+    animate_character works on); the 3D scene's shot, cameras, clips and layers (what animate_scene works on); the matchmove's
+    plate (path, size, frame range, the frame shown, tracks, solve - what the matchmove tool works on); and how many annotations the item has.
 
     Use when the user points at the viewer - "this frame", "the range I marked",
     "the shot I have open", "what I'm looking at" - and the turn's [VIEWER] lines are

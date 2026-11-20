@@ -38,7 +38,14 @@ class MatchmoveToolTests(unittest.TestCase):
         self.assertEqual(m.request_body("ai_mask", {"engine": "background"})["action"], "matchmove_ai_mask")
         self.assertEqual(m.request_body("measure", {"add": {"kind": "distance", "ids": ["t1", "t2"], "metres": 1.2}})["add"]["metres"], 1.2)
         self.assertEqual(m.request_body("camera", {"preset": "iphone14-wide"})["preset"], "iphone14-wide")
-        for action, opts in (("nope", {}), ("open", {}), ("lens", {"how": "magic"}), ("lens", {"how": "set"}),
+        self.assertEqual(m.request_body("track", {"direction": "both", "start": 12, "seeds": "thin", "extend": True}),
+                         {"action": "matchmove_track", "direction": "both", "start": 12, "seeds": "thin", "extend": True})
+        self.assertEqual(m.request_body("track", {"seeds": [0, 40], "extend": ["t1"]})["seeds"], [0, 40])
+        self.assertEqual(m.request_body("frame", {"frames": [0, 5]}), {"action": "matchmove_frame", "frames": [0, 5]})
+        for action, opts in (("track", {"direction": "sideways"}), ("track", {"seeds": "some"}), ("track", {"seeds": []}),
+                             ("track", {"start": -1}), ("track", {"extend": "yes"}), ("frame", {"frames": []}),
+                             ("frame", {"frames": list(range(17))}), ("frame", {"frame": -2}),
+                             ("nope", {}), ("open", {}), ("lens", {"how": "magic"}), ("lens", {"how": "set"}),
                              ("lens", {"how": "comp"}), ("lens", {"how": "lines", "lines": [[[0, 0], [1, 1]]]}),
                              ("mask", {}), ("mask", {"keys": [{"frame": 0, "points": [[0, 0]]}]}),
                              ("mask", {"keys": [{"points": [[0, 0], [1, 0], [1, 1]]}]}),
@@ -61,6 +68,42 @@ class MatchmoveToolTests(unittest.TestCase):
         self.assertEqual(out["status"], "ok", out)
         self.assertEqual(page.posted[0], ("/imageviewer/rig/agent", {"action": "matchmove_solve", "mode": "auto"}))
         self.assertEqual(out["result"]["matchmove"]["solve"]["rms_px"], 0.4)
+
+    def test_frame_saves_the_plate_frames_with_their_tracks_drawn(self):
+        import io
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (320, 180), (10, 10, 10)).save(buf, "JPEG")
+        jpeg = buf.getvalue()
+        answer = {"state": "done", "result": {
+            "frames": [{"frame": 0, "tracks": [{"id": "t1", "x": 100, "y": 50, "error_px": 0.3}]}, {"frame": 9, "tracks": []}],
+            "lens": None, "undistort": False,
+            "matchmove": {"plate": {"path": "D:/in/plate.####.png", "frames": 10, "width": 640, "height": 360}}}}
+        page = _Page(lambda body: answer)
+        got = []
+
+        def get(path, params=None, raw=False, **kw):
+            if path == "/imageviewer/mm_frame":
+                got.append(params)
+                return mock.Mock(content=jpeg)
+            return page.asks[params["id"]]
+        page.get = get
+        tmp = tempfile.mkdtemp()
+        with mock.patch.object(ac, "_client", return_value=page), mock.patch.object(ac.time, "sleep"), \
+                mock.patch("agenty_core.tools.workspace_tools._frames_dir", return_value=Path(tmp)):
+            out = json.loads(m.matchmove("frame", {"frames": [0, 9]}, timeout_seconds=5))
+        self.assertEqual(out["status"], "ok", out)
+        self.assertEqual(page.posted[0], ("/imageviewer/rig/agent", {"action": "matchmove_frame", "frames": [0, 9]}))
+        self.assertEqual([q["frame"] for q in got], [0, 9])
+        self.assertEqual(got[0]["path"], "D:/in/plate.####.png")
+        fr = out["result"]["frames"]
+        self.assertTrue(all(Path(f["path"]).is_file() for f in fr))
+        im = Image.open(fr[0]["path"])
+        self.assertGreater(im.getpixel((50 + 3, 25))[1], 60)        # the green ring of t1 (half size)
+        self.assertTrue(Path(out["result"]["contact_sheet"]).is_file())
+        self.assertIn("analyze_image", out["result"]["look"])
 
     def test_a_refused_request_never_reaches_the_page(self):
         page = _Page(lambda body: {"state": "done"})
