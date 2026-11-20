@@ -42,6 +42,9 @@ class MatchmoveToolTests(unittest.TestCase):
                          {"action": "matchmove_track", "direction": "both", "start": 12, "seeds": "thin", "extend": True})
         self.assertEqual(m.request_body("track", {"seeds": [0, 40], "extend": ["t1"]})["seeds"], [0, 40])
         self.assertEqual(m.request_body("frame", {"frames": [0, 5]}), {"action": "matchmove_frame", "frames": [0, 5]})
+        self.assertEqual(m.request_body("solve", {"depth": "ai", "depth_strength": 2}),
+                         {"action": "matchmove_solve", "depth": "ai", "depth_strength": 2})
+        self.assertEqual(m.request_body("track_delete", {"depth_edges": True})["depth_edges"], True)
         for action, opts in (("track", {"direction": "sideways"}), ("track", {"seeds": "some"}), ("track", {"seeds": []}),
                              ("track", {"start": -1}), ("track", {"extend": "yes"}), ("frame", {"frames": []}),
                              ("frame", {"frames": list(range(17))}), ("frame", {"frame": -2}),
@@ -57,7 +60,9 @@ class MatchmoveToolTests(unittest.TestCase):
                              ("ai_mask", {}), ("ai_mask", {"engine": "magic"}), ("measure", {}),
                              ("measure", {"add": {"kind": "distance", "ids": ["t1", "t2"]}}),
                              ("measure", {"add": {"kind": "plane", "ids": ["t1", "t2"]}}),
-                             ("camera", {"pixel_aspect": 9})):
+                             ("camera", {"pixel_aspect": 9}), ("solve", {"depth": "lidar"}),
+                             ("solve", {"depth": "phone", "depth_strength": 50}), ("track_delete", {"depth_edges": "maybe"}),
+                             ("track_delete", {"depth_edges": False})):
             with self.assertRaises(ValueError, msg=(action, opts)):
                 m.request_body(action, opts)
 
