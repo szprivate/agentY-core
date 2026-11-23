@@ -107,10 +107,40 @@ class Tools(unittest.TestCase):
         self.client.post.return_value = {"job": "j1"}
         self.client.get.side_effect = [{"state": "running", "done": 1, "total": 2},
                                        {"state": "done", "result": {"writes": [{"name": "main", "frames": 2}], "notes": []}}]
-        with mock.patch.object(ct.time, "sleep"):
+        with mock.patch.object(ct.time, "sleep"), mock.patch.object(ct, "_have_playwright", return_value=False):
             got = json.loads(ct.render_comp(path="D:/c/shot.comp.json", writes="main", handles=2))
         self.assertEqual(got["writes"][0]["name"], "main")
         self.assertEqual(self.client.post.call_args.kwargs["json_data"], {"path": "D:/c/shot.comp.json", "writes": ["main"], "handles": 2})
+
+    def test_a_3d_frame_no_viewer_page_takes_starts_a_headless_browser(self):
+        """A Render3D frame waiting with no page to draw it: a headless browser on ComfyUI's page draws it, and it is
+        closed when the job is done. Frames a page took (owner3d) or that have waited only briefly start nothing."""
+        self.client.post.return_value = {"job": "j1"}
+        self.client.base_url = "http://127.0.0.1:8188"
+        need = [{"key": "R1@0#:8x6", "node": "R1", "frame": 0}]
+        self.client.get.side_effect = [
+            {"state": "running", "need3d": need, "waiting3d": 1.0},
+            {"state": "running", "need3d": need, "waiting3d": 3.0, "owner3d": "page1"},
+            {"state": "running", "need3d": need, "waiting3d": 5.0},
+            {"state": "running", "need3d": need, "waiting3d": 6.0},
+            {"state": "done", "result": {"writes": [{"name": "main", "frames": 1}], "notes": []}}]
+        made = []
+
+        class Fake:
+            def __init__(self, url):
+                made.append(url)
+                self.started, self.error, self.closed = True, "", False
+
+            def close(self):
+                self.closed = True
+        with mock.patch.object(ct.time, "sleep"), mock.patch.object(ct, "_have_playwright", return_value=True), \
+                mock.patch.object(ct, "_Headless3D", Fake):
+            got = json.loads(ct.render_comp(path="D:/c/shot.comp.json"))
+        self.assertEqual(made, ["http://127.0.0.1:8188"])
+        self.assertEqual(self.client.post.call_args.kwargs["json_data"]["wait3d"], ct._WAIT3D)
+        self.assertEqual(got["status"], "ok")
+        self.assertIn("headless", got["drawn_3d_by"])
+
 
     def test_render_on_the_farm_is_planned_by_the_viewer_and_submitted_here(self):
         self.client.post.return_value = {"request": REQ, "warnings": ["the comp is on this machine's own disk"]}

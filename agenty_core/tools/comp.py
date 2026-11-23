@@ -10,11 +10,20 @@ open tab would not see it.
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 
 from agenty_core._compat import tool
 
 _OPS_HELP = "ops is a list of changes (JSON)"
+_log = logging.getLogger(__name__)
+
+# A Write job of a comp with a Render3D asks a viewer page for each 3D frame (the viewer's comp_routes.page_3d).
+# When no page has taken the frame after _HEADLESS_AFTER s, a headless browser is started on ComfyUI's page
+# (?imageviewer_serve3d=1), which draws the frames; the job waits up to _WAIT3D s for it to come up.
+_HEADLESS_AFTER = 4.0
+_WAIT3D = 120
 
 
 def _j(obj) -> str:
@@ -220,6 +229,72 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
     return _j(out)
 
 
+def _have_playwright() -> bool:
+    try:
+        import playwright.sync_api  # type: ignore[import]  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class _Headless3D:
+    """A headless browser on ComfyUI's page that draws a comp job's Render3D frames, for as long as it is needed.
+    Everything Playwright does happens in its own thread (its sync API is bound to the thread it started in)."""
+
+    def __init__(self, url: str):
+        self.url = url.rstrip("/") + "/?imageviewer_serve3d=1"
+        self.stop = threading.Event()
+        self.error = ""
+        self.started = False
+        self.thread = threading.Thread(target=self._run, name="comp-headless-3d", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore[import]
+            with sync_playwright() as p:
+                browser, last = None, None
+                args = ["--ignore-gpu-blocklist", "--enable-unsafe-swiftshader", "--use-angle=default"]
+                for channel in ("chrome", "msedge", None):
+                    try:
+                        kw = {"headless": True, "args": args}
+                        if channel:
+                            kw["channel"] = channel
+                        browser = p.chromium.launch(**kw)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        last = e
+                if browser is None:
+                    raise RuntimeError(f"no browser to start (tried Chrome, Edge, Playwright's chromium): {last}")
+                try:
+                    page = browser.new_page(viewport={"width": 1280, "height": 800})
+                    page.goto(self.url, wait_until="domcontentloaded", timeout=60000)
+                    self.started = True
+                    while not self.stop.is_set():
+                        page.wait_for_timeout(500)
+                finally:
+                    browser.close()
+        except Exception as e:  # noqa: BLE001 - the job falls back to Comp's own renderer
+            self.error = str(e).splitlines()[0][:300] if str(e) else type(e).__name__
+            _log.warning("render_comp: headless browser for 3D frames: %s", self.error)
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=15)
+
+
+def _close_when_done(c, jid: str, browser: "_Headless3D", limit_s: float = 6 * 3600) -> None:
+    end = time.time() + limit_s
+    try:
+        while time.time() < end and not browser.stop.is_set():
+            if c.get("/imageviewer/comp_write", params={"job": jid}).get("state") != "running":
+                break
+            time.sleep(2.0)
+    except Exception:  # noqa: BLE001 - ComfyUI went away: nothing left to draw for
+        pass
+    browser.close()
+
+
 @tool
 def render_comp(path: str = "", writes: str = "", first: int = -1, last: int = -1, handles: int = -1,
                 farm: bool = False, chunk: int = 10, pool: str = "", group: str = "", priority: int = -1,
@@ -236,6 +311,10 @@ def render_comp(path: str = "", writes: str = "", first: int = -1, last: int = -
             footage and its outputs on paths the farm machines can reach - the answer warns about any that are not).
         chunk, pool, group, priority: the farm job's frames per task, pool, group, priority (0-100).
         wait_s: rendering here, wait this long for the files (max 3600); the job goes on if it takes longer.
+            A comp with a Render3D draws its 3D frames with the viewer's 3D space renderer in a browser page: an
+            open ComfyUI page with the viewer does it, and when none answers a headless browser is started on
+            ComfyUI's page for the job (needs Playwright, as reverse image search does); without either, Comp's own
+            renderer draws them (cards and shapes, unlit) and the notes say so.
         dry_run: say what would be written (and, with farm, the job) without rendering.
 
     Returns:
@@ -270,19 +349,40 @@ def render_comp(path: str = "", writes: str = "", first: int = -1, last: int = -
         if dry_run:
             r = c.post("/imageviewer/comp_write_plan", json_data=body)
             return _j({"status": "ok", "dry_run": True, "writes": r.get("writes") or [], "refused": r.get("refused")})
+        headless_ok = _have_playwright()
+        if headless_ok:
+            body["wait3d"] = _WAIT3D
         r = c.post("/imageviewer/comp_write", json_data=body)
         jid = r.get("job")
         end = time.time() + max(0, min(3600, int(wait_s)))
-        while True:
-            s = c.get("/imageviewer/comp_write", params={"job": jid})
-            if s.get("state") == "done":
-                res = s.get("result") or {}
-                return _j({"status": "ok", "writes": res.get("writes") or [], "notes": res.get("notes") or []})
-            if s.get("state") != "running":
-                return _j({"status": "error", "error": s.get("error") or f"the render {s.get('state')}"})
-            if time.time() >= end:
-                return _j({"status": "running", "job": jid, "done": s.get("done"), "total": s.get("total"),
-                           "hint": "it renders on; call again later to see the files"})
-            time.sleep(1.0)
+        browser = None
+        try:
+            while True:
+                s = c.get("/imageviewer/comp_write", params={"job": jid})
+                if s.get("state") == "done":
+                    res = s.get("result") or {}
+                    out = {"status": "ok", "writes": res.get("writes") or [], "notes": res.get("notes") or []}
+                    if browser is not None:
+                        if browser.started and not browser.error:
+                            out["drawn_3d_by"] = "a headless browser on ComfyUI's page"
+                        if browser.error:
+                            out["notes"].append(f"the headless browser for the 3D frames did not start: {browser.error}")
+                    return _j(out)
+                if s.get("state") != "running":
+                    return _j({"status": "error", "error": s.get("error") or f"the render {s.get('state')}"})
+                # A 3D frame no viewer page has taken: start a page of our own to draw it.
+                if (headless_ok and browser is None and s.get("need3d") and not s.get("owner3d")
+                        and float(s.get("waiting3d") or 0) >= _HEADLESS_AFTER):
+                    browser = _Headless3D(c.base_url)
+                if time.time() >= end:
+                    if browser is not None:     # it draws on until the job ends
+                        threading.Thread(target=_close_when_done, args=(c, jid, browser), daemon=True).start()
+                        browser = None
+                    return _j({"status": "running", "job": jid, "done": s.get("done"), "total": s.get("total"),
+                               "hint": "it renders on; call again later to see the files"})
+                time.sleep(1.0)
+        finally:
+            if browser is not None:
+                browser.close()
     except Exception as e:  # noqa: BLE001
         return _fail(e, "render Write nodes")
