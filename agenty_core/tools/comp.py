@@ -158,6 +158,19 @@ def edit_comp(path: str = "", ops: list | None = None, create: bool = False, wid
             came back (or which model files are missing). It runs after the other ops of the call, so one call
             can add the node and run it. So depth of field is: read, ai_depth on it, ai_matte on it, run_ai both,
             then depthblur as above - no separate ComfyUI workflows needed.
+            3D: ``{"op": "card_setup", "node": <a picture>, "renderer"?: "3D space|path traced|built-in",
+            "camera"?: {translate, rotate, focal}}`` puts the picture on a Card in front of a Camera through a Render3D
+            (the Render3D takes over what read the picture); it adds three nodes ($n counts them). Other 3D nodes:
+            card3d / geo3d (shape cube|sphere|cylinder; translate, rotate [deg, X then Y then Z], scale, uniform),
+            project3d (inputs img, camera; faces front|both) feeding a card / shape, scene3d (up to 4), scenefile3d
+            (file = a .usda / .usdc / .json scene of the viewer's 3D space, or "tab:<3D tab name>"; offset),
+            light3d (light point|spot|directional|ambient, color, intensity, cone), camera3d (focal, haperture,
+            near, far; with a SceneFile in its scene input, from_scene = that scene's camera, followed every
+            frame), render3d (inputs scene, camera, bg; renderer "3D space" (default) | "path traced" (rays,
+            bounces) | "built-in" (cards and shapes only, unlit); depth.z written). Y is up, the camera looks down
+            -Z, a card is one unit wide. The read-back's ``warnings`` names 3D nodes that draw nothing as wired:
+            fix those. 3D-space and path traced frames are made by the viewer's open Comp tab; without one a
+            render falls back to the built-in renderer and its notes say so.
         create: Make the comp when the file is not there (with width / height / fps / frames).
         wait_s: For run_ai: how long to wait for the viewer (max 3600 s each).
 
