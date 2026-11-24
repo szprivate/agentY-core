@@ -280,6 +280,24 @@ def describe_lines(state: dict | None) -> str:
             lines.append("matchmove " + " ".join(bits[:1]) + " " + ", ".join(bits[1:]))
         elif mm.get("file"):
             lines.append(f"matchmove file={_short(mm['file'])} (not read in yet: matchmove info reads it)")
+    # The 3D space's Render panel (animate_scene render_panel_*): its prompt, workflow and last result.
+    rp = s.get("render_panel") or {}
+    if rp:
+        wf = rp.get("workflow") or {}
+        bits = [f"panel={rp.get('panel') or 'render3d'}",
+                f"workflow {_q(wf.get('name'))}" + (f" ({wf['id']})" if wf.get("id") else "") if wf else "no workflow",
+                f"prompt {_q(rp.get('prompt'))}" if rp.get("prompt") else "no prompt"]
+        if rp.get("ai") is False and wf:
+            bits.append("AI off")
+        if rp.get("ipr"):
+            bits.append("IPR on")
+        if rp.get("region"):
+            bits.append("region " + ",".join(_num(x) for x in rp["region"]))
+        if rp.get("result"):
+            bits.append(f"last result {rp['result'].get('filename')} (frame {rp['result'].get('frame')})")
+        if rp.get("busy"):
+            bits.append(f"busy: {rp['busy']}")
+        lines.append("render panel " + " ".join(bits[:1]) + " " + ", ".join(bits[1:]))
     return "\n".join(lines)
 
 

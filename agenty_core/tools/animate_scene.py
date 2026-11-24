@@ -37,6 +37,8 @@ ACTIONS = (
     # The Terrain menu (js/imageViewer_previzAgentTerrain.js TERRAIN_AGENT_ACTIONS).
     "terrain_add", "terrain_set", "terrain_sculpt", "terrain_paint", "terrain_clear", "terrain_height",
     "terrain_erode", "scatter_add", "scatter_set", "scatter_paint", "ground",
+    # The Render panel (js/imageViewer_previzAgentRender.js RENDER_PANEL_AGENT_ACTIONS).
+    "render_panel_info", "render_panel_set", "render_panel_render",
 )
 # What each action needs before it is worth sending (the page checks the rest).
 NEEDS = {
@@ -164,6 +166,17 @@ def animate_scene(action: str, options: Optional[dict] = None, timeout_seconds: 
             scale (%), background, add_node (a loader node on the canvas, default the scene's setting)} ->
             result.path; "playblast" {camera, clip or from / to, scale, format, shading, hud, note} (the view as drawn
             with a heads-up display, into the History).
+            Render panel (the 3D space's Render view: one frame through the render camera as beauty / depth /
+            normals / mask, run through a ComfyUI workflow to look real): "render_panel_info" {panel} (its prompt,
+            workflow and settings, AI / IPR / region, the last result's file, the prepared workflows);
+            "render_panel_set" {panel, prompt (the scene described for the workflow: what each thing is, its
+            material, the place, the light - the blocks of a layout are stand-ins, so name what they stand for),
+            workflow (a prepared id from render_panel_info, e.g. comp_r3_zimage_depth (depth only: the prompt must
+            describe everything), comp_r3_qwen2511 / comp_r3_gpt25 (see the render); "canvas"; null = off),
+            values {setting name: value}, ai (Render runs the workflow), ipr, region ([x0, y0, x1, y1] shares of
+            the picture from its top left: only that box is rendered and repainted; null = the whole frame)};
+            "render_panel_render" {panel, ai, frame} (Render as the button: the passes, then the workflow) ->
+            result.file (filename / subfolder / type in ComfyUI's output). panel defaults to the first one.
             Keys: "key_set" {item, prop (position | rotation | scale | pivot | fov | ikfk | space | attr:<name> |
             bs:<shape>), frame, value, ease (smooth | linear | hold), axis (0-2 or x/y/z: that axis only), keys (a list
             of {frame, value, ease, axis} instead), layer (an animation layer's name; "base" = the base), replace
