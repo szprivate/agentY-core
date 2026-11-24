@@ -81,6 +81,17 @@ class Lines(unittest.TestCase):
         st["matchmove"] = {"tab": "previz:1", "file": "D:/o/a.mm.json", "loaded": False}
         self.assertIn("matchmove file=D:/o/a.mm.json (not read in yet", vs.describe_lines(st))
 
+    def test_the_render_panel_names_its_prompt_and_workflow(self):
+        """Sebastian 2026-11-24: the Render panel's prompt is something the agent reads and writes."""
+        st = dict(QUIET, render_panel={"panel": "render3d", "prompt": "a blue car in a red canyon",
+                                       "workflow": {"name": "Z-Image Turbo depth", "id": "comp_r3_zimage_depth", "takes_prompt": True},
+                                       "ai": True, "region": [0.1, 0.2, 0.6, 0.9],
+                                       "result": {"frame": 12, "filename": "out.0012_00001_.png"}})
+        text = vs.describe_lines(st)
+        self.assertIn('render panel panel=render3d workflow "Z-Image Turbo depth" (comp_r3_zimage_depth), '
+                      'prompt "a blue car in a red canyon", region 0.1,0.2,0.6,0.9, last result out.0012_00001_.png (frame 12)', text)
+        self.assertLessEqual(tokens(text), BUDGET_TOKENS, text)
+
     def test_defaults_are_not_spelled_out(self):
         text = vs.describe_lines(QUIET)
         self.assertEqual(text, "display=docked tab=agentY mode=image\nitem=1/1 kind=image file=D:/out/a.png")
